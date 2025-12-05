@@ -60,7 +60,7 @@ def process_url(url: str) -> tuple[dict, float, float]:
 
 
 def collect_json_files_parallel(urls: List[str], max_workers=8) -> dict:
-    collection = {}
+    all_results = []  # 모든 결과를 저장할 리스트
     total_download_time = 0
     total_unzip_time = 0
 
@@ -69,27 +69,39 @@ def collect_json_files_parallel(urls: List[str], max_workers=8) -> dict:
 
         for future in tqdm(as_completed(futures), total=len(urls), desc="병렬 처리"):
             result, download_time, unzip_time = future.result()
-            collection.update(result)
+            
+            # 'results' 키가 있는 경우 해당 리스트를 확장
+            if 'results' in result:
+                all_results.extend(result['results'])
+            else:
+                # 다른 구조인 경우 전체 결과 추가
+                all_results.append(result)
+            
             total_download_time += download_time
             total_unzip_time += unzip_time
 
     print(f"\n총 다운로드 시간: {total_download_time:.2f}초")
     print(f"총 압축 해제 시간: {total_unzip_time:.2f}초")
-    
-    return collection
+    print(f"총 레코드 수: {len(all_results)}")
+    return all_results
 
-def search_and_collect_json(start: Union[str|int], end: Union[str|int], max_workers=4):
+
+def search_and_collect_json(start: Union[str, int], end: Union[str, int], max_workers=4):
     start_time = time.time()
     urls = search_download_url(start, end)
+    print(f"찾은 URL 개수: {len(urls)}")
     collection = collect_json_files_parallel(urls, max_workers=max_workers)
     total_time = time.time() - start_time
     print(f"전체 실행 시간: {total_time:.2f}초")
     return collection
 
+
 if __name__ == '__main__':
     start_time = time.time()
     
     urls = search_download_url(2024, 2024)
+    print(f"찾은 URL 개수: {len(urls)}")
+    
     collection = collect_json_files_parallel(urls, max_workers=4)
     
     total_time = time.time() - start_time
