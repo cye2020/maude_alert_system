@@ -42,6 +42,10 @@ class DatasetAdapter(Enum):
     PANDAS = "pandas"
     POLARS = "polars"
 
+class PolarsFrameType(Enum):
+    LAZY_FRAME = 1
+    DATA_FRAME = 2
+
 class DataLoader:
     """FDA 데이터 전체 적재 파이프라인"""
     
@@ -210,7 +214,7 @@ class DataLoader:
         else:
             print("\n❌ 변환된 파일이 없습니다.")
     
-    def process(self, skip: bool = False, adapter: Union[DatasetAdapter, str, None] = None, **kwargs):
+    def process(self, skip: bool = False):
         """전체 파이프라인 실행 및 데이터 로드"""
         start_time = time.time()
         
@@ -231,8 +235,6 @@ class DataLoader:
         
         total_time = time.time() - start_time
         print(f"\n⏱️  전체 실행 시간: {total_time:.2f}초")
-        
-        return self.load(adapter, **kwargs)
 
     def load(self, adapter: Union[DatasetAdapter, str, None] = None, **kwargs):
         """어댑터에 따라 Parquet 파일 로드"""
@@ -252,7 +254,7 @@ class DataLoader:
         if target_adapter == DatasetAdapter.PANDAS:
             return pd.read_parquet(self.output_file, **kwargs)
         if target_adapter == DatasetAdapter.POLARS:
-            return pl.read_parquet(self.output_file, **kwargs)
+            return pl.scan_parquet(self.output_file, **kwargs)
         if target_adapter == DatasetAdapter.SPARK:
             spark = SparkSession.builder.appName("DataLoader").getOrCreate()
             reader = spark.read
@@ -262,21 +264,14 @@ class DataLoader:
 
         raise ValueError(f"지원하지 않는 어댑터입니다: {target_adapter}")
 
+
 # ============ 사용 예시 ============
 if __name__ == '__main__':
     loader = DataLoader(
-        start=2024,
-        end=2024,
+        start=2020,
+        end=2025,
         output_file='output.parquet',
         max_workers=4
     )
-    
-    adapter = 'pandas'
-    pandas_kwargs = {
-        'engine': 'pyarrow'
-    }
-    df = loader.process(skip=True, adapter='pandas', **pandas_kwargs)
-    
-    if df is not None:
-        print(f"\n데이터프레임 shape: {df.shape}")
-        print(df.head())
+
+    loader.process(skip=False)
