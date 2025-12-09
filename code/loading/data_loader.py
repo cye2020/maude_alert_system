@@ -270,6 +270,7 @@ class DataLoader:
 
         raise ValueError(f"지원하지 않는 어댑터입니다: {target_adapter}")
 
+
 # ============ 사용 예시 ============
 if __name__ == '__main__':
     loader = DataLoader(
