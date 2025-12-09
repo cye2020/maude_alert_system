@@ -1,7 +1,7 @@
 from typing import Set, Tuple
 
-from .zip_streamer import ZipStreamer
-from .flattener import Flattener
+from code.loading.zip_streamer import ZipStreamer
+from code.loading.flattener import Flattener
 
 class SchemaCollector:
     """URL에서 스키마 수집"""
