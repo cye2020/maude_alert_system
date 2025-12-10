@@ -53,9 +53,9 @@ class DataLoader:
     SEARCH_URL = 'https://api.fda.gov/download.json'
     
     def __init__(self, 
-        name: str,
-        start: int,
-        end: int,
+        name: str = 'device',
+        start: int = None,
+        end: int = None,
         output_file: str = 'output.parquet',
         schema_file: str = '.schema_cache.json',
         max_workers: int = 4,

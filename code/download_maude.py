@@ -4,7 +4,7 @@ from code.loading import DataLoader
 def main():
     parser = argparse.ArgumentParser(description="DataLoader CLI")
 
-    parser.add_argument("--name", "-n", type=int, default='event',
+    parser.add_argument("--name", "-n", type=str, default='event',
                         help="Raw Data Name")
     parser.add_argument("--start", "-s", type=int,
                         help="Start year (e.g., 2020)")
@@ -20,6 +20,7 @@ def main():
     args = parser.parse_args()
 
     loader = DataLoader(
+        name=args.name,
         start=args.start,
         end=args.end,
         output_file=args.output_file,
