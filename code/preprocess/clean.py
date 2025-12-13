@@ -90,7 +90,9 @@ class TextPreprocessor:
             return None
         
         self._compile()
-        text = str(text).strip()
+        
+        # 양옆 공백 제거, 대문자로 통일
+        text = str(text).strip().upper()
         
         # REMOVE 패턴 적용
         for p in self._patterns['remove']:
@@ -178,53 +180,80 @@ class PreprocessorPresets:
     """사전 정의된 전처리 패턴셋"""
     
     @staticmethod
-    def udi_patterns() -> List[Tuple[str, str, str]]:
-        """UDI-DI 전용 패턴"""
+    def _generic_patterns() -> List[Tuple[str, str, str]]:
+        """모든 패턴의 기본이 되는 공통 패턴"""
         return [
-            # DELETE 패턴
+            # DELETE 패턴 - 범용 무효값
             (r'.*\bUNKNOWN\b.*', 'DELETE', 'UNKNOWN'),
-            (r'.*\bUNK\b.*', 'DELETE', 'UNK'),
             (r'.*\bUNKOWN\b.*', 'DELETE', 'UNKOWN (오타)'),
+            (r'.*\bUNK\b.*', 'DELETE', 'UNK'),
             (r'.*\bUKN\b.*', 'DELETE', 'UKN (오타)'),
             (r'.*\bNULL\b.*', 'DELETE', 'NULL'),
             (r'.*\bNONE\b.*', 'DELETE', 'NONE'),
             (r'.*\bNIL\b.*', 'DELETE', 'NIL'),
             (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
-            (r'.*\bNOT\s+AVAILABLE\b.*', 'DELETE', 'NOT AVAILABLE'),
-            (r'.*\bUNAVAILABLE\b.*', 'DELETE', 'UNAVAILABLE'),
             (r'.*\bN\.A\.?\b.*', 'DELETE', 'N.A'),
+            (r'.*\bNI\b.*', 'DELETE', 'NI'),
+            (r'.*\bNA\b.*', 'DELETE', 'NA'),
+            (r'.*\bNOT\s+AVAILABLE\b.*', 'DELETE', 'NOT AVAILABLE'),
+            (r'.*\bUNAVAILABLE\b.*', 'DELETE', 'UNAVAILABLE'), 
             (r'.*MISSING.*', 'DELETE', 'MISSING'),
             (r'^NO[\s_]?DATA$', 'DELETE', 'NO DATA'),
             (r'^EMPTY$', 'DELETE', 'EMPTY'),
-            (r'^.{1,3}$', 'DELETE', '3자 이하'),
+            (r'.*\bNASK\b.*', 'DELETE', 'NASK'),
+            (r'.*\bASKU\b.*', 'DELETE', 'ASKU'),
+            (r'.*\bTRC\b.*', 'DELETE', 'TRC'),
+            (r'.*\bQS\b.*', 'DELETE', 'QS'),
+            (r'.*\bMSK\b.*', 'DELETE', 'MSK'),
+            (r'.*\bNAV\b.*', 'DELETE', 'NAV'),
+            (r'.*\bINV\b.*', 'DELETE', 'INV'),
+            (r'.*\bOTH\b.*', 'DELETE', 'OTH'),
+            (r'.*\bPINF\b.*', 'DELETE', 'PINF'),
+            (r'.*\bNINF\b.*', 'DELETE', 'NINF'),
+            (r'.*\bUNC\b.*', 'DELETE', 'UNC'),
+            (r'.*\bDER\b.*', 'DELETE', 'DER'),
+            (r'^\s*$', 'DELETE', '빈 문자열'),
+            (r'^.$', 'DELETE', '1자'), 
+            
+            # REMOVE 패턴 - 범용 공백/기호
+            (r'\s+', 'REMOVE', '중복 공백'),
+            (r'^\s+', 'REMOVE', '시작 공백'),
+            (r'\s+$', 'REMOVE', '끝 공백'),
+        ]
+    
+    @staticmethod
+    def udi_patterns() -> List[Tuple[str, str, str]]:
+        """UDI-DI 전용 패턴 = Generic + UDI 특화"""
+        patterns = PreprocessorPresets._generic_patterns()
+        
+        # UDI 특화 DELETE 패턴만 추가
+        udi_deletes = [
+            (r'^.{2,3}$', 'DELETE', '2-3자'),  # 1자는 generic에 있으므로 2-3자만
             (r'^.{31,}$', 'DELETE', '31자 이상'),
             (r'^0+$', 'DELETE', '모두 0'),
-            (r'^\s*$', 'DELETE', '빈 문자열'),
             (r'^N$', 'DELETE', '단일 문자 N'),
             (r'^X+$', 'DELETE', 'X 반복'),
             (r'.*\$\$.*', 'DELETE', '$$'),
             (r'.*[@#%^&*]{2,}.*', 'DELETE', '연속 특수문자'),
-            
-            # REMOVE 패턴
+        ]
+        
+        # UDI 특화 REMOVE 패턴
+        udi_removes = [
             (r'\(\d{2}\)', 'REMOVE', 'GS1 AI'),
             (r'^\d*\+', 'REMOVE', 'HIBCC 접두어'),
-            (r'\s+', 'REMOVE', '공백'),
             (r'[\[\]{}<>"\']+', 'REMOVE', '괄호/따옴표'),
             (r'[,\-_;\\/\$@#&*+]+', 'REMOVE', '특수기호'),
         ]
+        
+        return patterns + udi_deletes + udi_removes
     
     @staticmethod
     def company_name_patterns() -> List[Tuple[str, str, str]]:
-        """회사명 전용 패턴"""
-        return [
-            # DELETE 패턴
-            (r'.*\bUNKNOWN\b.*', 'DELETE', 'UNKNOWN'),
-            (r'.*\bNULL\b.*', 'DELETE', 'NULL'),
-            (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
-            (r'^.$', 'DELETE', '1자'),
-            (r'^\s*$', 'DELETE', '빈 문자열'),
-            
-            # REMOVE 패턴 - 회사 법인 형태 제거
+        """회사명 전용 패턴 = Generic + 회사명 특화"""
+        patterns = PreprocessorPresets._generic_patterns()
+        
+        # 회사명 특화 REMOVE 패턴 - 법인 형태 제거
+        company_removes = [
             (r'\b(INC\.?|INCORPORATED)\b', 'REMOVE', 'INC'),
             (r'\b(CO\.?|COMPANY)\b', 'REMOVE', 'CO'),
             (r'\b(CORP\.?|CORPORATION)\b', 'REMOVE', 'CORP'),
@@ -238,43 +267,40 @@ class PreprocessorPresets:
             (r'\b(PTY\.?)\b', 'REMOVE', 'PTY'),
             (r'\b(PVT\.?)\b', 'REMOVE', 'PVT'),
             (r'\b(THE)\b', 'REMOVE', 'THE'),
-            (r'^\s+', 'REMOVE', '공백 시작'),
-            (r'\s+$', 'REMOVE', '공백 끝'),
             (r'[,\.\-_&]+', 'REMOVE', '특수기호'),
         ]
+        
+        return patterns + company_removes
     
     @staticmethod
     def generic_text_patterns() -> List[Tuple[str, str, str]]:
-        """일반 텍스트 클린징 패턴"""
-        return [
-            # DELETE 패턴
-            (r'.*\bUNKNOWN\b.*', 'DELETE', 'UNKNOWN'),
-            (r'.*\bNULL\b.*', 'DELETE', 'NULL'),
-            (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
-            (r'^\s*$', 'DELETE', '빈 문자열'),
-            (r'^.{1,1}$', 'DELETE', '1자'),
-            
-            # REMOVE 패턴
-            (r'\s+', 'REMOVE', '중복 공백'),
+        """일반 텍스트 클린징 패턴 = Generic + 텍스트 특화"""
+        patterns = PreprocessorPresets._generic_patterns()
+        
+        # 텍스트 특화 DELETE 패턴 (도메인별 특수 코드)
+        text_deletes = [
+        ]
+        
+        # 텍스트 특화 REMOVE 패턴
+        text_removes = [
             (r'[,;]+', 'REMOVE', '구분자'),
         ]
+        
+        return patterns + text_deletes + text_removes
     
     @staticmethod
     def email_patterns() -> List[Tuple[str, str, str]]:
-        """이메일 클린징 패턴"""
-        return [
-            # DELETE 패턴
-            (r'.*\bUNKNOWN\b.*', 'DELETE', 'UNKNOWN'),
-            (r'.*\bNONE\b.*', 'DELETE', 'NONE'),
-            (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
-            (r'^\s*$', 'DELETE', '빈 문자열'),
+        """이메일 클린징 패턴 = Generic + 이메일 특화"""
+        patterns = PreprocessorPresets._generic_patterns()
+        
+        # 이메일 특화 DELETE 패턴
+        email_deletes = [
             (r'^[^@]+$', 'DELETE', '@ 없음'),
             (r'.*@example\.com$', 'DELETE', 'example.com'),
-            
-            # REMOVE 패턴
-            (r'\s+', 'REMOVE', '공백'),
+            (r'.*@test\.com$', 'DELETE', 'test.com'),
         ]
-
+        
+        return patterns + email_deletes
 
 # ========== 팩토리 함수 ==========
 
@@ -366,7 +392,7 @@ if __name__ == "__main__":
     udi_output = Path('cleaned_udi.parquet')
     udi_preprocessor.apply_to_lazyframe(
         lf=lf,
-        column='udi',
+        columns='udi',
         output_path=udi_output,
         chunk_size=50
     )
@@ -378,7 +404,7 @@ if __name__ == "__main__":
     lf_cleaned = pl.scan_parquet(udi_output)
     company_preprocessor.apply_to_lazyframe(
         lf=lf_cleaned,
-        column='company',
+        columns='company',
         output_path=company_output,
         chunk_size=50
     )
