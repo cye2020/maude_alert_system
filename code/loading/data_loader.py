@@ -14,6 +14,7 @@ import json
 import hashlib
 from enum import Enum
 import shutil
+from pathlib import Path
 
 # -----------------------------
 # 서드파티 라이브러리
@@ -70,6 +71,8 @@ class DataLoader:
         self.adapter = adapter
         self.urls = []
         self.schema_columns = []
+        
+        Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     
     def search_download_url(self) -> List[str]:
         """다운로드 URL 목록 조회"""
