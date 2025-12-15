@@ -4,9 +4,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 # 상대 경로 사용
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).parent.parent.parent
 DATA_DIR = PROJECT_ROOT / 'data'
-print(PROJECT_ROOT)
+
 @dataclass
 class Config:
     """UDI 처리 설정"""
@@ -19,13 +19,12 @@ class Config:
     
     # 신뢰도 매핑
     CONFIDENCE_MAP = {
-        'original': 'HIGH',
-        'extracted': 'HIGH',
-        'single_match': 'HIGH',
-        'time_inferred': 'MEDIUM',
-        'freq_inferred': 'LOW',
-        'fallback_oldest': 'LOW',
-        'tier3': 'VERY_LOW'
+        'udi_direct': 'HIGH',
+        'udi_secondary': 'HIGH',
+        'meta_match': 'MEDIUM',
+        'udi_no_match': 'LOW',
+        'no_match': 'VERY_LOW',
+        'not_in_mapping': 'VERY_LOW'
     }
     
     # MAUDE 날짜 우선순위
@@ -48,6 +47,6 @@ class Config:
     
     JOIN_COL = 'udi_di'
     
-    TEMP_DIR = DATA_DIR / Path("data/_temp")
+    TEMP_DIR = DATA_DIR / 'temp'
     CLEANUP_TEMP_ON_SUCCESS = True
     CLEANUP_TEMP_ON_ERROR = False   # 디버깅용
