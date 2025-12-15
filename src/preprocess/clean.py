@@ -273,8 +273,7 @@ class PreprocessorPresets:
     @staticmethod
     def generic_text_patterns() -> List[Tuple[str, str, str]]:
         """일반 텍스트 클린징 패턴 = Generic + 텍스트 특화"""
-        # patterns = PreprocessorPresets._generic_patterns()
-        patterns = []
+        patterns = PreprocessorPresets._generic_patterns()
         
         # 텍스트 특화 DELETE 패턴 (도메인별 특수 코드)
         text_deletes = [
