@@ -1,0 +1,5 @@
+# Data Files
+*.parquet
+
+# 임시 파일 or 디렉토리
+temp*
