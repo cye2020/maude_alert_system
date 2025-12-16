@@ -1,0 +1,29 @@
+base_config: base.yaml
+
+default_args:
+  owner: "data-team"
+  email_on_failure: true
+  email:
+    - ${ALERT_EMAIL}      # 환경변수
+    - ${ALERT_EMAIL_CC}   # 필요시
+  retries: 2
+  retry_delay_minutes: 10
+
+connections:
+  s3_conn_id: "s3_default"
+  http_maude_conn_id: "maude_api"
+  http_udi_conn_id: "udi_api"
+
+dags:
+  maude_download:
+    schedule: "0 2 * * *"
+    catchup: false
+    max_active_runs: 1
+  udi_download:
+    schedule: "30 2 * * *"
+    catchup: false
+    max_active_runs: 1
+  preprocess:
+    schedule: "@daily"
+    catchup: false
+    max_active_runs: 1

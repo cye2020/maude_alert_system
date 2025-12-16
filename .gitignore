@@ -224,3 +224,27 @@ temp*
 # vscode
 
 .vscode
+
+.DS_Store
+
+# Project data/output (do not version large artifacts)
+data/raw/
+data/bronze/
+data/silver/
+data/gold/
+data/temp/
+output/
+logs/
+airflow/logs/
+
+# Local configs
+config/*.local.yaml
+config/*.override.yaml
+.env.local
+.env.*
+
+# Notebook checkpoints (nested)
+notebooks/**/.ipynb_checkpoints/
+
+# IDE
+.idea/
