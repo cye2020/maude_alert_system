@@ -1,4 +1,5 @@
 import sys
+import uuid
 
 def is_running_in_notebook():
     """
@@ -14,6 +15,15 @@ def is_running_in_notebook():
         return False # __file__이 있으면 스크립트 파일입니다.
     except NameError:
         return True # __file__이 없으면 노트북/대화형 세션입니다.
+
+
+UUID_NAMESPACE = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+def uuid5_from_str(x: str | None) -> str | None:
+    if x is None:
+        return None
+    return str(uuid.uuid5(UUID_NAMESPACE, x))
+
 
 if __name__=='__main__':
     print(is_running_in_notebook())
