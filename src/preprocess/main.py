@@ -3,8 +3,8 @@
 """
 import polars as pl
 from pathlib import Path
-from code.preprocess.preprocessor import UDIProcessor
-from code.preprocess.config import Config
+from src.preprocess.udi_preprocessor import UDIProcessor
+from src.preprocess.config import Config
 
 def main(maude_path: str, udi_path: str, output_path: str, chunk_size: int = 1_000_000):
     """

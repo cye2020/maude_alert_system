@@ -1,0 +1,23 @@
+project:
+  name: maude_udi_pipeline
+  env: local
+  root_dir: "."
+
+paths:
+  data_dir: data
+  raw_dir: data/raw
+  bronze_dir: data/bronze
+  silver_dir: data/silver
+  gold_dir: data/gold
+  temp_dir: data/temp
+  logs_dir: logs
+
+runtime:
+  use_statistics: true
+  low_memory: false
+  parallel: auto
+  default_chunk_size: 50000
+
+logging:
+  level: INFO
+  json: false

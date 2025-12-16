@@ -1,5 +1,5 @@
 import argparse
-from code.loading import DataLoader
+from src.loading import DataLoader
 
 def main():
     parser = argparse.ArgumentParser(description="DataLoader CLI")

@@ -1,0 +1,29 @@
+base_config: base.yaml
+
+storage:
+  local_root: ${DOWNLOAD_ROOT}
+  s3_bucket: ${DOWNLOAD_S3_BUCKET}
+  s3_prefix: maude-udi/raw
+
+retry:
+  attempts: 5
+  backoff_seconds: 5
+  backoff_factor: 1.5
+
+maude:
+  start_year: 2020
+  end_year: 2025
+  chunk_days: 7
+  max_workers: 4
+  output_path: data/raw/maude.parquet
+  endpoint: ${MAUDE_API_ENDPOINT}
+  api_key: ${MAUDE_API_KEY}
+
+udi:
+  start_year: 2020
+  end_year: 2025
+  chunk_rows: 100000
+  max_workers: 4
+  output_path: data/raw/udi.parquet
+  endpoint: ${UDI_API_ENDPOINT}
+  api_key: ${UDI_API_KEY}
