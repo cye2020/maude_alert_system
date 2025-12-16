@@ -1,0 +1,23 @@
+# config/project_config.yaml
+project:
+  name: "maude_project"
+  root_dir: "."  # 또는 절대 경로
+  
+paths:
+  code_dir: "code"
+  loading_dir: "code/loading"
+  data_dir: "data"
+  config_dir: "config"
+
+data:
+  full: "data/raw/maude_full.parquet"
+  sample: "data/raw/maude_sample.parquet"
+
+python:
+  add_to_path:
+    - "."  # 프로젝트 루트
+    - "code"
+  
+modules:
+  loading:
+    - data_loader
