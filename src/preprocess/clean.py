@@ -168,7 +168,13 @@ class TextPreprocessor:
         Returns:
             {원본: 클린징된값} 딕셔너리
         """
-        return {val: self.clean(val) for val in unique_values}
+        values = unique_values.to_list()
+
+        mapping = {}
+        for val in tqdm(values, desc="Cleaning", total=len(values)):
+            mapping[val] = self.clean(val)
+
+        return mapping
 
     def apply_to_lazyframe(
         self,
@@ -200,9 +206,10 @@ class TextPreprocessor:
             unique_vals = lf.select(col).unique().collect()[col]
             all_unique_values.update(unique_vals)
         
+        all_unique_values = list(all_unique_values)
         print(f"[{self.name}] Creating mapping for {len(all_unique_values):,} unique values...")
         mapping_dict = self.create_mapping_dict(
-            pl.Series(list(tqdm(all_unique_values, desc="Creating series", total=len(all_unique_values))))
+            pl.Series(all_unique_values, dtype=pl.Utf8)
         )        
         # 통계
         original_count = len([v for v in mapping_dict.values() if v is not None])
