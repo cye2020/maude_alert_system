@@ -1037,3 +1037,56 @@ def collect_unique_safe(lf: pl.LazyFrame, column: str) -> list:
         Unique 값 리스트 (null 제외)
     """
     return lf.select(column).unique().drop_nulls().collect()[column].to_list()
+
+
+def combine_mdr_texts(lf: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    중복 제거된 set을 먼저 컬럼에 할당 후 문자열 결합
+    """
+    cols = lf.collect_schema().names()
+    text_cols = sorted([c for c in cols if c.startswith('mdr_text_') and c.endswith('_text')])
+
+    pairs = []
+    for text_col in text_cols:
+        type_col = re.sub(r'_text$', '_text_type_code', text_col)
+        if type_col in cols:
+            pairs.append((text_col, type_col))
+    
+    if not pairs:
+        return lf.with_columns(pl.lit(None).alias('combined_mdr_text'))
+    
+    # 1. 중복 제거된 리스트를 컬럼에 할당
+    lf = lf.with_columns(
+        pl.struct([pl.col(tc) for tc, _ in pairs] + [pl.col(ty) for _, ty in pairs])
+        .map_elements(
+            lambda s: deduplicate_and_format(s, pairs),
+            return_dtype=pl.List(pl.String)
+        )
+        .alias('deduplicated_formatted')
+    )
+    
+    # 2. 리스트를 문자열로 결합
+    lf = lf.with_columns(
+        pl.col('deduplicated_formatted')
+        .list.join("\n\n")
+        .alias('combined_mdr_text')
+    )
+    
+    return lf.drop('deduplicated_formatted')
+
+
+def deduplicate_and_format(struct_val, pairs):
+    """텍스트 중복 제거하고 포맷팅까지 한번에"""
+    seen = {}
+    result = []
+    
+    for text_col, type_col in pairs:
+        text = struct_val.get(text_col)
+        type_val = struct_val.get(type_col)
+        
+        if text is not None and text != "" and text not in seen:
+            seen[text] = True
+            type_display = type_val if type_val else ""
+            result.append(f"[{type_display}]\n{text}")
+    
+    return result

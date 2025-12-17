@@ -6,10 +6,12 @@
 import re
 from country_named_entity_recognition import find_countries
 import polars as pl
+import zlib
 import shutil
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
-from tqdm import trange
+from tqdm import tqdm, trange
+import cleantext as cl
 
 from src.utils import process_lazyframe_in_chunks, apply_mapping_to_columns
 
@@ -17,7 +19,7 @@ from src.utils import process_lazyframe_in_chunks, apply_mapping_to_columns
 class TextPreprocessor:
     """범용 텍스트 전처리 클래스 (Stateless)"""
     
-    def __init__(self, name: str = "default", remove_countries: bool = False):
+    def __init__(self, name: str = "default", remove_countries: bool = False, custom: bool = True):
         """
         Args:
             name: 전처리기 이름
@@ -26,6 +28,7 @@ class TextPreprocessor:
         self._patterns = {'delete': [], 'remove': []}
         self._compiled = False
         self.remove_countries = remove_countries
+        self.custom = custom
     
     def add_pattern(self, pattern: str, action: str, description: str = ""):
         """
@@ -90,6 +93,9 @@ class TextPreprocessor:
         """
         if text is None or text == '':
             return None
+
+        if not self.custom:
+            return cl.clean(text)
         
         self._compile()
         
@@ -195,8 +201,9 @@ class TextPreprocessor:
             all_unique_values.update(unique_vals)
         
         print(f"[{self.name}] Creating mapping for {len(all_unique_values):,} unique values...")
-        mapping_dict = self.create_mapping_dict(pl.Series(list(all_unique_values)))
-        
+        mapping_dict = self.create_mapping_dict(
+            pl.Series(list(tqdm(all_unique_values, desc="Creating series", total=len(all_unique_values))))
+        )        
         # 통계
         original_count = len([v for v in mapping_dict.values() if v is not None])
         deleted_count = len(all_unique_values) - original_count
@@ -207,13 +214,17 @@ class TextPreprocessor:
         def transform(chunk_lf: pl.LazyFrame) -> pl.LazyFrame:
             return apply_mapping_to_columns(chunk_lf, columns, mapping_dict)
         
+        column_str = "_".join(columns)
+        column_hash = zlib.adler32(column_str.encode())
+        temp_dir_name = f'temp_{self.name}_{column_hash}'
+
         # 3. Chunk 단위 처리 (utils 함수 사용)
         process_lazyframe_in_chunks(
             lf=lf,
             transform_func=transform,
             output_path=output_path,
             chunk_size=chunk_size,
-            temp_dir_name=f'temp_{self.name}_{"_".join(columns)}',
+            temp_dir_name=temp_dir_name,
             keep_temp=keep_temp,
             desc=f"[{self.name}] Processing {len(columns)} column(s)"
         )
@@ -366,11 +377,15 @@ def create_company_preprocessor() -> TextPreprocessor:
         PreprocessorPresets.company_name_patterns()
     )
 
-def create_generic_preprocessor() -> TextPreprocessor:
+def create_number_preprocessor() -> TextPreprocessor:
     """일반 텍스트 전처리기 생성"""
     return TextPreprocessor("GenericText").add_patterns(
         PreprocessorPresets.generic_text_patterns()
     )
+    
+def create_generic_preprocessor() -> TextPreprocessor:
+    """일반 텍스트 전처리기 생성"""
+    return TextPreprocessor("GenericText", custom=False)
 
 def create_email_preprocessor() -> TextPreprocessor:
     """이메일 전처리기 생성"""
