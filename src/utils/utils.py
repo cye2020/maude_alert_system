@@ -1,5 +1,6 @@
 import sys
 import uuid
+from pathlib import Path
 
 def is_running_in_notebook():
     """
@@ -23,6 +24,32 @@ def uuid5_from_str(x: str | None) -> str | None:
     if x is None:
         return None
     return str(uuid.uuid5(UUID_NAMESPACE, x))
+
+def increment_path(path, exist_ok=False, sep='', mkdir=False):
+    """
+    YOLO 방식 경로 증가 함수
+    예: runs/detect/exp -> runs/detect/exp2, exp3 ...
+    """
+    path = Path(path)
+
+    if path.exists() and not exist_ok:
+        base = path.stem
+        suffix = path.suffix
+        parent = path.parent
+
+        i = 2
+        while True:
+            new_path = parent / f"{base}{sep}{i}{suffix}"
+            if not new_path.exists():
+                path = new_path
+                break
+            i += 1
+
+    if mkdir:
+        path.mkdir(parents=True, exist_ok=True)
+
+    return path
+
 
 
 if __name__=='__main__':
