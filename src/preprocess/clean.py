@@ -221,9 +221,10 @@ class TextPreprocessor:
         def transform(chunk_lf: pl.LazyFrame) -> pl.LazyFrame:
             return apply_mapping_to_columns(chunk_lf, columns, mapping_dict)
         
+        root = Path(output_path).parent
         column_str = "_".join(columns)
         column_hash = zlib.adler32(column_str.encode())
-        temp_dir_name = f'temp_{self.name}_{column_hash}'
+        temp_dir_name = root / f'temp_{self.name}_{column_hash}'
 
         # 3. Chunk 단위 처리 (utils 함수 사용)
         process_lazyframe_in_chunks(
@@ -385,8 +386,8 @@ def create_company_preprocessor() -> TextPreprocessor:
     )
 
 def create_number_preprocessor() -> TextPreprocessor:
-    """일반 텍스트 전처리기 생성"""
-    return TextPreprocessor("GenericText").add_patterns(
+    """일반 숫자 전처리기 생성"""
+    return TextPreprocessor("GenericNumber").add_patterns(
         PreprocessorPresets.generic_text_patterns()
     )
     
@@ -474,7 +475,8 @@ if __name__ == "__main__":
     )
     
     # 회사명 컬럼 전처리
-    company_output = Path('cleaned_company.parquet')
+    root = Path(__file__).parent
+    company_output = root / Path('cleaned_company.parquet')
     
     # 이전 결과를 다시 로드해서 처리
     lf_cleaned = pl.scan_parquet(udi_output)

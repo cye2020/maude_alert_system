@@ -1,6 +1,6 @@
 import polars as pl
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 import logging
 from datetime import datetime
 
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 class SilverPipeline:
-    def __init__(self, use_s3: bool = False, datasets: list = None):
+    def __init__(self, use_s3: bool = False, datasets: List[str] = None) -> None:
         """
         Args:
             use_s3: S3 사용 여부
@@ -121,6 +121,34 @@ class SilverPipeline:
         
         return True
     
+    def _run_each(self, dataset: str):
+        """
+        각 데이터셋이 따로 진행
+        """
+        try:
+            logger.info("=" * 60)
+            logger.info(f"Run {dataset} Dataset")
+            logger.info("=" * 60)
+            
+            # Bronze 데이터 로드
+            logger.info(f'Load Bronze {dataset} Dataset...')
+            lf = self.load_bronze_data(dataset)
+            
+            # 1차 컬럼 드랍
+            logger.info(f'Drop {dataset} Columns...')
+            lf = self.drop_columns_1st(lf, dataset)
+
+            # 스코핑
+            logger.info(f'Scoping {dataset} Data...')
+            lf = self.scope_data(lf, dataset)
+            
+            # 클렌징
+
+        except Exception as e:
+            logger.error(f"Run {dataset} Dataset failed: {e}", exc_info=True)
+            return False
+            
+    
     def run(self) -> bool:
         """Silver 파이프라인 전체 실행
         
@@ -133,25 +161,9 @@ class SilverPipeline:
             logger.info("Starting Silver Pipeline")
             logger.info("=" * 60)
             
-            # 1. Bronze 데이터 로드
-            maude_lf = self.load_bronze_data('maude')
-            udi_lf = self.load_bronze_data('udi')
-            
-            # 2. 검증 단계 (TODO: 구현 필요)
-            
-            # 3. 전처리 단계들 (TODO: 구현 필요)
-            
-            # 3-1. 1차 컬럼 드랍
-            logger.info('Drop MAUDE Columns...')
-            maude_lf = self.drop_columns_1st(maude_lf, 'maude')
-            logger.info('Drop UDI Columns...')
-            udi_lf = self.drop_columns_1st(udi_lf, 'udi')
-            
-            # 3-2. 스코핑 (device class 3만 선택, mdr_text 존재)
-            logger.info('Scoping MAUDE Data...')
-            maude_lf = self.scope_data(maude_lf, 'maude')
-            logger.info('Scoping UDI Data...')
-            udi_lf = self.scope_data(udi_lf, 'udi')
+            # maude 데이터 진행
+            for dataset in self.datasets:
+                self._run_each(dataset)
             
             # 3-2. 클렌징
             # maude_clean_lf = self.clean_columns(maude_lf, 'maude')
@@ -196,6 +208,107 @@ class SilverPipeline:
         scope_lf = filter_stage.filter_groups(lf, groups, combine_groups)
         
         return scope_lf
+
+    def _load_cleaning_config(self):
+        """Config에서 클린징 설정 로드"""
+        # 패턴 로드
+        self.cleaning_patterns = {
+            'generic': self.config.cleaning['patterns']['generic'],
+            'udi': self.config.cleaning['patterns']['udi'],
+            'company_name': self.config.cleaning['patterns']['company_name'],
+            'generic_text': self.config.cleaning['patterns']['generic_text'],
+        }
+        
+        # 실행 옵션
+        exec_config = self.config.cleaning['execution']
+        self.clean_chunk_size = exec_config['chunk_size']
+        self.clean_keep_temp = exec_config['keep_temp']
+        
+        # 컬럼 전략
+        strategies = self.config.cleaning['column_strategies']
+        self.udi_columns = strategies['udi_columns']
+        self.company_columns = strategies['company_columns']
+        self.text_columns = strategies['text_columns']
+        
+        # 전처리 옵션
+        self.preprocess_options = self.config.cleaning['preprocessing_options']
+    
+    def _merge_patterns(self, pattern_types: List[str]) -> Dict[str, List[Dict]]:
+        """여러 패턴 타입을 병합
+        
+        Args:
+            pattern_types: ['generic', 'udi'] 등
+            
+        Returns:
+            {'delete': [...], 'remove': [...]}
+        """
+        merged = {'delete': [], 'remove': []}
+        
+        for ptype in pattern_types:
+            patterns = self.cleaning_patterns[ptype]
+            merged['delete'].extend(patterns.get('delete', []))
+            merged['remove'].extend(patterns.get('remove', []))
+        
+        return merged
+    
+    def clean_data(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        """데이터 클린징 단계"""
+        logger.info("Step 2: Data cleaning...")
+        
+        # 1. UDI 컬럼 클린징
+        udi_options = self.preprocess_options['udi']
+        udi_patterns = self._merge_patterns(udi_options['patterns'])
+        
+        output_path = self.silver_path.parent / "temp_cleaned_udi.parquet"
+        lf = self.cleaning_stage.clean_columns(
+            lf=lf,
+            columns=self.udi_columns,
+            patterns=udi_patterns,
+            output_path=output_path,
+            uppercase=udi_options['uppercase'],
+            remove_countries=udi_options['remove_countries'],
+            chunk_size=self.clean_chunk_size,
+            keep_temp=self.clean_keep_temp
+        )
+        
+        # 2. 회사명 컬럼 클린징
+        company_options = self.preprocess_options['company_name']
+        company_patterns = self._merge_patterns(company_options['patterns'])
+        
+        output_path = self.silver_path.parent / "temp_cleaned_company.parquet"
+        lf = self.cleaning_stage.clean_columns(
+            lf=lf,
+            columns=self.company_columns,
+            patterns=company_patterns,
+            output_path=output_path,
+            uppercase=company_options['uppercase'],
+            remove_countries=company_options['remove_countries'],
+            chunk_size=self.chunk_size,
+            keep_temp=self.keep_temp
+        )
+        
+        # 3. 일반 텍스트 컬럼 클린징
+        text_options = self.preprocess_options['generic_text']
+        text_patterns = self._merge_patterns(text_options['patterns'])
+        
+        output_path = self.silver_path.parent / "temp_cleaned_text.parquet"
+        lf = self.cleaning_stage.clean_columns(
+            lf=lf,
+            columns=self.text_columns,
+            patterns=text_patterns,
+            output_path=output_path,
+            uppercase=text_options['uppercase'],
+            remove_countries=text_options['remove_countries'],
+            chunk_size=self.chunk_size,
+            keep_temp=self.keep_temp
+        )
+        
+        # 통계 저장
+        self.stats['cleaning'] = self.cleaning_stage.get_stats()
+        
+        logger.info("  ✓ Data cleaning completed")
+        
+        return lf
 
     def _log_summary(self):
         """처리 결과 요약 로그"""

@@ -853,8 +853,9 @@ class UDIProcessor:
                         pl.col("mfr_std"), 
                         pl.lit("_"), 
                         pl.coalesce(["brand_final", pl.lit("UNKNOWN")])
-                        .map_elements(uuid5_from_str)
-                    ]))
+                    ])
+                    # .map_elements(uuid5_from_str)
+                    )
                     .otherwise(pl.concat_str([
                         pl.lit("UNK_"), 
                         pl.col("mfr_std"), 
@@ -862,8 +863,9 @@ class UDIProcessor:
                         pl.coalesce(["brand_final", pl.lit("UNKNOWN")]), 
                         pl.lit("_"), 
                         pl.coalesce(["catalog_number_final", pl.lit("NA")])
-                        .map_elements(uuid5_from_str)
-                    ]))
+                    ])
+                    # .map_elements(uuid5_from_str)
+                    )
                 )
                 .otherwise(pl.col("device_version_id"))
                 .alias("device_version_id"),
@@ -928,8 +930,11 @@ class UDIProcessor:
             # 6. 후처리 (Path 받음!)
             final_temp_path = self._post_process_complex_cases(temp_matched_path, chunk_size)
             
+            # join으로 늘어난 중복 제거
+            final_lf = pl.scan_parquet(final_temp_path).unique(subset=['mdr_report_key'],keep='first')
+            
             # 7. 최종 파일 이동
-            pl.scan_parquet(final_temp_path).sink_parquet(output_path)
+            final_lf.sink_parquet(output_path)
             
             # 통계
             print("\n" + "=" * 60)
