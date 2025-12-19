@@ -6,9 +6,12 @@
 # 1. 표준 라이브러리
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 # 2. 서드파티 라이브러리
+from matplotlib.artist import Artist
+from matplotlib.axes import Axes
+from matplotlib.patches import Patch
 import pandas as pd
 import numpy as np
 from numpy.typing import ArrayLike
@@ -22,7 +25,9 @@ import matplotlib.pyplot as plt
 from scipy import stats
 from scipy.stats import shapiro, levene, ttest_ind, chi2_contingency
 from scipy.stats import mannwhitneyu, f_oneway
+import scikit_posthocs as sp
 import pingouin as pg
+from statsmodels.stats.multicomp import MultiComparison
 
 # 3. 로컬 모듈
 from src.utils import is_running_in_notebook
@@ -394,15 +399,17 @@ class TTest(StatisticalTest):
             pass
     
     @staticmethod
-    def plot(class0_data, class1_data, labels, iv_col, dv_col):
+    def plot(class0_data: ArrayLike, class1_data: ArrayLike, labels: List[str], iv_col: str, dv_col: str):
         fig, axes = plt.subplots(1, 3, figsize=(14, 5))
-
+        axes: Sequence[Axes]
         # 박스플롯
         bp = axes[0].boxplot([class0_data, class1_data],
                             labels=labels,
                             patch_artist=True)
-        bp['boxes'][0].set_facecolor('lightblue')
-        bp['boxes'][1].set_facecolor('lightcoral')
+        
+        boxes: list[Patch] = bp["boxes"] 
+        boxes[0].set_facecolor('lightblue')
+        boxes[1].set_facecolor('lightcoral')
         axes[0].set_ylabel(dv_col)
         axes[0].set_title(f'{dv_col} 분포')
         axes[0].grid(True, alpha=0.3)
@@ -650,6 +657,7 @@ class OneWayAnova(StatisticalTest):
         print("-"*50)
         
         alpha = alpha if alpha else self.alpha
+        metadata = {}
         
         # 가설 설정
         print(f"H₀: 모든 {iv_col}의 평균 {dv_col}이 같다")
@@ -673,30 +681,43 @@ class OneWayAnova(StatisticalTest):
         N = sum(len(group) for group in data_groups)
         
         if is_normal:
+            if is_equal_var:
+                test_name = "f-test"
+                test_func = self._run_f_test
+                test_args = [data_groups, k, N]
+                effect_func = self.calculate_eta_squared
+                post_hoc_func = self.perform_tukey_hsd
+            else:
+                test_name = "Welch's ANOVA test"
+                test_func = self._run_welch_test
+                test_args = [data, iv_col, dv_col]
+                effect_func = None
+                post_hoc_func = self.perform_tukey_hsd
+        else:
+            test_name = 'Kruskal-Wallis test'
+            test_func = self._run_kruskal_test
+            test_args = [data_groups, k, N]
+
+        test_stat, p_value, df_info = test_func(*test_args)
+        effect_size, interpretation = self._calculate_effect_size(effect_func, test_stat, *df_info)
+        
+        
+        if is_normal:
             test_name = "f-test" if is_equal_var else "Welch's ANOVA "
             
-            if is_equal_var:
-                f_stat, p_value  = f_oneway(*data_groups)
-                df1 = k - 1  # 집단 간 자유도
-                df2 = N - k   # 집단 내 자유도
-                print(f"{test_name} 결과:")
-                print(f"자유도: F({df1}, {df2})")
-                print(f"f = {f_stat:.4f}, p = {p_value:.4f}")     
+            if is_equal_var:   
                 
                 # 효과 크기 계산
-                eta_sq, interpretation = self.calculate_eta_squared(f_stat, df1, df2)
-                print(f"효과 크기 (η²): {eta_sq:.4f} ({interpretation})")
-                print(f"   → {iv_col} 차이가 전체 {dv_col}의 {eta_sq*100:.1f}% 설명")
-                effect_size = eta_sq
-                effect_interpretation = interpretation
+                effect_size, effect_interpretation = self._calculate_effect_size(
+                    self.calculate_eta_squared, f_stat, df1, df2,
+                    iv_col=iv_col, dv_col=dv_col, effect_name="η²"
+                )
                 
-                if p_value < alpha:
-                    conclusion = f"✅ p-value({p_value:.6f}) < 0.05 → 귀무가설 기각\n" \
-                    + "   배송 서비스별 만족도에 유의한 차이가 있음" 
-                else:
-                    conclusion = f"❌ p-value({p_value:.6f}) ≥ 0.05 → 귀무가설 채택\n" \
-                    + "   배송 서비스별 만족도에 유의한 차이가 없음"
-                
+                conclusion, metadata = self._print_conclusion_and_posthoc(
+                    p_value, alpha, iv_col, dv_col,
+                    self.perform_tukey_hsd, data_groups, group_labels, alpha
+                )
+
             else:
                 # ==========================================================================
                 # Welch's ANOVA (정규성 만족, 등분산성 위반)
@@ -717,25 +738,121 @@ class OneWayAnova(StatisticalTest):
                 print("\n※ Welch's ANOVA는 등분산성 가정을 요구하지 않으므로")
                 print("   전통적인 효과 크기(η², ω²)를 직접 계산하기 어렵습니다.")
                 print("   F 통계량과 p-value로 효과의 유의성을 판단하세요.")
+                effect_size = None
+                effect_interpretation = None
+                
+                # 결론
+                conclusion, metadata = self._print_conclusion_and_posthoc(
+                    p_value, alpha, iv_col, dv_col,
+                    self.perform_gameshowell, data_groups, group_labels, alpha
+                )
+            test_stat = f_stat
+        else:
+            print("⚠️ 정규성 가정이 위반되었으므로 비모수 검정을 수행합니다.")
+            print("\n[Kruskal-Wallis 검정 (비모수 검정)]")
+            print("\- Kruskal-Wallis 검정은 또한 등분산성 가정이 필요 없음")
+            print("-"*50)
+            df = k - 1
+            h_stat, p_value = stats.kruskal(*data)# 비모수 효과 크기 계산
+            print(f"H-통계량: {h_stat:.4f}")
+            print(f"자유도: {df}")
+            print(f"p-value: {p_value:.6f}")
             
-            
-            # Cohen's d 계산
-            pooled_std = np.sqrt((class0_data.var() + class1_data.var()) / 2)
-            cohens_d = (class0_data.mean() - class1_data.mean()) / pooled_std
-            abs_d = abs(cohens_d)
+            effect_size, effect_interpretation = self._print_effect_size(
+                self.calculate_epsilon_squared, h_stat, k, N,
+                iv_col=iv_col, dv_col=dv_col, effect_name="ε²", is_rank=True
+            )
             
             # 결론
-            print("\n[검정 결론]")
-            if p_value < 0.05:
-                print(f"✅ p-value({p_value:.6f}) < 0.05 → 귀무가설 기각")
-                print(f"   {iv_col}별 {dv_col}에 유의한 차이가 있음")
-                print("   → Games-Howell 사후검정으로 구체적인 차이 확인 필요")
+            conclusion, metadata = self._print_conclusion_and_posthoc(
+                p_value, alpha, iv_col, dv_col,
+                self.perform_dunn_test, data, iv_col, dv_col
+            )
 
-            else:
-                print(f"❌ p-value({p_value:.6f}) ≥ 0.05 → 귀무가설 채택")
-                print(f"   {iv_col}별 {dv_col}에 유의한 차이가 없음")
+            test_stat = h_stat
+        
+        return TestResult(
+            test_name=self.test_name,
+            statistic=test_stat,
+            p_value=p_value,
+            effect_size=effect_size,
+            effect_interpretation=effect_interpretation,
+            conclusion=conclusion,
+            metadata=metadata
+        )
+        
+    # 각 검정별 실행 함수
+    def _run_f_test(self, data_groups, k, N):
+        f_stat, p_value = f_oneway(*data_groups)
+        df1, df2 = k - 1, N - k
+        print(f"\nF-test 결과:")
+        print(f"자유도: F({df1}, {df2})")
+        print(f"f = {f_stat:.4f}, p = {p_value:.4f}")
+        return f_stat, p_value, (df1, df2)
     
-    def calculate_eta_squared(self, f_stat, df1, df2):
+    def _run_welch_test(self, data, iv_col, dv_col):
+        print("\n⚠️ 등분산성 가정이 위반되었으므로 Welch's ANOVA를 수행합니다.")
+        welch_result = pg.welch_anova(dv=dv_col, between=iv_col, data=data)
+        f_stat = welch_result['F'].values[0]
+        df1 = welch_result['ddof1'].values[0]
+        df2 = welch_result['ddof2'].values[0]
+        p_value = welch_result['p-unc'].values[0]
+        print(f"\nWelch's ANOVA 결과:")
+        print(f"자유도: F({df1:.2f}, {df2:.2f})")
+        print(f"f = {f_stat:.4f}, p = {p_value:.4f}")
+        print("\n※ 효과 크기 계산 불가 (이분산 검정)")
+        return f_stat, p_value, ()
+    
+    def _run_kruskal_test(self, data_groups, k, N):
+        print("\n⚠️ 정규성 가정이 위반되었으므로 비모수 검정을 수행합니다.")
+        print("\n[Kruskal-Wallis 검정]")
+        h_stat, p_value = stats.kruskal(*data_groups)
+        print(f"H-통계량: {h_stat:.4f}")
+        print(f"자유도: {k-1}")
+        print(f"p-value: {p_value:.6f}")
+        return h_stat, p_value, (k, N)
+    
+    def _calculate_effect_size(self, effect_calc_func, *args, iv_col, dv_col, 
+                        effect_name="η²", is_rank=False):
+        """효과 크기 계산 및 출력 (공통 로직)"""
+        if not effect_calc_func:
+            return None, None
+        
+        effect_size, interpretation = effect_calc_func(*args)
+        
+        unit = "순위 변동" if is_rank else dv_col
+        print(f"효과 크기 ({effect_name}): {effect_size:.4f} ({interpretation})")
+        print(f"   → {iv_col} 차이가 전체 {unit}의 {effect_size*100:.1f}% 설명")
+        
+        return effect_size, interpretation
+
+    def _print_conclusion_and_posthoc(self, p_value, alpha, iv_col, dv_col, 
+                                    post_hoc_func, *post_hoc_args):
+        """결론 출력 및 사후검정 수행 (공통 로직)"""
+        print("\n[검정 결론]")
+        
+        if p_value < alpha:
+            conclusion = (
+                f"✅ p-value({p_value:.6f}) < {alpha} → 귀무가설 기각\n"
+                f"   {iv_col}별 {dv_col}에 유의한 차이가 있음"
+            )
+            print(conclusion)
+            
+            # 사후검정
+            result, post_hoc_text = post_hoc_func(*post_hoc_args)
+            if result is not None:
+                display(result)
+            print(post_hoc_text)
+            return conclusion, {'post_hoc': post_hoc_text}
+        else:
+            conclusion = (
+                f"❌ p-value({p_value:.6f}) ≥ {alpha} → 귀무가설 채택\n"
+                f"   {iv_col}별 {dv_col}에 유의한 차이가 없음"
+            )
+            print(conclusion)
+            return conclusion, {}
+    @staticmethod
+    def calculate_eta_squared(f_stat, df1, df2):
         """
         에타제곱 (효과 크기) 계산
         
@@ -776,3 +893,377 @@ class OneWayAnova(StatisticalTest):
             interpretation = "큰 효과"
         
         return eta_sq, interpretation
+    
+    @staticmethod
+    def calculate_epsilon_squared(h_stat, k, n):
+        """
+        엡실론제곱 (비모수 효과 크기) 계산
+        
+        Kruskal-Wallis 검정 결과의 실질적 중요성을 평가하는 효과 크기를 계산합니다.
+        엡실론제곱은 집단 차이가 전체 순위 변동의 몇 %를 설명하는지 나타냅니다.
+        
+        Parameters
+        ----------
+        h_statistic : float
+            Kruskal-Wallis H 통계량
+        k : int
+            집단(그룹) 수
+        n : int
+            전체 표본 크기
+        
+        Returns
+        -------
+        tuple
+            (엡실론제곱 값, 해석 문구)
+        
+        Notes
+        -----
+        공식: ε² = (H - k + 1) / (n - k)
+        - H: Kruskal-Wallis H 통계량
+        - k: 그룹 수
+        - n: 전체 표본 수
+        
+        해석 기준 (Cohen's 기준과 동일):
+        - < 0.01: 매우 작은 효과
+        - 0.01 ~ 0.06: 작은 효과
+        - 0.06 ~ 0.14: 중간 효과
+        - ≥ 0.14: 큰 효과
+        """
+        # 엡실론제곱 계산
+        epsilon_sq = (h_stat - k + 1) / (n - k)
+        
+        # 효과 크기 해석
+        if epsilon_sq < 0.01:
+            interpretation = "매우 작은 효과"
+        elif epsilon_sq < 0.06:
+            interpretation = "작은 효과"
+        elif epsilon_sq < 0.14:
+            interpretation = "중간 효과"
+        else:
+            interpretation = "큰 효과"
+        
+        return epsilon_sq, interpretation
+    
+    def perform_tukey_hsd(self, data_groups: List[ArrayLike], group_labels: List[str], alpha: float = None):
+        """
+        Tukey HSD 사후검정 수행
+        
+        ANOVA에서 유의한 차이가 발견된 경우, 어느 집단 간에 차이가 있는지
+        구체적으로 확인하기 위한 다중비교 검정을 수행합니다.
+        
+        Parameters
+        ----------
+        data : list of arrays
+            각 그룹의 데이터
+        labels : list
+            각 그룹의 이름
+        
+        Returns
+        -------
+        TukeyHSDResults
+            Tukey HSD 검정 결과 객체
+        """
+        alpha = alpha if alpha else self.alpha
+        post_hoc = []
+
+        print("\n[Tukey HSD 사후검정]")
+        print("-" * 50)
+        
+        # 데이터를 긴 형식으로 변환
+        all_data = []
+        all_labels = []
+        
+        for label, group_data in zip(group_labels, data_groups):
+            all_data.extend(group_data)
+            all_labels.extend([label] * len(group_data))
+        
+        # Tukey HSD 수행
+        mc = MultiComparison(all_data, all_labels)
+        result = mc.tukeyhsd(alpha)
+        display(result)
+        
+        # -----------------------------------------------------------------------------
+        # 결과 해석
+        # -----------------------------------------------------------------------------
+        print("\n[결과 해석]")
+        print("-" * 50)
+        
+        # 1. 각 그룹의 평균 계산 및 정렬
+        group_means = {}
+        for i, label in enumerate(group_labels):
+            group_means[label] = np.mean(data_groups[i])
+        
+        sorted_groups = sorted(group_means.items(), key=lambda x: x[1], reverse=True)
+        
+        post_hoc.append("평균 순위:")
+        for rank, (group, mean) in enumerate(sorted_groups, 1):
+            post_hoc.append(f"  {rank}위: {group} (평균: {mean:.2f})")
+        
+        # 2. 유의성 관계 파악
+        post_hoc.append("\n그룹 간 관계:")
+        sig_matrix = {}
+        
+        # Tukey 결과에서 정보 추출
+        for row in result.summary().data[1:]:  # 헤더 제외
+            group1 = str(row[0]).strip()
+            group2 = str(row[1]).strip()
+            meandiff = float(row[2])
+            p_adj = float(row[3])
+            reject = str(row[6]).strip() == 'True'
+            
+            # 양방향으로 저장
+            sig_matrix[(group1, group2)] = reject
+            sig_matrix[(group2, group1)] = reject
+            
+            # 관계 출력
+            if reject:
+                post_hoc.append(
+                    f"  • {group1} ≠ {group2} (p={p_adj:.4f}, 유의한 차이)"
+                )
+            else:
+                post_hoc.append(
+                    f"  • {group1} ≈ {group2} (p={p_adj:.4f}, 차이 없음)"
+                )
+
+        # 3. 시각화
+        fig = result.plot_simultaneous(figsize=(10, 6))
+        plt.title('Tukey HSD 95% 신뢰구간')
+        plt.xlabel('그룹 간 평균 차이')
+        plt.grid(True, alpha=0.3)
+        plt.show()
+        
+        post_hoc_text = '\n'.join(post_hoc)
+        return result, post_hoc_text
+    
+    def perform_gameshowell(self, df: pd.DataFrame, iv_col: str, dv_col: str, alpha: float):
+        """
+        Games-Howell 사후검정 수행
+        
+        등분산성 가정을 만족하지 않을 때 사용하는 사후검정입니다.
+        정규성은 만족하지만 등분산성이 위반된 경우에 적합합니다.
+        
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            분석할 데이터프레임
+        iv_col : str
+            집단변수(범주형) 컬럼명
+        dv_col : str
+            종속변수(연속형) 컬럼명
+        
+        Returns
+        -------
+        pandas.DataFrame
+            Games-Howell 검정 결과
+        """
+        alpha = alpha if alpha else self.alpha
+        post_hoc = []
+        print("\n[Games-Howell 사후검정]")
+        print("-"*50)
+        print("※ 등분산성 가정을 만족하지 않아 Games-Howell 사용\n")
+        
+        # Games-Howell 수행
+        result = pg.pairwise_gameshowell(dv=dv_col, between=iv_col, data=df)
+        
+        # =========================================================================
+        # pingouin 버전에 따른 컬럼명 확인 및 처리
+        # =========================================================================
+        # 최신 버전: 'pval'과 'reject' 대신 'p-unc'와 'sig' 사용
+        # 구버전: 'pval'과 'reject' 사용
+        
+        # p-value 컬럼 확인
+        if 'pval' in result.columns:
+            pval_col = 'pval'
+        elif 'p-unc' in result.columns:
+            pval_col = 'p-unc'
+        else:
+            raise ValueError("p-value 컬럼을 찾을 수 없습니다.")
+        
+        # reject/sig 컬럼 확인 (없으면 직접 생성)
+        if 'reject' not in result.columns and 'sig' not in result.columns:
+            result['reject'] = result[pval_col] < alpha
+            reject_col = 'reject'
+        elif 'reject' in result.columns:
+            reject_col = 'reject'
+        else:
+            reject_col = 'sig'
+            result['reject'] = result[reject_col]  # 호환성을 위해 'reject' 컬럼 추가
+        
+        # 결과 출력을 위한 컬럼 선택
+        display_cols = ['A', 'B', 'mean(A)', 'mean(B)', 'diff', pval_col]
+        if reject_col in result.columns:
+            display_cols.append(reject_col)
+        
+        print("[사후검정 결과]")
+        print("-"*50)
+        
+        display(result[display_cols].round(4))
+        
+        # -----------------------------------------------------------------------------
+        # 결과 해석
+        # -----------------------------------------------------------------------------
+        print("\n[결과 해석]")
+        print("-"*50)
+        
+        # 1. 각 그룹의 평균 계산 및 정렬
+        group_means = df.groupby(iv_col)[dv_col].mean().sort_values(ascending=False)
+        
+        post_hoc.append("평균 순위:")
+        for rank, (group, mean) in enumerate(group_means.items(), 1):
+            post_hoc.append(
+                f"  {rank}위: {group} (평균: {mean:.2f})"
+            )
+        
+        # 2. 유의성 관계 파악
+        post_hoc.append("\n그룹 간 관계:")
+        for _, row in result.iterrows():
+            is_significant = row['reject']
+            p_value = row[pval_col]
+            
+            if row['reject']:
+                post_hoc.append(
+                    f"  • {row['A']} ≠ {row['B']} "
+                    f"(p={p_value:.4f}, 유의한 차이)"
+                )
+            else:
+                post_hoc.append(
+                    f"  • {row['A']} ≈ {row['B']} "
+                    f"(p={p_value:.4f}, 차이 없음)"
+                )
+        
+        # 3. 시각화
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # 평균 차이와 신뢰구간 시각화
+        y_pos = range(len(result))
+        comparisons = [f"{row['A']}-{row['B']}" for _, row in result.iterrows()]
+        diffs = result['diff'].values
+        
+        # 신뢰구간 계산 (SE * 1.96)
+        errors = result['se'].values * 1.96
+        
+        colors = ['red' if reject else 'gray' for reject in result['reject']]
+        
+        ax.barh(y_pos, diffs, xerr=errors, color=colors, alpha=0.6, capsize=5)
+        ax.axvline(x=0, color='black', linestyle='--', linewidth=1)
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels(comparisons)
+        ax.set_xlabel('평균 차이 (95% CI)')
+        ax.set_title('Games-Howell 사후검정 결과')
+        ax.grid(True, alpha=0.3, axis='x')
+        
+        # 범례
+        legend_elements = [Patch(facecolor='red', alpha=0.6, label=f'유의한 차이 (p<{alpha})'),
+                        Patch(facecolor='gray', alpha=0.6, label=f'차이 없음 (p≥{alpha})')]
+        ax.legend(handles=legend_elements)
+        
+        plt.tight_layout()
+        plt.show()
+        
+        post_hoc_text = "\n".join(post_hoc)
+
+        return result, post_hoc_text
+    
+    def perform_dunn_test(df: pd.DataFrame, iv_col: str, dv_col: str):
+        """
+        Dunn's 사후검정 수행
+        """
+        post_hoc = []
+
+        print("\n[Dunn's Test 사후검정]")
+        print("-" * 50)
+        print("※ 정규성 가정을 만족하지 않아 비모수 사후검정 사용\n")
+
+        # Dunn's test 수행 (Bonferroni 보정)
+        dunn_result = sp.posthoc_dunn(
+            df,
+            val_col=dv_col,
+            group_col=iv_col,
+            p_adjust='bonferroni'
+        )
+
+        print("[사후검정 결과 - p-value 행렬 (Bonferroni 보정 적용됨)]")
+        print("-" * 50)
+
+        display(dunn_result.round(4))
+
+        # -----------------------------------------------------------------------------
+        # 결과 해석
+        # -----------------------------------------------------------------------------
+        print("\n[결과 해석]")
+        print("-" * 50)
+
+        # 1. 중앙값 순위
+        group_medians = (
+            df.groupby(iv_col)[dv_col]
+            .median()
+            .sort_values(ascending=False)
+        )
+
+        post_hoc.append(
+            "중앙값 순위 (비모수 검정은 순위 기반이므로 중앙값 참조):"
+        )
+        group_means = df.groupby(iv_col)[dv_col].mean()
+
+        for rank, (group, median) in enumerate(group_medians.items(), 1):
+            post_hoc.append(
+                f"  {rank}위: {group} "
+                f"(중앙값: {median:.2f}, 참고-평균: {group_means[group]:.2f})"
+            )
+
+        # 2. 유의성 관계
+        post_hoc.append("\n그룹 간 관계:")
+        groups = dunn_result.columns.tolist()
+
+        for i in range(len(groups)):
+            for j in range(i + 1, len(groups)):
+                p_val = dunn_result.iloc[i, j]
+                if p_val < 0.05:
+                    post_hoc.append(
+                        f"  • {groups[i]} ≠ {groups[j]} "
+                        f"(p={p_val:.4f}, 유의한 차이)"
+                    )
+                else:
+                    post_hoc.append(
+                        f"  • {groups[i]} ≈ {groups[j]} "
+                        f"(p={p_val:.4f}, 차이 없음)"
+                    )
+
+        # -----------------------------------------------------------------------------
+        # 시각화 (유지)
+        # -----------------------------------------------------------------------------
+        fig, ax = plt.subplots(figsize=(10, 8))
+
+        import seaborn as sns
+
+        mask = np.triu(np.ones_like(dunn_result, dtype=bool))
+
+        sns.heatmap(
+            dunn_result,
+            mask=mask,
+            annot=True,
+            fmt=".4f",
+            cmap="RdYlGn_r",
+            center=0.05,
+            vmin=0,
+            vmax=0.2,
+            square=True,
+            linewidths=1,
+            cbar_kws={"shrink": 0.8},
+            ax=ax
+        )
+
+        ax.set_title(
+            "Dunn's Test p-value 히트맵\n"
+            "(낮을수록 유의한 차이, Bonferroni 보정 적용)"
+        )
+        plt.tight_layout()
+        plt.show()
+
+        # -----------------------------------------------------------------------------
+        # post_hoc 문자열 결합 후 반환
+        # -----------------------------------------------------------------------------
+        post_hoc_text = "\n".join(post_hoc)
+
+        return dunn_result, post_hoc_text
+
