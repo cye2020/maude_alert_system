@@ -572,7 +572,7 @@ class BatchMAUDEExtractor:
 
 
 
-def prepare_data(input_path: Union[str|Path], n_rows: int = 10000) -> pl.LazyFrame:
+def prepare_data(input_path: Union[str|Path], n_rows: int = 10000, random: bool = False) -> pl.LazyFrame:
     loader = DataLoader(
         output_file = Path(input_path),
     )
@@ -586,7 +586,17 @@ def prepare_data(input_path: Union[str|Path], n_rows: int = 10000) -> pl.LazyFra
     }
     lf = loader.load(adapter=adapter, **polars_kwargs)
     
-    sampled_lf = lf.sort(['date_of_event', 'date_received']).head(n_rows)
+    if random:
+        sampled_lf = lf.select(
+            pl.all().sample(
+                n=n_rows,
+                with_replacement=False,
+                shuffle=True,
+                seed=4242
+            )
+        )
+    else:
+        sampled_lf = lf.sort(['date_of_event', 'date_received']).head(n_rows)
     return sampled_lf
 
 
@@ -626,12 +636,17 @@ def save_data(
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Process a specific number of rows.')
+    parser = argparse.ArgumentParser(description='llm text preprocessor.')
     parser.add_argument(
         '--n_rows', '-n',
         type=int,  # 입력받은 값을 정수형으로 변환하도록 지정
         default=100000, # 기본값 설정 
         help='Number of rows to process (default: 10)' # 도움말 메시지
+    )
+    parser.add_argument(
+        '--random',
+        action='store_true',
+        help='random sampling' # 도움말 메시지
     )
     # 3. 명령줄 인자 파싱
     args = parser.parse_args()
@@ -640,12 +655,13 @@ def main():
     print(f"처리할 행 수: {args.n_rows}")
     
     n_rows: int = args.n_rows
+    random: bool = args.random
 
     input_path= DATA_DIR / 'silver' / 'maude_preprocess.parquet'
     result_dir = DATA_DIR / 'silver'
     result_dir = increment_path(result_dir, exist_ok=True, mkdir=True)
     
-    sampled_lf = prepare_data(input_path, n_rows=n_rows)
+    sampled_lf = prepare_data(input_path, n_rows=n_rows, random=random)
 
 
     extractor = BatchMAUDEExtractor(

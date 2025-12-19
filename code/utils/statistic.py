@@ -6,7 +6,7 @@
 # 1. 표준 라이브러리
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 # 2. 서드파티 라이브러리
 import pandas as pd
@@ -21,20 +21,11 @@ import matplotlib.pyplot as plt
 # 2-2. 통계 분석
 from scipy import stats
 from scipy.stats import shapiro, levene, ttest_ind, chi2_contingency
-from scipy.stats import mannwhitneyu
+from scipy.stats import mannwhitneyu, f_oneway
+import pingouin as pg
 
-
-def is_running_in_notebook():
-    try:
-        shell = get_ipython().__class__.__name__
-        if shell == 'ZMQInteractiveShell':
-            return True   # Jupyter Notebook or JupyterLab
-        elif shell == 'TerminalInteractiveShell':
-            return False  # 일반 IPython 터미널
-        else:
-            return False
-    except (NameError, ImportError):
-        return False  # Pure Python 환경
+# 3. 로컬 모듈
+from src.utils import is_running_in_notebook
 
 display = display if is_running_in_notebook() else print
 
@@ -60,6 +51,38 @@ class StatisticalTest(ABC):
     """
     모델 통계 검정의 기반 추상 클래스
     """
+    def __init__(self, alpha: float = 0.05):
+        super().__init__()
+        self.alpha = alpha
+        
+    def execute_all(
+        self,
+        data: pd.DataFrame,
+        iv_col: str,
+        dv_cols: List[str],
+        *,
+        labels: Optional[list] = None,
+        alpha: Optional[float] = None,
+        **kwargs
+    ):
+        alpha = alpha if alpha is not None else self.alpha
+        
+        if labels is None:
+            labels = [0, 1]
+
+        results = []
+        for dv_col in dv_cols:
+            result = self.execute(
+                data=data,
+                iv_col=iv_col,
+                dv_col=dv_col,
+                labels=labels,
+                alpha=alpha,
+                **kwargs
+            )
+            results.append(result)
+
+        return results
     
     @abstractmethod
     def execute(self):
@@ -69,6 +92,160 @@ class StatisticalTest(ABC):
     def interpret(self):
         pass
 
+    def check_homogeneity(self, data: List[pd.Series]):
+        """
+        등분산성 검정 수행 (Levene's Test)
+
+        ANOVA 및 평균 비교 분석의 가정사항 중 하나인
+        등분산성(homoscedasticity)을 검증한다.
+
+        Parameters
+        ----------
+        data : list of array-like
+            각 그룹의 데이터를 담은 리스트
+            예: [group1, group2, group3]
+        alpha : float, optional
+            유의수준 (기본값: 0.05)
+
+        Returns
+        -------
+        stat : float
+            Levene 검정 통계량
+        p_value : float
+            p-value
+        equal_var : bool
+            등분산성 만족 여부
+            - True : 등분산성 만족
+            - False : 등분산성 위반
+        """
+
+        print("\n[등분산성 검정 - Levene's Test]")
+        print("-" * 50)
+
+        stat, p_value = levene(*data)
+
+        print(f"Levene 통계량: {stat:.4f}")
+        print(f"p-value: {p_value:.4f}")
+
+        if p_value > self.alpha:
+            print("✅ 등분산성 가정을 만족합니다.")
+            is_equal_var = True
+        else:
+            print("⚠️ 등분산성 가정을 만족하지 않습니다.")
+            print("   → Welch 방법 또는 비모수 검정 고려")
+            is_equal_var = False
+
+        return stat, p_value, is_equal_var
+    
+    def check_group_normality(self, data: List[ArrayLike], group_labels: List[str], mode: str):
+        results = []
+        for label, group_data in zip(group_labels, data):
+            stat, p_value, is_normal = self.check_normality(group_data, group_labels, mode)
+            results.append({
+                '그룹': label,
+                'W-통계량': round(stat, 4),
+                'p-value': round(p_value, 4),
+                '판정': is_normal
+            })
+        result_df = pd.DataFrame(results)
+        display(result_df)
+        
+        all_normal = all(r['is_normal'] for r in results)
+        return all_normal
+
+    def check_normality(self, data: ArrayLike, label: str, mode: str):
+        if mode == 'soft':
+            return self.check_normality_soft(data, label)
+        elif mode == 'hard':
+            return self.check_normality_hard(data, label)
+        else:
+            msg = f'Invalid mode: "{mode}". Expected one of ["soft", "hard"].'
+            raise ValueError(msg)
+
+    def check_normality_soft(self, data: ArrayLike, label: str = "데이터"):
+        """
+        데이터의 정규성을 검정하는 함수: t-test용
+
+        Parameters
+        ----------
+        data : array-like
+            정규성을 검정할 데이터 (NaN은 자동 제거)
+        label : str, default="데이터"
+            출력 시 표시될 데이터 이름
+
+        Returns
+        -------
+        bool
+            정규분포 가정 충족 여부
+            - True: 정규분포 가정 가능 (모수 검정)
+            - False: 정규분포 가정 위반 (비모수 검정)
+
+        검정 기준
+        ---------
+        - n < 30: Shapiro-Wilk 검정 (p > 0.05)
+        - 30 ≤ n < 100: 왜도/첨도 우선, 필요시 Shapiro-Wilk
+        - n ≥ 100: 왜도 기준 (|왜도| < 2, 중심극한정리)
+        """
+        # NaN 체크
+        if pd.isna(data).any():
+            print(f"⚠️ 경고: {label}에 NaN 값이 {pd.isna(data).sum()}개 포함됨")
+            data = data.dropna()
+            print(f"   → NaN 제거 후 n={len(data)}")
+
+        n = len(data)
+
+        print(f"\n[{label} 정규성 검정] n={n}")
+        print("-"*40)
+
+        # 왜도와 첨도
+        skew = stats.skew(data)
+        kurt = stats.kurtosis(data, fisher=True)
+        print(f"왜도(Skewness): {skew:.3f}")
+        print(f"첨도(Kurtosis): {kurt:.3f}")
+
+        # 표본 크기에 따른 판단
+        if n < 30:
+            stat, p_value = shapiro(data)
+            print(f"Shapiro-Wilk p-value: {p_value:.4f}")
+            is_normal = p_value > self.alpha
+            reason = f"Shapiro p={'>' if is_normal else '≤'}{self.alpha}"
+        elif n < 100:
+            if abs(skew) < 1 and abs(kurt) < 2:
+                is_normal = True
+                reason = "|왜도|<1, |첨도|<2"
+            else:
+                stat, p_value = shapiro(data)
+                print(f"추가 Shapiro-Wilk p-value: {p_value:.4f}")
+                is_normal = p_value > self.alpha
+                reason = f"Shapiro p={'>' if is_normal else '≤'}{self.alpha}"
+        else:
+            stat, p_value = None, None
+            is_normal = abs(skew) < 2
+            reason = f"|왜도|{'<' if is_normal else '≥'}2 (중심극한정리)"
+
+        print(f"결과: {'✅ 정규분포 가정 충족' if is_normal else '❌ 정규분포 가정 위반'} ({reason})")
+        return stat, p_value, is_normal
+
+    def check_normality_hard(self, data: ArrayLike, label: str = "데이터"):
+        # NaN 체크
+        if pd.isna(data).any():
+            print(f"⚠️ 경고: {label}에 NaN 값이 {pd.isna(data).sum()}개 포함됨")
+            data = data.dropna()
+            print(f"   → NaN 제거 후 n={len(data)}")
+
+        n = len(data)
+
+        print(f"\n[{label} 정규성 검정] n={n}")
+        print("-"*40)
+        
+        stat, p_value = shapiro(data)
+        print(f"Shapiro-Wilk p-value: {p_value:.4f}")
+        reason = f"Shapiro p={'>' if is_normal else '≤'}{self.alpha}"
+        is_normal = True if p_value > self.alpha else False
+        
+        print(f"결과: {'✅ 정규분포 가정 충족' if is_normal else '❌ 정규분포 가정 위반'} ({reason})")
+    
+        return stat, p_value, is_normal
 
 class TTest(StatisticalTest):
     """
@@ -78,14 +255,13 @@ class TTest(StatisticalTest):
     def __init__(self):
         self.test_name = 't-검정'
     
-    def execute_all(self, data: pd.DataFrame, iv_col: str, dv_cols: List[str], labels: list = [0, 1], alpha: float = 0.05):
-        result_lst =[]
-        for dv_col in dv_cols:
-            result = self.execute(data, iv_col=iv_col, dv_col=dv_col, labels=labels, alpha=alpha)
-            result_lst.append(result)
-        return result_lst
-    
-    def execute(self, data: pd.DataFrame, iv_col: str, dv_col: str, labels: list = [0, 1], alpha: float = 0.05):
+    def execute(self, 
+        data: pd.DataFrame, 
+        iv_col: str, dv_col: str, 
+        labels: list = [0, 1], 
+        alpha: Optional[float] = None,
+        mode: str = 'soft'
+    ):
         """
         두 그룹 간 평균 차이에 대한 가설검정을 수행하는 함수.
         (정규성에 따라 t-검정 또는 Mann-Whitney U 검정을 자동 선택)
@@ -107,15 +283,17 @@ class TTest(StatisticalTest):
         -------
         result : TestResult
         """
+        alpha = alpha if alpha is not None else self.alpha
+        
         class0_data = data[data[iv_col] == labels[0]][dv_col].dropna()
         class1_data = data[data[iv_col] == labels[1]][dv_col].dropna()
         
         self.plot(class0_data, class1_data, labels, iv_col, dv_col)
         
-        stat, p_levene, equal_var = self.check_homosecedasticity(class0_data, class1_data)
+        stat, p_levene, is_equal_var = self.check_homogeneity([class0_data, class1_data], alpha)
         
-        is_normal_0 = self.check_normality_simple(class0_data)
-        is_normal_1 = self.check_normality_simple(class1_data)
+        _, _, is_normal_0 = self.check_normality(class0_data, label=labels[0], mode=mode)
+        _, _, is_normal_1 = self.check_normality(class0_data, label=labels[1], mode=mode)
         
         print("\n[가설검정]")
         print("-" * 40)
@@ -132,8 +310,8 @@ class TTest(StatisticalTest):
         # --- 검정 수행 ---
         if is_normal_0 and is_normal_1:
             # 모수 검정
-            test_name = "Student's t-test" if equal_var else "Welch's t-test"
-            t_stat, p_value = ttest_ind(class0_data, class1_data, equal_var=equal_var)
+            test_name = "Student's t-test" if is_equal_var else "Welch's t-test"
+            t_stat, p_value = ttest_ind(class0_data, class1_data, is_equal_var=is_equal_var)
             print(f"{test_name} 결과:")
             print(f"t = {t_stat:.4f}, p = {p_value:.4f}")
             
@@ -214,80 +392,6 @@ class TTest(StatisticalTest):
     def interpret(self, result: TestResult, alpha: float = 0.05) -> None:
         if result.p_value >= alpha:
             pass
-
-    @staticmethod
-    def check_normality_simple(data: ArrayLike, col="데이터"):
-        """
-        데이터의 정규성을 검정하는 함수: t-test용
-
-        Parameters
-        ----------
-        data : array-like
-            정규성을 검정할 데이터 (NaN은 자동 제거)
-        name : str, default="데이터"
-            출력 시 표시될 데이터 이름
-
-        Returns
-        -------
-        bool
-            정규분포 가정 충족 여부
-            - True: 정규분포 가정 가능 (모수 검정)
-            - False: 정규분포 가정 위반 (비모수 검정)
-
-        검정 기준
-        ---------
-        - n < 30: Shapiro-Wilk 검정 (p > 0.05)
-        - 30 ≤ n < 100: 왜도/첨도 우선, 필요시 Shapiro-Wilk
-        - n ≥ 100: 왜도 기준 (|왜도| < 2, 중심극한정리)
-        """
-        # NaN 체크
-        if pd.isna(data).any():
-            print(f"⚠️ 경고: {col}에 NaN 값이 {pd.isna(data).sum()}개 포함됨")
-            data = data.dropna()
-            print(f"   → NaN 제거 후 n={len(data)}")
-
-        n = len(data)
-
-        print(f"\n[{col} 정규성 검정] n={n}")
-        print("-"*40)
-
-        # 왜도와 첨도
-        skew = stats.skew(data)
-        kurt = stats.kurtosis(data, fisher=True)
-        print(f"왜도(Skewness): {skew:.3f}")
-        print(f"첨도(Kurtosis): {kurt:.3f}")
-
-        # 표본 크기에 따른 판단
-        if n < 30:
-            stat, p = shapiro(data)
-            print(f"Shapiro-Wilk p-value: {p:.4f}")
-            is_normal = p > 0.05
-            reason = f"Shapiro p={'>' if is_normal else '≤'}0.05"
-        elif n < 100:
-            if abs(skew) < 1 and abs(kurt) < 2:
-                is_normal = True
-                reason = "|왜도|<1, |첨도|<2"
-            else:
-                stat, p = shapiro(data)
-                print(f"추가 Shapiro-Wilk p-value: {p:.4f}")
-                is_normal = p > 0.05
-                reason = f"Shapiro p={'>' if is_normal else '≤'}0.05"
-        else:
-            is_normal = abs(skew) < 2
-            reason = f"|왜도|{'<' if is_normal else '≥'}2 (중심극한정리)"
-
-        print(f"결과: {'✅ 정규분포 가정 충족' if is_normal else '❌ 정규분포 가정 위반'} ({reason})")
-        return is_normal
-    
-    @staticmethod
-    def check_homosecedasticity(class0_data, class1_data):
-        print("\n[등분산성 검정]")
-        print("-"*40)
-        stat, p_levene = levene(class0_data, class1_data)
-        print(p_levene)
-        print(f"Levene's test p-value: {p_levene:.4f}")
-        equal_var = p_levene > 0.05
-        return stat, p_levene, equal_var
     
     @staticmethod
     def plot(class0_data, class1_data, labels, iv_col, dv_col):
@@ -328,14 +432,11 @@ class Chi2Test(StatisticalTest):
         super().__init__()
         self.test_name = '카이제곱 검정'
     
-    def execute_all(self, data: pd.DataFrame, iv_col: str, dv_cols: List[str], alpha: float = 0.05):
-        result_lst =[]
-        for dv_col in dv_cols:
-            result = self.execute(data, iv_col, dv_col, alpha)
-            result_lst.append(result)
-        return result_lst
-    
-    def execute(self, data: pd.DataFrame, iv_col: str, dv_col: str, alpha: float = 0.05):
+    def execute(self, 
+        data: pd.DataFrame, 
+        iv_col: str, dv_col: str, 
+        alpha: Optional[float] = None
+    ):
         df = data[[iv_col, dv_col]]
         
         # 교차표
@@ -356,20 +457,11 @@ class Chi2Test(StatisticalTest):
         # - 0에 가까울수록: 독립적 (연관성 없음)
         # - 1에 가까울수록: 강한 연관성
         # ==============================================
+        v, interpretation = self.cramers_v(chi2_stat, n, r, c)
         v = np.sqrt(chi2_stat / (n * min(r-1, c-1)))
         
-        # Cramér's V 값 효과 크기 해석
-        if v < 0.1:
-            effect = "매우 약한 관계"
-        elif v < 0.3:
-            effect = "약한 관계"
-        elif v < 0.5:
-            effect = "중간 관계"
-        else:
-            effect = "강한 관계"
-        
         effect_size = v
-        effect_interpretation = effect
+        effect_interpretation = interpretation
         
         # 기대빈도 테이블
         expected_df = pd.DataFrame(
@@ -465,7 +557,18 @@ class Chi2Test(StatisticalTest):
             - 0에 가까울수록: 독립적 (연관성 없음)
             - 1에 가까울수록: 강한 연관성
         """
-        return np.sqrt(chi2_stat / (n * min(r-1, c-1)))
+        v = np.sqrt(chi2_stat / (n * min(r-1, c-1)))
+        
+        # Cramér's V 값 효과 크기 해석
+        if v < 0.1:
+            interpretation = "매우 약한 관계"
+        elif v < 0.3:
+            interpretation = "약한 관계"
+        elif v < 0.5:
+            interpretation = "중간 관계"
+        else:
+            interpretation = "강한 관계"
+        return v, interpretation
     
     @staticmethod
     def check_expected_frequencies(contingency_table):
@@ -529,3 +632,147 @@ class Chi2Test(StatisticalTest):
         else:
             print("✅ 카이제곱검정 사용 가능")
             return True
+        
+
+class OneWayAnova(StatisticalTest):
+    def __init__(self):
+        super().__init__()
+        self.test_name = '일원배치 ANOVA'
+    
+    def execute(self,
+        data: pd.DataFrame, 
+        iv_col: str,
+        dv_col: str = None,
+        alpha: Optional[float] = None,
+        mode: str = 'hard'
+    ):
+        print("\n[일원배치 ANOVA]")
+        print("-"*50)
+        
+        alpha = alpha if alpha else self.alpha
+        
+        # 가설 설정
+        print(f"H₀: 모든 {iv_col}의 평균 {dv_col}이 같다")
+        print(f"H₁: 적어도 한 {iv_col}의 평균 {dv_col}이 다르다")
+        print(f"유의수준: α = {alpha}")
+        
+        group_labels = data[iv_col].unique().tolist()
+        data_groups = [data[data[iv_col] == label] for label in group_labels]
+        
+        is_normal = self.check_normality(data_groups, group_labels, mode=mode)
+        is_equal_var = self.check_homogeneity(data_groups, group_labels)
+        
+        if is_normal:
+            print("\n✅ 모든 그룹이 정규성 가정을 만족합니다.")
+        else:
+            print("\n⚠️ 일부 그룹이 정규성 가정을 만족하지 않습니다.")
+            print("   → 비모수 검정(Kruskal-Wallis) 고려")
+    
+        # 전체 표본 크기 및 그룹 수
+        k = len(data_groups)
+        N = sum(len(group) for group in data_groups)
+        
+        if is_normal:
+            test_name = "f-test" if is_equal_var else "Welch's ANOVA "
+            
+            if is_equal_var:
+                f_stat, p_value  = f_oneway(*data_groups)
+                df1 = k - 1  # 집단 간 자유도
+                df2 = N - k   # 집단 내 자유도
+                print(f"{test_name} 결과:")
+                print(f"자유도: F({df1}, {df2})")
+                print(f"f = {f_stat:.4f}, p = {p_value:.4f}")     
+                
+                # 효과 크기 계산
+                eta_sq, interpretation = self.calculate_eta_squared(f_stat, df1, df2)
+                print(f"효과 크기 (η²): {eta_sq:.4f} ({interpretation})")
+                print(f"   → {iv_col} 차이가 전체 {dv_col}의 {eta_sq*100:.1f}% 설명")
+                effect_size = eta_sq
+                effect_interpretation = interpretation
+                
+                if p_value < alpha:
+                    conclusion = f"✅ p-value({p_value:.6f}) < 0.05 → 귀무가설 기각\n" \
+                    + "   배송 서비스별 만족도에 유의한 차이가 있음" 
+                else:
+                    conclusion = f"❌ p-value({p_value:.6f}) ≥ 0.05 → 귀무가설 채택\n" \
+                    + "   배송 서비스별 만족도에 유의한 차이가 없음"
+                
+            else:
+                # ==========================================================================
+                # Welch's ANOVA (정규성 만족, 등분산성 위반)
+                # ==========================================================================
+                print("\n⚠️ 등분산성 가정이 위반되었으므로 Welch's ANOVA를 수행합니다.")
+                print("\n[Welch's ANOVA (이분산 ANOVA)]")
+                print("-"*50)
+                welch_result = pg.welch_anova(dv=dv_col, between=iv_col, data=data)
+                f_stat = welch_result['F'].values[0]
+                df1 = welch_result['ddof1'].values[0]
+                df2 = welch_result['ddof2'].values[0]
+                p_value = welch_result['p-unc'].values[0]
+            
+                print(f"{test_name} 결과:")
+                print(f"자유도: F({df1}, {df2})")
+                print(f"f = {f_stat:.4f}, p = {p_value:.4f}")
+                
+                print("\n※ Welch's ANOVA는 등분산성 가정을 요구하지 않으므로")
+                print("   전통적인 효과 크기(η², ω²)를 직접 계산하기 어렵습니다.")
+                print("   F 통계량과 p-value로 효과의 유의성을 판단하세요.")
+            
+            
+            # Cohen's d 계산
+            pooled_std = np.sqrt((class0_data.var() + class1_data.var()) / 2)
+            cohens_d = (class0_data.mean() - class1_data.mean()) / pooled_std
+            abs_d = abs(cohens_d)
+            
+            # 결론
+            print("\n[검정 결론]")
+            if p_value < 0.05:
+                print(f"✅ p-value({p_value:.6f}) < 0.05 → 귀무가설 기각")
+                print(f"   {iv_col}별 {dv_col}에 유의한 차이가 있음")
+                print("   → Games-Howell 사후검정으로 구체적인 차이 확인 필요")
+
+            else:
+                print(f"❌ p-value({p_value:.6f}) ≥ 0.05 → 귀무가설 채택")
+                print(f"   {iv_col}별 {dv_col}에 유의한 차이가 없음")
+    
+    def calculate_eta_squared(self, f_stat, df1, df2):
+        """
+        에타제곱 (효과 크기) 계산
+        
+        ANOVA 결과의 실질적 중요성을 평가하는 효과 크기를 계산합니다.
+        에타제곱은 집단 차이가 전체 변동의 몇 %를 설명하는지 나타냅니다.
+        
+        주의: 이 함수는 F 통계량을 이용한 근사 공식을 사용합니다.
+        정확한 계산을 위해서는 SS(Sum of Squares) 값이 필요하지만,
+        F 통계량만으로도 충분히 신뢰할 수 있는 근사치를 제공합니다.
+        
+        근사 공식: η² ≈ (F × df_between) / (F × df_between + df_within)
+        정확한 공식: η² = SS_between / SS_total
+        
+        Parameters
+        ----------
+        f_stat : float
+            F 통계량
+        df1 : int
+            집단 간 자유도
+        df2 : int
+            집단 내 자유도
+        
+        Returns
+        -------
+        tuple
+            (에타제곱 값, 해석 문구)
+        """
+        
+        # 근사 공식 사용
+        eta_sq= (f_stat * df1) / (f_stat * df1 + df2)
+        if eta_sq < 0.01:
+            interpretation = "매우 작은 효과"
+        elif eta_sq < 0.06:
+            interpretation = "작은 효과"
+        elif eta_sq < 0.14:
+            interpretation = "중간 효과"
+        else:
+            interpretation = "큰 효과"
+        
+        return eta_sq, interpretation
