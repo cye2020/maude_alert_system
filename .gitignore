@@ -226,6 +226,7 @@ temp*
 .vscode
 
 .DS_Store
+*.out
 
 # Project data/output (do not version large artifacts)
 data/raw/
