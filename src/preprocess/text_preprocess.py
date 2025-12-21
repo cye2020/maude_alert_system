@@ -342,19 +342,15 @@ def save_data(
     result_df2 = result_df[[
         'incident_details.patient_harm',
         'incident_details.problem_components',
-        'incident_details.incident_summary',
         'manufacturer_inspection.defect_confirmed',
         'manufacturer_inspection.defect_type',
-        'manufacturer_inspection.inspection_actions'
         ]]
 
     result_df2 = result_df2.rename(columns={
         'incident_details.patient_harm': 'patient_harm',
         'incident_details.problem_components': 'problem_components',
-        'incident_details.incident_summary': 'incident_summary',
         'manufacturer_inspection.defect_confirmed': 'defect_confirmed',
         'manufacturer_inspection.defect_type': 'defect_type',
-        'manufacturer_inspection.inspection_actions': 'inspection_actions'
     })
     
     prompt = '[SYSTEM]\n' + SYSTEM_INSTRUCTION + '\n[USER]' + USER_PROMPT_TEMPLATE
