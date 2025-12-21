@@ -14,7 +14,7 @@ from functools import partial
 from tqdm import tqdm, trange
 import shutil
 
-from src.preprocess.prompt import SYSTEM_INSTRUCTION, USER_PROMPT_TEMPLATE, MAUDEExtraction
+from src.preprocess.prompt import Prompt
 
 
 class MAUDEExtractor:
@@ -26,7 +26,9 @@ class MAUDEExtractor:
                  max_num_batched_tokens=16384,
                  max_num_seqs=256,
                  max_retries=2,
-                 enable_prefix_caching=True):
+                 enable_prefix_caching=True,
+                 prompt: Prompt = Prompt()
+        ):
         """
         vLLM 최적화 배치 추출기 (Qwen3-8B)
         
@@ -55,6 +57,9 @@ class MAUDEExtractor:
         print(f"  - Prefix Caching: {enable_prefix_caching}")
         print(f"  - Max Retries: {max_retries}")
         
+        self.prompt = prompt
+        self.extraction_model = prompt.get_extraction_model()
+        
         # vLLM 모델 초기화 (최적화 설정)
         self.llm = LLM(
             model=model_path,
@@ -79,7 +84,7 @@ class MAUDEExtractor:
         print(f"\n✓ Model loaded successfully!\n")
         
         # JSON 스키마 및 샘플링 파라미터
-        self.json_schema = MAUDEExtraction.model_json_schema()
+        self.json_schema = self.extraction_model.model_json_schema()
         self.sampling_params = SamplingParams(
             temperature=0.1,
             max_tokens=512,
@@ -97,13 +102,13 @@ class MAUDEExtractor:
             text = row['mdr_text']
             product_problem = row['product_problems']
             
-            user_content = USER_PROMPT_TEMPLATE.format(
+            user_content = self.prompt.format_user_prompt(
                 text=text,
                 product_problem=product_problem
             )
             
             messages = [
-                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "system", "content": self.prompt.SYSTEM_INSTRUCTION},
                 {"role": "user", "content": user_content}
             ]
             
@@ -120,7 +125,7 @@ class MAUDEExtractor:
     def _parse_and_validate(self, response_text: str) -> dict:
         """응답 파싱 및 검증"""
         data = json.loads(response_text)
-        validated = MAUDEExtraction(**data)
+        validated = self.extraction_model(**data)
         return validated.model_dump()
 
     def _generate_and_parse(self, rows: List[pd.Series]) -> tuple[List[dict], dict]:
@@ -137,7 +142,7 @@ class MAUDEExtractor:
         outputs = self.llm.generate(
             prompts, 
             self.sampling_params, 
-            use_tqdm=partial(tqdm, mininterval=5.0)
+            use_tqdm=partial(tqdm, mininterval=10.0)
         )
         
         batch_time = time.time() - batch_start
