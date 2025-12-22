@@ -13,13 +13,15 @@ from typing import List, Union
 from functools import partial
 from tqdm import tqdm, trange
 import shutil
+import gc
+import torch
 
 from src.preprocess.prompt import Prompt
 
 
 class MAUDEExtractor:
     def __init__(self, 
-                 model_path='Qwen/Qwen3-8B-Instruct',
+                 model_path='Qwen/Qwen3-8B',
                  tensor_parallel_size=1,
                  gpu_memory_utilization=0.85,
                  max_model_len=8192,
@@ -115,7 +117,8 @@ class MAUDEExtractor:
             formatted_prompt = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                enable_thinking=True,
             )
             
             prompts.append(formatted_prompt)
@@ -324,7 +327,10 @@ class MAUDEExtractor:
             print(f"Avg input:        {final_df['_input_tokens'].mean():.1f} tokens")
             print(f"Avg output:       {final_df['_output_tokens'].mean():.1f} tokens")
             print(f"{'='*70}")
-            
+            # 완료 후 정리
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return final_df
         
         except KeyboardInterrupt:

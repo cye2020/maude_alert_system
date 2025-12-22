@@ -49,6 +49,7 @@ from src.loading import DataLoader
 from src.utils import increment_path
 from src.preprocess.prompt import get_prompt, Prompt
 from src.preprocess.extractor import MAUDEExtractor
+# from src.preprocess.serve_extractor import MAUDEExtractor
 
 
 def prepare_data(input_path: Union[str|Path], n_rows: int = None, random: bool = False) -> pl.LazyFrame:
@@ -87,37 +88,13 @@ def save_data(
     prompt: Prompt, 
     prompt_path: Union[str|Path],
     result_path: Union[str|Path]
-):
-    # 필요한 열만 선택 후 열 이름 변경
-    result_df2 = result_df[[
-        'incident_details.patient_harm',
-        'incident_details.patient_harm_reason',
-        'incident_details.problem_components',
-        'incident_details.problem_components_reason',
-        'manufacturer_inspection.defect_confirmed',
-        'manufacturer_inspection.defect_confirmed_reason',
-        'manufacturer_inspection.defect_type',
-        'manufacturer_inspection.defect_type_reason',
-        
-    ]]
-
-    result_df2 = result_df2.rename(columns={
-        'incident_details.patient_harm': 'patient_harm',
-        'incident_details.patient_harm_reason': 'patient_harm_reason',
-        'incident_details.problem_components': 'problem_components',
-        'incident_details.problem_components_reason': 'problem_components_reason',
-        'manufacturer_inspection.defect_confirmed': 'defect_confirmed',
-        'manufacturer_inspection.defect_confirmed_reason': 'defect_confirmed_reason',
-        'manufacturer_inspection.defect_type': 'defect_type',
-        'manufacturer_inspection.defect_type_reason': 'defect_type_reason',
-    })
-    
+): 
     prompt = '[SYSTEM]\n' + prompt.SYSTEM_INSTRUCTION + '\n[USER]' + prompt.USER_PROMPT_TEMPLATE
 
     with open(prompt_path, mode='w', encoding='utf-8') as f:
         f.write(prompt)
         
-    result_lf = pl.from_pandas(result_df2).lazy()
+    result_lf = pl.from_pandas(result_df).lazy()
     concat_lf = pl.concat([lf, result_lf], how='horizontal')
     concat_lf.sink_parquet(result_path, compression='zstd', compression_level=3, mkdir=True)
 
@@ -166,9 +143,18 @@ def execute(n_rows: int, random: bool, reason: bool):
 
     checkpoint_dir = DATA_DIR / 'temp'
     
+    cols = [
+        'incident_details.patient_harm',
+        'incident_details.problem_components',
+        'manufacturer_inspection.defect_confirmed',
+        'manufacturer_inspection.defect_type',
+    ]
+    
     # prompt 선택
     if reason:
         prompt = get_prompt('sample')
+        reason_cols = [col + '_original_text' for col in cols]
+        cols.extend(reason_cols)
     else:
         prompt = get_prompt('general')
     
@@ -177,9 +163,9 @@ def execute(n_rows: int, random: bool, reason: bool):
     
     # 2. Extractor 초기화
     extractor = MAUDEExtractor(
-        model_path='Qwen/Qwen3-8B',
+        model_path='Qwen/Qwen3-32B-AWQ',
         tensor_parallel_size=1,                # GPU 1개 사용
-        gpu_memory_utilization=0.80,      # 0.85 → 0.80 (메모리 더 필요)
+        gpu_memory_utilization=0.90,      # 0.85 → 0.80 (메모리 더 필요)
         max_model_len=16384,              # 8192 → 16384
         max_num_batched_tokens=32768,     # 16384 → 32768 (2배)
         max_num_seqs=128,                 # 256 → 128 (동시 처리 줄이기)
@@ -187,6 +173,17 @@ def execute(n_rows: int, random: bool, reason: bool):
         enable_prefix_caching=True,           # 시스템 프롬프트 캐싱
         prompt=prompt
     )
+
+    # extractor = MAUDEExtractor(
+    #     base_url="http://localhost:7000/v1",
+    #     model_name='Qwen/Qwen3-8B',
+    #     max_retries=2,
+    #     timeout=60,
+    #     enable_reasoning=True,      # Reasoning 활성화
+    #     save_reasoning=True,         # Reasoning 내용 저장
+    #     max_workers=4,               # API 병렬 호출 수 (조정 가능)
+    #     prompt=prompt
+    # )
     
     # 3. 배치 처리 실행
     result_df = extractor.process_batch(
@@ -206,7 +203,9 @@ def execute(n_rows: int, random: bool, reason: bool):
     prompt_path = increment_path(prompt_path, exist_ok=False, sep='_')
     result_path = increment_path(result_path, exist_ok=False, sep='_')
 
-    save_data(sampled_lf, result_df, prompt, prompt_path, result_path)
+    rename_result_df = result_df[cols]
+    rename_result_df.columns = rename_result_df.columns.str.split('.').str.get(-1)
+    save_data(sampled_lf, rename_result_df, prompt, prompt_path, result_path)
     
 
 if __name__=='__main__':
