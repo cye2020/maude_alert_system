@@ -5,7 +5,7 @@ set -euo pipefail
 # 환경 설정
 ############################
 
-ENV_NAME=maude
+ENV_NAME=maude_preprocess
 PYTHON=python3
 
 # conda 환경 생성 (1회만)
