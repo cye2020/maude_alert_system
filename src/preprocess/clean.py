@@ -255,10 +255,10 @@ class PreprocessorPresets:
             (r'.*\bNULL\b.*', 'DELETE', 'NULL'),
             (r'.*\bNONE\b.*', 'DELETE', 'NONE'),
             (r'.*\bNIL\b.*', 'DELETE', 'NIL'),
-            (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
+            (r'^N/A$', 'DELETE', 'N/A'), # 정확히 NA
             (r'.*\bN\.A\.?\b.*', 'DELETE', 'N.A'),
             (r'.*\bNI\b.*', 'DELETE', 'NI'),
-            (r'NA', 'DELETE', 'NA'), # 정확히 NA
+            (r'^NA$', 'DELETE', 'NA'), # 정확히 NA
             (r'.*\bNOT\s+AVAILABLE\b.*', 'DELETE', 'NOT AVAILABLE'),
             (r'.*\bUNAVAILABLE\b.*', 'DELETE', 'UNAVAILABLE'), 
             (r'.*MISSING.*', 'DELETE', 'MISSING'),
@@ -269,7 +269,7 @@ class PreprocessorPresets:
             (r'.*\bTRC\b.*', 'DELETE', 'TRC'),
             (r'.*\bQS\b.*', 'DELETE', 'QS'),
             (r'.*\bMSK\b.*', 'DELETE', 'MSK'),
-            (r'NAV', 'DELETE', 'NAV'), # 정확히 NA
+            (r'^NAV$', 'DELETE', 'NAV'), # 정확히 NA
             (r'.*\bINV\b.*', 'DELETE', 'INV'),
             (r'.*\bOTH\b.*', 'DELETE', 'OTH'),
             (r'.*\bPINF\b.*', 'DELETE', 'PINF'),
@@ -433,7 +433,8 @@ if __name__ == "__main__":
         'A & B Company',
         "'POLARSTEM¿'",
         'JOHNSON & JOHNSON SURGICAL VISION',
-        'UNKNOWN'
+        'UNKNOWN',
+        'HEARTMATE®, MOBILE POWER UNIT, NA'
     ]
     for company in company_tests:
         cleaned = company_preprocessor.clean(company)
@@ -461,7 +462,7 @@ if __name__ == "__main__":
         'id': range(100),
         'udi': ['00012345678901', 'UNKNOWN', '0+M724', None] * 25,
         'company': ['Apple Inc.', 'Google LLC', 'UNKNOWN', 'Samsung Co.'] * 25, 
-        'brand': ['\'POLARSTEM¿\'', 'Google LLC', 'UNKNOWN', 'Samsung Co.'] * 25
+        'brand': ['\'POLARSTEM¿\'', 'Google LLC', 'N/A', 'HEARTMATE®, MOBILE POWER UNIT, NA'] * 25
     }
     lf = pl.LazyFrame(data)
     
