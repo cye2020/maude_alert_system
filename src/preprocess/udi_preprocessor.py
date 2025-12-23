@@ -6,7 +6,7 @@ import polars as pl
 from pathlib import Path
 from tqdm import tqdm
 
-from src.preprocess.config import Config
+from src.preprocess.config import get_config
 from src.preprocess.preprocess import (
     extract_di_from_public,
     fuzzy_match_dict,
@@ -14,6 +14,29 @@ from src.preprocess.preprocess import (
 )
 from src.utils.chunk import process_lazyframe_in_chunks
 from src.utils import uuid5_from_str
+
+cfg = get_config()
+
+
+# ==================== 공통 스키마 (계약) ====================
+
+FINAL_SCHEMA = {
+    'mfr_std': pl.Utf8,
+    'brand': pl.Utf8,
+    'model_number': pl.Utf8,
+    'catalog_number': pl.Utf8,
+    'udi_combined': pl.Utf8,
+    'mapped_primary_udi': pl.Utf8,
+    'mapped_manufacturer': pl.Utf8,
+    'mapped_brand': pl.Utf8,
+    'mapped_model_number': pl.Utf8,
+    'mapped_catalog_number': pl.Utf8,
+    'udi_match_type': pl.Utf8,
+    'match_score': pl.Int32,
+}
+
+def empty_result_lf() -> pl.LazyFrame:
+    return pl.DataFrame(schema=FINAL_SCHEMA).lazy()
 
 
 class UDIProcessor:
@@ -26,20 +49,47 @@ class UDIProcessor:
     - temp 삭제는 최상위 finally에서만
     """
 
-    def __init__(self, config: Config = None):
-        self.config = config or Config()
+    def __init__(self):
         self.udi_di_lookup = None  # Primary 직접 매칭용 (collect됨)
         self.udi_full_lookup_lf = None  # Score 매칭용 (LazyFrame, 큰 데이터)
         self.mfr_mapping = None
 
         self._temp_paths: list[Path] = []
-        self.config.TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        self.fuzzy_threshold = cfg.get_legacy_cleaning_fuzzy_threshold()
+        self.compliance = cfg.get_low_compliance_threshold()  
+        self.confidence_map = cfg.get_confidence_level_map()
+        self.maude_dates = cfg.get_maude_date_priority()  
+        self.udi_dates = cfg.get_udi_date_fields()
+        self.join_key = cfg.get_join_key_column()
 
-    # ==================== Temp 관리 ====================
+        # ==================== Score / Match 정책 ====================
+        self.score_levels = cfg.get_score_levels()
+        self.score_weights = cfg.get_score_weights()
+        self.require_unique_primary = cfg.require_unique_primary()
+        self.match_types = cfg.get_all_match_types()
+        
+        # ==================== Temp 관리 ====================
+        self.temp_dir = cfg.get_temp_dir()
+        self.should_cleanup_temp = cfg.should_cleanup_temp()
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        
+        # --- debug (config sanity check) ---
+        assert self.temp_dir is not None, "config load failed: temp_dir is None"
+        assert self.join_key, "config load failed: join_key is empty"
+
+        print(
+            "[UDIProcessor][CONFIG LOADED]",
+            f"fuzzy={self.fuzzy_threshold}, "
+            f"compliance={self.compliance}, "
+            f"scores={self.score_levels}, "
+            f"unique_primary={self.require_unique_primary}, "
+            f"join_key={self.join_key}, "
+            f"cleanup={self.should_cleanup_temp}"
+        )
     
     def _new_temp_path(self, name: str) -> Path:
         """temp 파일 경로 생성 및 추적"""
-        path = self.config.TEMP_DIR / name
+        path = self.temp_dir / name
         self._temp_paths.append(path)
         return path
 
@@ -64,7 +114,7 @@ class UDIProcessor:
               .map_elements(extract_di_from_public, return_dtype=pl.Utf8)
               .alias("extracted_di"),
             
-            pl.coalesce([pl.col(c) for c in self.config.MAUDE_DATES if c in cols])
+            pl.coalesce([pl.col(c) for c in self.maude_dates if c in cols])
               .alias("report_date"),
         ])
         
@@ -88,7 +138,7 @@ class UDIProcessor:
         
         cols = lf.collect_schema().names()
         return lf.with_columns([
-            pl.coalesce([pl.col(c) for c in self.config.UDI_DATES if c in cols])
+            pl.coalesce([pl.col(c) for c in self.udi_dates if c in cols])
               .alias("publish_date")
         ])
 
@@ -102,7 +152,7 @@ class UDIProcessor:
         udi_mfrs = collect_unique_safe(udi_lf, "manufacturer")
         
         self.mfr_mapping = fuzzy_match_dict(
-            maude_mfrs, udi_mfrs, self.config.FUZZY_THRESHOLD
+            maude_mfrs, udi_mfrs, self.fuzzy_threshold
         )
         
         print(f"   매칭: {sum(k!=v for k,v in self.mfr_mapping.items())}/{len(maude_mfrs)} 건")
@@ -153,6 +203,30 @@ class UDIProcessor:
             ])
         
         print("   Full UDI Lookup: LazyFrame")
+
+    def _build_score_expr(self) -> pl.Expr:
+        w = self.score_weights
+        return (
+            (pl.col("brand") == pl.col("brand_right")).cast(pl.Int32) * w.get("brand", 0)
+            +
+            (
+                pl.when(
+                    pl.col("model_number").is_not_null() &
+                    pl.col("model_number_right").is_not_null()
+                )
+                .then(pl.col("model_number") == pl.col("model_number_right"))
+                .otherwise(False)
+            ).cast(pl.Int32) * w.get("model_number", 0)
+            +
+            (
+                pl.when(
+                    pl.col("catalog_number").is_not_null() &
+                    pl.col("catalog_number_right").is_not_null()
+                )
+                .then(pl.col("catalog_number") == pl.col("catalog_number_right"))
+                .otherwise(False)
+            ).cast(pl.Int32) * w.get("catalog_number", 0)
+        )
 
     # ==================== 4단계: Secondary 매칭 (Path 반환!) ====================
     
@@ -250,7 +324,7 @@ class UDIProcessor:
         remaining = candidates_chunk
         results = []
         
-        for min_score in [3, 2, 1]:
+        for min_score in self.score_levels:
             if remaining.select(pl.len()).collect().item() == 0:
                 break
             
@@ -263,27 +337,9 @@ class UDIProcessor:
                     how="inner"
                 )
                 .filter(pl.col("publish_date") < pl.col("report_date"))
-                .with_columns([
-                    (
-                        (pl.col("brand") == pl.col("brand_right")).cast(pl.Int32) +
-                        (
-                            pl.when(
-                                pl.col("model_number").is_not_null() &
-                                pl.col("model_number_right").is_not_null()
-                            )
-                            .then(pl.col("model_number") == pl.col("model_number_right"))
-                            .otherwise(False)
-                        ).cast(pl.Int32) +
-                        (
-                            pl.when(
-                                pl.col("catalog_number").is_not_null() &
-                                pl.col("catalog_number_right").is_not_null()
-                            )
-                            .then(pl.col("catalog_number") == pl.col("catalog_number_right"))
-                            .otherwise(False)
-                        ).cast(pl.Int32)
-                    ).alias("match_score")
-                ])
+                .with_columns(
+                    self._build_score_expr().alias("match_score")
+                )
                 .filter(pl.col("match_score") >= min_score)
                 .group_by([
                     "udi_combined", "mfr_std", "brand",
@@ -297,7 +353,11 @@ class UDIProcessor:
                     pl.col("catalog_number_right").first().alias("mapped_catalog_number"),
                     pl.col("match_score").max().alias("match_score")
                 ])
-                .filter(pl.col("n_primary") == 1)
+                .filter(
+                    pl.col("n_primary") == 1
+                    if self.require_unique_primary
+                    else pl.lit(True)
+                )
                 .select([
                     'mfr_std',
                     'brand',
@@ -309,7 +369,7 @@ class UDIProcessor:
                     "mapped_brand",
                     "mapped_model_number",
                     "mapped_catalog_number",
-                    pl.lit("udi_secondary").alias("udi_match_type"),
+                    pl.lit(self.match_types["secondary"]).alias("udi_match_type"),
                     "match_score"
                 ])
             )
@@ -322,7 +382,7 @@ class UDIProcessor:
                 matched_keys = matched.select("udi_combined")
                 remaining = remaining.join(matched_keys, on="udi_combined", how="anti")
         
-        return pl.concat(results) if results else pl.LazyFrame()
+        return pl.concat(results) if results else empty_result_lf()
 
     # ==================== 5단계: No UDI 매칭 (Path 반환!) ====================
     
@@ -425,27 +485,9 @@ class UDIProcessor:
                     how="inner"
                 )
                 .filter(pl.col("publish_date") < pl.col("report_date"))
-                .with_columns([
-                    (
-                        (pl.col("brand") == pl.col("brand_right")).cast(pl.Int32) +
-                        (
-                            pl.when(
-                                pl.col("model_number").is_not_null() &
-                                pl.col("model_number_right").is_not_null()
-                            )
-                            .then(pl.col("model_number") == pl.col("model_number_right"))
-                            .otherwise(False)
-                        ).cast(pl.Int32) +
-                        (
-                            pl.when(
-                                pl.col("catalog_number").is_not_null() &
-                                pl.col("catalog_number_right").is_not_null()
-                            )
-                            .then(pl.col("catalog_number") == pl.col("catalog_number_right"))
-                            .otherwise(False)
-                        ).cast(pl.Int32)
-                    ).alias("match_score")
-                ])
+                .with_columns(
+                    self._build_score_expr().alias("match_score")
+                )
                 .filter(pl.col("match_score") >= min_score)
                 .group_by([
                     "udi_combined", "mfr_std", "brand",
@@ -459,7 +501,11 @@ class UDIProcessor:
                     pl.col("catalog_number_right").first().alias("mapped_catalog_number"),
                     pl.col("match_score").max().alias("match_score")
                 ])
-                .filter(pl.col("n_primary") == 1)
+                .filter(
+                    pl.col("n_primary") == 1
+                    if self.require_unique_primary
+                    else pl.lit(True)
+                )
                 .select([
                     'mfr_std',
                     'brand',
@@ -471,7 +517,7 @@ class UDIProcessor:
                     "mapped_brand",
                     "mapped_model_number",
                     "mapped_catalog_number",
-                    pl.lit("meta_match").alias("udi_match_type"),
+                    pl.lit(self.match_types["meta"]).alias("udi_match_type"),
                     "match_score"
                 ])
             )
@@ -491,7 +537,7 @@ class UDIProcessor:
                     how="anti"
                 )
         
-        return pl.concat(results) if results else pl.LazyFrame()
+        return pl.concat(results) if results else empty_result_lf()
 
     # ==================== 6단계: UDI 매핑 생성 (Path 반환!) ====================
     
@@ -534,7 +580,7 @@ class UDIProcessor:
             pl.col("brand_matched").alias("mapped_brand"),
             pl.col("model_number_matched").alias("mapped_model_number"),
             pl.col("catalog_number_matched").alias("mapped_catalog_number"),
-            pl.lit("udi_direct").alias("udi_match_type"),
+            pl.lit(self.match_types["direct"]).alias("udi_match_type"),
             pl.lit(3).alias("match_score")
         ])
 
@@ -644,7 +690,7 @@ class UDIProcessor:
             pl.lit(None).cast(pl.Utf8).alias("mapped_brand"),
             pl.lit(None).cast(pl.Utf8).alias("mapped_model_number"),
             pl.lit(None).cast(pl.Utf8).alias("mapped_catalog_number"),
-            pl.lit("udi_no_match").alias("udi_match_type"),
+            pl.lit(self.match_types["udi_no_match"]).alias("udi_match_type"),
             pl.lit(0).alias("match_score")
         ]).sink_parquet(secondary_failed_path)
         
@@ -677,7 +723,7 @@ class UDIProcessor:
                 pl.lit(None).cast(pl.Utf8).alias("mapped_brand"),
                 pl.lit(None).cast(pl.Utf8).alias("mapped_model_number"),
                 pl.lit(None).cast(pl.Utf8).alias("mapped_catalog_number"),
-                pl.lit("no_match").alias("udi_match_type"),
+                pl.lit(self.match_types["no_match"]).alias("udi_match_type"),
                 pl.lit(0).alias("match_score")
             ]).sink_parquet(no_udi_failed_path)
         else:
@@ -693,7 +739,7 @@ class UDIProcessor:
                 pl.lit(None).cast(pl.Utf8).alias("mapped_brand"),
                 pl.lit(None).cast(pl.Utf8).alias("mapped_model_number"),
                 pl.lit(None).cast(pl.Utf8).alias("mapped_catalog_number"),
-                pl.lit("no_match").alias("udi_match_type"),
+                pl.lit(self.match_types["no_match"]).alias("udi_match_type"),
                 pl.lit(0).alias("match_score")
             ]).sink_parquet(no_udi_failed_path)
         
@@ -763,7 +809,7 @@ class UDIProcessor:
                         pl.coalesce(["mapped_brand", "brand"]).alias("brand_final"),
                         pl.coalesce(["mapped_model_number", "model_number"]).alias("model_number_final"),
                         pl.coalesce(["mapped_catalog_number", "catalog_number"]).alias("catalog_number_final"),
-                        pl.coalesce(["udi_match_type", pl.lit("not_in_mapping")]).alias("match_source")
+                        pl.coalesce(["udi_match_type", pl.lit(self.match_types["not_in_mapping"])]).alias("match_source")
                     ])
                     .select([
                         *original_cols,  # 원본 컬럼 유지
@@ -794,7 +840,7 @@ class UDIProcessor:
                         pl.coalesce(["mapped_brand", "brand"]).alias("brand_final"),
                         pl.coalesce(["mapped_model_number", "model_number"]).alias("model_number_final"),
                         pl.coalesce(["mapped_catalog_number", "catalog_number"]).alias("catalog_number_final"),
-                        pl.coalesce(["udi_match_type", pl.lit("not_in_mapping")]).alias("match_source")
+                        pl.coalesce(["udi_match_type", pl.lit(self.match_types["not_in_mapping"])]).alias("match_source")
                     ])
                     .select([
                         *original_cols,  # ✅ 같은 원본 컬럼
@@ -833,7 +879,7 @@ class UDIProcessor:
         ]).collect()
         
         low_compliance_mfrs = compliance.filter(
-            pl.col("missing_rate") > self.config.LOW_COMPLIANCE_THRESHOLD
+            pl.col("missing_rate") > self.compliance
         )["mfr_std"].to_list()
         
         def resolve_chunk(chunk_lf: pl.LazyFrame) -> pl.LazyFrame:
@@ -841,8 +887,8 @@ class UDIProcessor:
                 # ✅ 매칭 실패 케이스 모두 처리
                 pl.when(
                     pl.col("match_source").is_in([
-                        "no_match", 
-                        "not_in_mapping", 
+                        self.match_types["no_match"],
+                        self.match_types["not_in_mapping"],
                         # "udi_no_match"
                     ])
                 )
@@ -872,7 +918,7 @@ class UDIProcessor:
                 
                 # 신뢰도 매핑
                 pl.coalesce([
-                    pl.col("match_source").replace(self.config.CONFIDENCE_MAP),
+                    pl.col("match_source").replace(self.confidence_map),
                     pl.lit("VERY_LOW")
                 ]).alias("udi_confidence"),
                 
@@ -975,5 +1021,5 @@ class UDIProcessor:
         
         finally:
             # ✅ temp 삭제는 여기서만!
-            if self.config.CLEANUP_TEMP_ON_SUCCESS:
+            if self.should_cleanup_temp:
                 self._cleanup_temps()

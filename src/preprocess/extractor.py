@@ -10,22 +10,27 @@ import json
 import time
 from pathlib import Path
 from typing import List, Union
-from tqdm import tqdm
+from functools import partial
+from tqdm import tqdm, trange
 import shutil
+import gc
+import torch
 
-from src.preprocess.prompt import SYSTEM_INSTRUCTION, USER_PROMPT_TEMPLATE, MAUDEExtraction
+from src.preprocess.prompt import Prompt
 
 
 class MAUDEExtractor:
     def __init__(self, 
-                 model_path='Qwen/Qwen3-8B-Instruct',
+                 model_path='Qwen/Qwen3-8B',
                  tensor_parallel_size=1,
                  gpu_memory_utilization=0.85,
                  max_model_len=8192,
                  max_num_batched_tokens=16384,
                  max_num_seqs=256,
                  max_retries=2,
-                 enable_prefix_caching=True):
+                 enable_prefix_caching=True,
+                 prompt: Prompt = Prompt()
+        ):
         """
         vLLM 최적화 배치 추출기 (Qwen3-8B)
         
@@ -54,6 +59,9 @@ class MAUDEExtractor:
         print(f"  - Prefix Caching: {enable_prefix_caching}")
         print(f"  - Max Retries: {max_retries}")
         
+        self.prompt = prompt
+        self.extraction_model = prompt.get_extraction_model()
+        
         # vLLM 모델 초기화 (최적화 설정)
         self.llm = LLM(
             model=model_path,
@@ -78,7 +86,7 @@ class MAUDEExtractor:
         print(f"\n✓ Model loaded successfully!\n")
         
         # JSON 스키마 및 샘플링 파라미터
-        self.json_schema = MAUDEExtraction.model_json_schema()
+        self.json_schema = self.extraction_model.model_json_schema()
         self.sampling_params = SamplingParams(
             temperature=0.1,
             max_tokens=512,
@@ -93,23 +101,25 @@ class MAUDEExtractor:
         prompts = []
         
         for row in rows:
-            text = row['mdr_text']
-            product_problem = row['product_problems']
+            # row.mdr_text 형태로 접근
+            text = row.mdr_text
+            product_problem = row.product_problems
             
-            user_content = USER_PROMPT_TEMPLATE.format(
+            user_content = self.prompt.format_user_prompt(
                 text=text,
                 product_problem=product_problem
             )
             
             messages = [
-                {"role": "system", "content": SYSTEM_INSTRUCTION},
+                {"role": "system", "content": self.prompt.SYSTEM_INSTRUCTION},
                 {"role": "user", "content": user_content}
             ]
             
             formatted_prompt = self.tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
-                add_generation_prompt=True
+                add_generation_prompt=True,
+                enable_thinking=True,
             )
             
             prompts.append(formatted_prompt)
@@ -119,7 +129,7 @@ class MAUDEExtractor:
     def _parse_and_validate(self, response_text: str) -> dict:
         """응답 파싱 및 검증"""
         data = json.loads(response_text)
-        validated = MAUDEExtraction(**data)
+        validated = self.extraction_model(**data)
         return validated.model_dump()
 
     def _generate_and_parse(self, rows: List[pd.Series]) -> tuple[List[dict], dict]:
@@ -133,7 +143,11 @@ class MAUDEExtractor:
         
         # 프롬프트 생성 및 vLLM 추론
         prompts = self._create_prompts(rows)
-        outputs = self.llm.generate(prompts, self.sampling_params, use_tqdm=True)
+        outputs = self.llm.generate(
+            prompts, 
+            self.sampling_params, 
+            use_tqdm=partial(tqdm, mininterval=10.0)
+        )
         
         batch_time = time.time() - batch_start
         
@@ -142,7 +156,7 @@ class MAUDEExtractor:
         total_input_tokens = 0
         total_output_tokens = 0
         
-        for _, (row, output) in enumerate(zip(rows, outputs)):
+        for idx, (row, output) in enumerate(zip(rows, outputs)):
             try:
                 response_text = output.outputs[0].text
                 validated_data = self._parse_and_validate(response_text)
@@ -155,7 +169,7 @@ class MAUDEExtractor:
                 
                 result = {
                     **validated_data,
-                    '_row_id': row.name,
+                    '_row_id': row.Index,  # row.name → row.Index
                     '_success': True,
                     '_input_tokens': input_tokens,
                     '_output_tokens': output_tokens,
@@ -165,7 +179,7 @@ class MAUDEExtractor:
                 
             except Exception as e:
                 results.append({
-                    '_row_id': row.name,
+                    '_row_id': row.Index,  # row.name → row.Index
                     '_success': False,
                     '_error': str(e)[:200],
                     '_raw_response': output.outputs[0].text[:200]
@@ -203,7 +217,7 @@ class MAUDEExtractor:
                 print(f"\n  Retry attempt {attempt}: {len(pending_df)} failed samples")
 
             # vLLM 추론 및 파싱
-            rows = [row for _, row in pending_df.iterrows()]
+            rows = list(pending_df.itertuples(index=True))
             results, stats = self._generate_and_parse(rows)
             
             # 통계 출력
@@ -267,7 +281,7 @@ class MAUDEExtractor:
         try:
             num_chunks = (len(df) - 1) // checkpoint_interval + 1
             
-            for chunk_idx in tqdm(range(num_chunks), desc="Processing chunks"):
+            for chunk_idx in trange((num_chunks), desc="Processing chunks"):
                 start_idx = chunk_idx * checkpoint_interval
                 end_idx = min((chunk_idx + 1) * checkpoint_interval, len(df))
                 chunk_df = df.iloc[start_idx:end_idx]
@@ -314,7 +328,10 @@ class MAUDEExtractor:
             print(f"Avg input:        {final_df['_input_tokens'].mean():.1f} tokens")
             print(f"Avg output:       {final_df['_output_tokens'].mean():.1f} tokens")
             print(f"{'='*70}")
-            
+            # 완료 후 정리
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return final_df
         
         except KeyboardInterrupt:
@@ -353,10 +370,10 @@ if __name__ == "__main__":
     extractor = MAUDEExtractor(
         model_path='Qwen/Qwen3-8B-Instruct',
         tensor_parallel_size=1,                # GPU 1개 사용
-        gpu_memory_utilization=0.85,           # Milvus 고려
-        max_model_len=8192,
-        max_num_batched_tokens=16384,          # Throughput 핵심
-        max_num_seqs=256,                      # 동시 처리 시퀀스
+        gpu_memory_utilization=0.80,      # 0.85 → 0.80 (메모리 더 필요)
+        max_model_len=16384,              # 8192 → 16384
+        max_num_batched_tokens=32768,     # 16384 → 32768 (2배)
+        max_num_seqs=128,                 # 256 → 128 (동시 처리 줄이기)
         max_retries=2,
         enable_prefix_caching=True             # 시스템 프롬프트 캐싱
     )

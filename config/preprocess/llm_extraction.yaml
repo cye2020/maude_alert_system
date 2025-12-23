@@ -1,0 +1,179 @@
+# ============================================
+# LLM 텍스트 전처리 설정
+# ============================================
+
+# base.yaml 참조
+_base: "../base.yaml"
+
+# 입력 데이터 설정
+input:
+  source_file: "maude_preprocess_step1.parquet"
+  source_dir: "silver"  # bronze, silver, gold (base.yaml의 paths 사용)
+  
+  # 샘플링 설정
+  sampling:
+    enabled: false
+    n_rows: null  # null이면 전체 데이터 사용
+    random: false  # false면 날짜 순 정렬 후 head
+    random_seed: 4242
+
+# 출력 설정
+output:
+  target_dir: "silver"  # 결과 저장 디렉토리
+  file_prefix: "maude"  # 결과 파일 프리픽스
+  prompt_prefix: "prompt"  # 프롬프트 파일 프리픽스
+  
+  # 파일 포맷
+  format:
+    type: "parquet"  # parquet, csv
+    compression: "zstd"  # zstd, snappy, gzip
+    compression_level: 3
+  
+  # 파일명 자동 증가
+  auto_increment: true
+  increment_separator: "_"
+
+# 데이터 전처리 설정
+preprocessing:
+  # 선택할 컬럼
+  input_columns:
+    - "mdr_report_key"
+    - "mdr_text"
+    - "product_problems"
+  
+  # 중복 제거 설정
+  deduplication:
+    enabled: true
+    columns:
+      - "mdr_text"
+      - "product_problems"
+  
+  # 정렬 설정 (random=false일 때)
+  sorting:
+    columns:
+      - "date_of_event"
+      - "date_received"
+
+# LLM 모델 설정
+model:
+  name: "nvidia/Qwen3-235B-A22B-NVFP4"
+  
+  # vLLM 엔진 설정
+  vllm:
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.85
+    max_model_len: 16384
+    max_num_batched_tokens: 32768
+    max_num_seqs: 128
+    enable_prefix_caching: true
+  
+  # 재시도 설정
+  retry:
+    max_retries: 3
+    backoff_factor: 1.5  # 재시도 대기 시간 배수
+
+# 추출할 필드 설정
+extraction:
+  # 기본 필드 (항상 추출)
+  base_fields:
+    - "incident_details.patient_harm"
+    - "incident_details.problem_components"
+    - "manufacturer_inspection.defect_confirmed"
+    - "manufacturer_inspection.defect_type"
+  
+  # 추론 필드 (--reason 플래그 시)
+  reasoning_fields:
+    enabled: false  # CLI --reason으로 오버라이드 가능
+    suffix: "_original_text"  # 추론 필드 접미사
+
+# 프롬프트 설정
+prompt:
+  # 프롬프트 타입 선택
+  type: "general"  # general, sample, detailed
+  # reasoning이 true면 자동으로 'sample'로 전환
+  
+  # 프롬프트 구조
+  save_format:
+    include_system: true
+    include_user: true
+    separator: "\n"
+
+# 체크포인트 설정
+checkpoint:
+  enabled: true
+  directory: "temp"  # base.yaml의 paths.local.temp 사용
+  interval: 5000  # 행 단위
+  prefix: "maude_unique"
+  
+  # 복구 설정
+  resume_from_checkpoint: true
+  cleanup_on_success: false
+
+# 데이터 로더 설정
+data_loader:
+  adapter: "polars"
+  
+  # Polars 로더 옵션
+  polars_options:
+    use_statistics: true
+    parallel: "auto"  # auto, none, 또는 숫자
+    low_memory: false
+    rechunk: false
+    cache: true
+
+# 출력 컬럼 설정
+output_columns:
+  # 결과 컬럼 이름 변환
+  rename_strategy: "last_segment"  # last_segment: 'field.sub' -> 'sub'
+  
+  # 포함할 컬럼
+  include:
+    - "mdr_report_key"  # 항상 포함
+  
+  # 제외할 내부 컬럼
+  exclude_patterns:
+    - "_temp_id"
+    - "_result"
+
+# 검증 설정
+validation:
+  # 데이터 무결성 체크
+  check_row_count: true  # 원본과 결과 행 수 일치 확인
+  check_merge_integrity: true  # merge 후 행 증가 확인
+  
+  # 통계 출력
+  print_statistics: true
+  statistics:
+    - "total_rows"
+    - "unique_combinations"
+    - "deduplication_ratio"
+    - "processing_time"
+
+# 성능 최적화
+performance:
+  # 메모리 관리
+  memory:
+    clear_cuda_cache: true
+    gc_collect_interval: 1000  # 행 단위
+  
+  # 배치 처리
+  batch:
+    dynamic_batching: true
+    min_batch_size: 8
+    max_batch_size: 128
+
+# 로깅 설정
+logging:
+  level: "INFO"
+  
+  # 진행상황 출력
+  progress:
+    show_elapsed_time: true
+    show_row_counts: true
+    show_deduplication_stats: true
+  
+  # 상세 로그
+  verbose:
+    show_unique_ratio: true
+    show_memory_usage: false
+    show_checkpoint_info: true

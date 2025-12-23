@@ -258,7 +258,7 @@ class PreprocessorPresets:
             (r'.*\bN/?A\b.*', 'DELETE', 'N/A'),
             (r'.*\bN\.A\.?\b.*', 'DELETE', 'N.A'),
             (r'.*\bNI\b.*', 'DELETE', 'NI'),
-            (r'.*\bNA\b.*', 'DELETE', 'NA'),
+            (r'NA', 'DELETE', 'NA'), # 정확히 NA
             (r'.*\bNOT\s+AVAILABLE\b.*', 'DELETE', 'NOT AVAILABLE'),
             (r'.*\bUNAVAILABLE\b.*', 'DELETE', 'UNAVAILABLE'), 
             (r'.*MISSING.*', 'DELETE', 'MISSING'),
@@ -269,7 +269,7 @@ class PreprocessorPresets:
             (r'.*\bTRC\b.*', 'DELETE', 'TRC'),
             (r'.*\bQS\b.*', 'DELETE', 'QS'),
             (r'.*\bMSK\b.*', 'DELETE', 'MSK'),
-            (r'.*\bNAV\b.*', 'DELETE', 'NAV'),
+            (r'NAV', 'DELETE', 'NAV'), # 정확히 NA
             (r'.*\bINV\b.*', 'DELETE', 'INV'),
             (r'.*\bOTH\b.*', 'DELETE', 'OTH'),
             (r'.*\bPINF\b.*', 'DELETE', 'PINF'),

@@ -1,167 +1,91 @@
-# ============================================
+# preprocess/columns.yaml
 # 컬럼 선택/제거 설정
-# ============================================
 
-# 1차 컬럼 Drop (Silver 단계)
+# 1차 열 제거 (스코핑 전)
 column_drop_1st:
   verbose: true
+  
+  # MAUDE 데이터
   maude:
-    mode: "whitelist"
-    # 패턴 기반 선택
-    patterns:
-      # MDR 텍스트 계열 컬럼
-      - "^mdr_text_.*_text$"
-      - "^mdr_text_.*_text_type_code$"
-
-    # 명시적 선택
-    cols:
-      # BASE_COLS
-      - "mdr_report_key"
-      - "report_number"
-      - "adverse_event_flag"
-      - "product_problem_flag"
-      - "date_of_event"
-      - "date_received"
-      - "device_date_of_manufacturer"
-      - "event_type"
-      - "previous_use_code"
-      - "single_use_flag"
-      - "report_source_code"
-      - "reprocessed_and_reused_flag"
-      - "report_to_fda"
-      - "event_location"
-      - "manufacturer_link_flag"
-      - "pma_pmn_number"
-
-      # PATIENT_COLS
-      - "patient_0_patient_age"
-      - "patient_0_patient_sex"
-      - "patient_0_patient_weight"
-      - "patient_0_patient_race"
-      - "patient_0_patient_problems"
-      - "patient_0_sequence_number_outcome"
-      - "patient_0_sequence_number_treatment"
-
-      # DEVICE_COLS
-      - "device_0_manufacturer_d_name"
-      - "device_0_manufacturer_d_postal_code"
-      - "device_0_brand_name"
-      - "device_0_catalog_number"
-      - "device_0_model_number"
-      - "device_0_udi_di"
-      - "device_0_lot_number"
-      - "device_0_udi_public"
-      - "device_0_device_report_product_code"
-      - "device_0_device_operator"
-      - "device_0_openfda_device_class"
-      - "device_0_openfda_device_name"
-    
+    mode: whitelist  # 'whitelist' 또는 'blacklist'
+    patterns: []  # 정규표현식 패턴 리스트
+    cols:  # Whitelist로 유지할 컬럼들
+      - mdr_report_key
+      - report_number
+      - adverse_event_flag
+      - product_problem_flag
+      - date_of_event
+      - date_received
+      - device_date_of_manufacturer
+      - event_type
+      - previous_use_code
+      - single_use_flag
+      - reprocessed_and_reused_flag
+      - product_problems
+      - device_0_manufacturer_d_name
+      - device_0_manufacturer_d_postal_code
+      - device_0_brand_name
+      - device_0_catalog_number
+      - device_0_model_number
+      - device_0_udi_di
+      - device_0_lot_number
+      - device_0_udi_public
+      - device_0_device_report_product_code
+      - device_0_openfda_device_name
+      - device_0_device_operator
+      - device_0_openfda_device_class
+      - patient_0_patient_age
+      - patient_0_sequence_number_outcome
+      # mdr_text 관련 (패턴 매칭)
+  
+  # UDI 데이터
   udi:
-    mode: "blacklist"
+    mode: blacklist  # UDI는 blacklist 방식
+    patterns:  # 제거할 패턴들
+      - "^customer_.*"
+      - "^device_sizes_.*"
+      - "^storage_.*"
+      - "^premarket_.*"
+      - "^gmdn_.*"
+    cols: []  # 추가로 제거할 개별 컬럼
 
-    patterns:
-      - '^customer'
-      - '^device_sizes'
-      - '^storage'
-
-  # 결측치 기준 제거
-  drop_high_null:
-    enabled: true
-    threshold: 0.95
-  
-  # 보호 컬럼 (절대 제거 안함)
-  protected_columns:
-    - "report_number"
-    - "date_of_event"
-    - "date_received"
-    - "manufacturer_d_name"
-    - "udi_di"
-    - "udi_public"
-    - "device_0_*"
-    - "patient_0_*"
-    - "mdr_text_0_*"
-
-# 2차 컬럼 Drop (Gold 단계)
+# 2차 열 제거 (최종 정제 후)
 column_drop_2nd:
-  # 선택 방식
-  mode: "whitelist"  # whitelist 또는 blacklist
+  verbose: true
   
-  # 최종 유지 컬럼
-  keep_columns:
-    # 식별자
-    - "report_number"
-    
-    # 날짜
-    - "date_of_event"
-    - "date_received"
-    - "report_date"
-    
-    # 보고 정보
-    - "report_source_code"
-    - "type_of_report"
-    - "event_type"
-    
-    # 제조사 정보
-    - "manufacturer_d_name"
-    - "manufacturer_d_name_normalized"
-    - "manufacturer_d_country"
-    - "manufacturer_compliance_rate"
-    
-    # 기기 정보
-    - "device_0_brand_name"
-    - "device_0_generic_name"
-    - "device_0_manufacturer_d_name"
-    - "device_0_model_number"
-    - "device_0_catalog_number"
-    
-    # UDI 정보
-    - "device_0_udi_di"
-    - "device_0_udi_public"
-    - "extracted_di"
-    - "udi_combined"
-    - "udi_match_status"
-    - "udi_match_confidence"
-    
-    # UDI DB 매칭 정보
-    - "udi_brand_name"
-    - "udi_version_model_number"
-    - "udi_device_description"
-    
-    # 기기 상세
-    - "device_0_lot_number"
-    - "device_0_device_age_text"
-    
-    # 환자 정보
-    - "patient_0_patient_sequence_number"
-    - "patient_0_patient_age"
-    - "patient_0_sequence_number_outcome"
-    
-    # 텍스트
-    - "mdr_text_0_text"
-    - "mdr_text_0_text_type_code"
-    - "text_length"
-    
-    # 플래그
-    - "reprocessed_and_reused_flag_bin"
-    - "has_udi"
-    - "has_patient_info"
+  maude:
+    mode: whitelist
+    patterns: []
+    cols:  # 최종 유지할 컬럼들
+      - mdr_report_key
+      - adverse_event_flag
+      - product_problem_flag
+      - single_use_flag
+      - previous_use_code
+      - reprocessed_and_reused_flag
+      - event_type
+      - product_problems
+      - date_of_event
+      - date_received
+      - date_of_manufactured
+      - manufacturer
+      - brand
+      - model_number
+      - udi_di
+      - product_code
+      - device_name
+      - operator
+      - patient_age
+      # outcome_* (동적으로 포함)
+      - mdr_text
   
-  # 중간 과정 컬럼 제거
-  drop_intermediate:
-    enabled: true
-    patterns:
-      - "*_temp"
-      - "*_raw"
-      - "*_internal"
-  
-  # 컬럼 순서
-  reorder:
-    enabled: true
-    order:
-      - "report_number"
-      - "date_*"
-      - "manufacturer_*"
-      - "device_*"
-      - "udi_*"
-      - "patient_*"
-      - "*"
+  udi:
+    mode: whitelist
+    patterns: []
+    cols:
+      - udi_di
+      - manufacturer
+      - brand
+      - model_number
+      - product_code
+      - device_name
