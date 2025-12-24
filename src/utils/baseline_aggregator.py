@@ -183,7 +183,6 @@ class BaselineAggregator:
             - "fdr_bh": Benjamini-Hochberg FDR
         """
         from scipy import stats
-        from scipy.stats import false_discovery_control
         import numpy as np
         
         result = (
@@ -280,14 +279,25 @@ class BaselineAggregator:
         elif correction_method == "sidak":
             # Šidák: 1 - (1-α)^(1/n)
             p_adjusted = 1 - (1 - p_pois) ** n
-            alpha_adjusted = alpha
         elif correction_method == "fdr_bh":
-            # Benjamini-Hochberg FDR
-            # scipy의 false_discovery_control 사용
-            reject = false_discovery_control(p_pois, axis=0, method='bh')
-            # FDR에서는 adjusted p-value 대신 reject 여부를 직접 반환
-            p_adjusted = p_pois  # raw p-value 유지
-            # is_spike_p는 아래에서 별도 처리
+            # Benjamini-Hochberg FDR - 직접 구현
+            # 1. p-value 정렬
+            sorted_indices = np.argsort(p_pois)
+            sorted_p = p_pois[sorted_indices]
+            
+            # 2. BH adjusted p-value 계산
+            # adjusted_p[i] = min(p[i] * n / rank[i], 1)
+            # 그리고 뒤에서부터 cumulative minimum 적용
+            ranks = np.arange(1, n + 1)
+            adjusted_sorted = np.minimum(sorted_p * n / ranks, 1.0)
+            
+            # 뒤에서부터 cumulative minimum (monotonicity 보장)
+            for i in range(n - 2, -1, -1):
+                adjusted_sorted[i] = min(adjusted_sorted[i], adjusted_sorted[i + 1])
+            
+            # 3. 원래 순서로 복원
+            p_adjusted = np.empty(n)
+            p_adjusted[sorted_indices] = adjusted_sorted
         else:
             raise ValueError(f"Unknown correction method: {correction_method}")
         
@@ -298,21 +308,13 @@ class BaselineAggregator:
             pl.Series("score_pois", score_pois).round(4)
         )
         
-        # is_spike_p 계산
-        if correction_method == "fdr_bh":
-            # FDR: scipy의 reject 결과 사용 + min_c_recent 필터
-            is_spike_p = reject & (c_recent >= min_c_recent)
-            result = result.with_columns(
-                pl.Series("is_spike_p", is_spike_p)
-            )
-        else:
-            # 다른 방법: adjusted p-value와 alpha 비교
-            result = result.with_columns(
-                (
-                    (pl.col("p_adjusted") <= alpha) &
-                    (pl.col("C_recent") >= min_c_recent)
-                ).alias("is_spike_p")
-            )
+        # is_spike_p 계산: adjusted p-value와 alpha 비교
+        result = result.with_columns(
+            (
+                (pl.col("p_adjusted") <= alpha) &
+                (pl.col("C_recent") >= min_c_recent)
+            ).alias("is_spike_p")
+        )
         
         # 컬럼 순서 재배치: is_spike 시리즈를 마지막으로
         spike_cols = ["is_spike", "is_spike_z", "is_spike_p"]
