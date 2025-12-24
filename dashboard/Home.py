@@ -6,6 +6,9 @@ import streamlit as st
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from millify import millify
+import overview_tab as o_tab
+import eda_tab as e_tab
+import cluster_tab as c_tab
 
 
 # ==================== 페이지 설정 ====================
@@ -81,125 +84,22 @@ with st.sidebar:
 # st.markdown("데이터 파이프라인과 ML 모델 모니터링을 위한 통합 대시보드입니다.")
 
 # 메인 영역 상단의 탭
-overview_tab, eda_tab, cluster_tab = st.tabs(["Overview", "Detailed Analysis", "Clustering Reports"])
+overview_tab, eda_tab, cluster_tab = st.tabs([
+    "Overview", 
+    "Detailed Analysis", 
+    "Clustering Reports"
+])
 
 # 탭 내용
 with overview_tab:
-    st.session_state.current_tab = "Overview"
-    st.header('Overview Dashboard')
-
-    # KPI 메트릭 (3열 레이아웃)
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.metric(
-            label="📁 총 이상 사례 보고 건수",
-            value="1,234,567",
-            delta="12.5%",
-            delta_arrow='down',
-            delta_color='inverse'
-        )
-
-    with col2:
-        st.metric(
-            label="⚙️ 파이프라인 상태",
-            value="정상",
-            delta="100% Uptime"
-        )
-
-    with col3:
-        st.metric(
-            label="🤖 모델 정확도",
-            value="94.2%",
-            delta="↑ 2.3%"
-        )
-
-    st.markdown("---")
+    o_tab.show()
 
 with eda_tab:
-    st.session_state.current_tab = "EDA"
-    st.header("Detailed Analysis")
-    
-    # ==================== 주요 기능 안내 ====================
-    st.subheader("📚 주요 기능")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        with st.container(border=True):
-            st.markdown("### 📊 데이터 개요")
-            st.markdown("""
-            - Bronze/Silver/Gold 데이터 레이어 현황
-            - 데이터 품질 지표
-            - 최근 업데이트 이력
-            """)
-            if st.button("데이터 개요 보기", key="btn_data", width='stretch'):
-                st.switch_page("pages/1_📊_Data_Overview.py")
-
-    with col2:
-        with st.container(border=True):
-            st.markdown("### 📈 분석 대시보드")
-            st.markdown("""
-            - 인터랙티브 차트 및 시각화
-            - 트렌드 분석
-            - 커스텀 필터링
-            """)
-            if st.button("분석 대시보드 보기", key="btn_analytics", width='stretch'):
-                st.switch_page("pages/2_📈_Analytics.py")
-
-    col3, col4 = st.columns(2)
-
-    with col3:
-        with st.container(border=True):
-            st.markdown("### 🤖 모델 성능")
-            st.markdown("""
-            - 모델 정확도 및 성능 지표
-            - 학습 이력
-            - A/B 테스트 결과
-            """)
-            if st.button("모델 성능 보기", key="btn_model", width='stretch'):
-                st.switch_page("pages/3_🤖_Model_Performance.py")
-
-    with col4:
-        with st.container(border=True):
-            st.markdown("### ⚙️ 설정")
-            st.markdown("""
-            - 데이터 소스 설정
-            - 알림 설정
-            - 사용자 권한 관리
-            """)
-            if st.button("설정 보기", key="btn_settings", width='stretch'):
-                st.switch_page("pages/4_⚙️_Settings.py")
-
-    st.markdown("---")
+    e_tab.show()
     
 
 with cluster_tab:
-    st.session_state.current_tab = "Cluster"
-    st.header("Cluster Reports")
-
-    # ==================== 최근 활동 ====================
-    st.subheader("📝 최근 활동")
-
-    with st.expander("최근 24시간 활동 내역", expanded=True):
-        # 샘플 활동 데이터
-        activities = [
-            {"time": "2시간 전", "event": "데이터 전처리 완료", "status": "✅"},
-            {"time": "5시간 전", "event": "모델 학습 시작", "status": "🔄"},
-            {"time": "8시간 전", "event": "새 데이터 수집 (1,500건)", "status": "✅"},
-            {"time": "12시간 전", "event": "배치 작업 완료", "status": "✅"},
-        ]
-        
-        for activity in activities:
-            col1, col2, col3 = st.columns([1, 5, 1])
-            with col1:
-                st.markdown(f"**{activity['time']}**")
-            with col2:
-                st.markdown(activity['event'])
-            with col3:
-                st.markdown(activity['status'])
-
-    st.markdown("---")
+    c_tab.show()
 
 # ==================== 시스템 상태 ====================
 st.subheader("🖥️ 시스템 상태")
