@@ -450,7 +450,9 @@ class BaselineAggregator:
             z_threshold, min_c_recent, eps, alpha, correction_method
         )
         
-        baseline_final = pl.concat([baseline_1m, baseline_3m]).sort(["keyword", "window"])
+        baseline_concat = pl.concat([baseline_1m, baseline_3m]).sort(["keyword", "window"])
+        
+        baseline_final = spike_pattern_output(baseline_concat)
         
         if verbose:
             print("\n베이스라인 테이블 생성 완료")
@@ -673,4 +675,45 @@ class BaselineAggregator:
             .filter(pl.col("is_spike_ensemble") == True)
             .sort(["n_methods", "score_pois"], descending=True)
         )
-
+    
+    def spike_pattern_output(
+        self,
+        baseline_lf: pl.LazyFrame,
+    ) -> pl.LazyFrame:
+        """
+        이상 급증 패턴을 spike 개수로 라벨링하는 함수
+        
+        Parameters
+        ----------
+        baseline_lf : pl.LazyFrame
+            create_baseline_table()로 생성된 베이스라인 테이블
+        window : int, default=1
+            분석할 윈도우 크기 (1 또는 3)
+        
+        Returns
+        -------
+        pl.LazyFrame
+            pattern 컬럼이 추가된 결과
+            - 0: "general"
+            - 1: "attention"
+            - 2: "alert"
+            - 3: "severe"
+        """
+        return (
+            baseline_lf
+            .with_columns(
+                (
+                    pl.col("is_spike").cast(pl.Int8) +
+                    pl.col("is_spike_z").cast(pl.Int8) +
+                    pl.col("is_spike_p").cast(pl.Int8)
+                ).alias("n_methods")
+            )
+            .with_columns(
+                pl.when(pl.col("n_methods") == 3).then(pl.lit("severe"))
+                .when(pl.col("n_methods") == 2).then(pl.lit("alert"))
+                .when(pl.col("n_methods") == 1).then(pl.lit("attention"))
+                .otherwise(pl.lit("general"))
+                .alias("pattern")
+            )
+            .drop("n_methods")
+        )
