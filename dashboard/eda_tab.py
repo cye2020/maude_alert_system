@@ -1,9 +1,13 @@
 # eda_tab.py
 import streamlit as st
 
-def show():
-    st.session_state.current_tab = "EDA"
-    st.header("Detailed Analysis")
+def show(filters=None):
+    st.title("📈 Detailed Analysis")
+
+    # 필터 값 사용
+    selected_date = filters.get("date")
+    categories = filters.get("categories", [])
+    confidence_interval = filters.get("confidence_interval", 0.95)
     
     # ==================== 주요 기능 안내 ====================
     st.subheader("📚 주요 기능")

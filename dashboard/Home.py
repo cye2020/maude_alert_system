@@ -1,7 +1,8 @@
 """
 Streamlit 멀티페이지 대시보드 - 메인 홈페이지
 """
-
+import sys
+from pathlib import Path
 import streamlit as st
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
@@ -9,7 +10,12 @@ from millify import millify
 import overview_tab as o_tab
 import eda_tab as e_tab
 import cluster_tab as c_tab
+from utils.filter_manager import create_sidebar
 
+
+# 프로젝트 루트 경로 설정
+root_path = Path(__file__).parent
+sys.path.append(str(root_path))
 
 # ==================== 페이지 설정 ====================
 st.set_page_config(
@@ -20,86 +26,52 @@ st.set_page_config(
 )
 
 
-# 초기화 시 한 번만 TODAY 설정
+# 세션 상태 초기화
 if 'TODAY' not in st.session_state:
     st.session_state.TODAY = datetime.now()
 
 TODAY = st.session_state.TODAY
 
+# ==================== 탭 선택 (세그먼트 컨트롤) ====================
+
+# 탭 옵션 정의
+tab_options = {
+    "📊 Overview": "overview",
+    "📈 Detailed Analysis": "eda",
+    "🔍 Clustering Reports": "cluster"
+}
+
+# 세그먼트 컨트롤로 탭 선택
+selected_tab_display = st.segmented_control(
+    label="대시보드 선택",
+    options=list(tab_options.keys()),
+    default="📊 Overview",
+    label_visibility="collapsed",
+    selection_mode="single",
+    key="selected_tab_key"
+)
+
+# None인 경우 기본값 사용 (선택 해제 시 이전 값 유지를 위해 rerun)
+if selected_tab_display is None:
+    selected_tab_display = "📊 Overview"
+    st.rerun()
+
+current_tab = tab_options[selected_tab_display]
+
 # ==================== 사이드바 ====================
-with st.sidebar:
-    st.image("dashboard/assets/logo.png", width='stretch')
-    
-    # 프로젝트 정보
-    st.markdown("### 📌 프로젝트 정보")
-    st.info("""
-    **버전**: v1.0.0  
-    **업데이트**: 2025-12-24  
-    **환경**: Development
-    """)
-    
-    st.markdown('---')
-
-    with st.container(horizontal=True):
-        year_range = 3
-        year = st.selectbox(
-            "년도",
-            range(TODAY.year - year_range + 1, TODAY.year+1),
-            index=year_range - 1,
-            format_func=lambda x: f"{x}년",
-            width="stretch"
-        )
-        st.space(1)  # 간격 추가
-        month = st.selectbox(
-            "월",
-            range(1, 13),
-            format_func=lambda x: f"{x:02d}월",
-            width="stretch"
-        )
-
-    selected_date = datetime(year, month, 1)
-    st.write(f"선택된 년월: {selected_date.strftime('%Y년 %m월')}")
-    
-    window = st.selectbox(
-        label='관측 기간',
-        options = [1, 3],
-        index = 0,
-        format_func=lambda op: f'{op}개월'
-    )
-    
-    st.markdown("---")
-    
-    # 빠른 링크
-    st.markdown("### 🔗 빠른 링크")
-    st.markdown("""
-    - [데이터 개요](#data-overview)
-    - [분석 대시보드](#analytics)
-    - [모델 성능](#model-performance)
-    """)
+# 선택된 탭에 맞는 사이드바 렌더링
+filters = create_sidebar(current_tab)
 
 # ==================== 메인 콘텐츠 ====================
 
-# 헤더
-# st.title("🏠 홈 대시보드")
-# st.markdown("데이터 파이프라인과 ML 모델 모니터링을 위한 통합 대시보드입니다.")
+# 선택된 탭의 콘텐츠 표시
+if current_tab == "overview":
+    o_tab.show(filters)
+elif current_tab == "eda":
+    e_tab.show(filters)
+elif current_tab == "cluster":
+    c_tab.show(filters)
 
-# 메인 영역 상단의 탭
-overview_tab, eda_tab, cluster_tab = st.tabs([
-    "Overview", 
-    "Detailed Analysis", 
-    "Clustering Reports"
-])
-
-# 탭 내용
-with overview_tab:
-    o_tab.show()
-
-with eda_tab:
-    e_tab.show()
-    
-
-with cluster_tab:
-    c_tab.show()
 
 # ==================== 시스템 상태 ====================
 st.subheader("🖥️ 시스템 상태")

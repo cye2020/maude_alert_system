@@ -1,9 +1,13 @@
 # cluster_tab.py
 import streamlit as st
 
-def show():
-    st.session_state.current_tab = "Cluster"
-    st.header("Cluster Reports")
+def show(filters=None):
+    st.title("🔍 Clustering Reports")
+
+    # 필터 값 사용
+    selected_date = filters.get("date")
+    model = filters.get("model")
+    training_period = filters.get("training_period", 12)
 
     # ==================== 최근 활동 ====================
     st.subheader("📝 최근 활동")

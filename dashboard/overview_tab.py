@@ -1,10 +1,15 @@
 # overview_tab.py
 import streamlit as st
+from utils.filter_manager import create_sidebar
 
-def show():
-    st.session_state.current_tab = "Overview"
-    st.header('Overview Dashboard')
+# overview_tab.py
+def show(filters=None):
+    st.title("📊 Overview")
 
+    # 필터 값 사용
+    selected_date = filters.get("date")
+    window = filters.get("window", 1)
+    
     # KPI 메트릭 (3열 레이아웃)
     col1, col2, col3 = st.columns(3)
 
