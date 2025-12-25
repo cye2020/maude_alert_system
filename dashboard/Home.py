@@ -47,25 +47,34 @@ with st.sidebar:
             range(TODAY.year - year_range + 1, TODAY.year+1),
             index=year_range - 1,
             format_func=lambda x: f"{x}년",
-            width="stretch"
+            width="stretch",
+            key="sidebar_year"
         )
         st.space(1)  # 간격 추가
         month = st.selectbox(
             "월",
             range(1, 13),
             format_func=lambda x: f"{x:02d}월",
-            width="stretch"
+            width="stretch",
+            key="sidebar_month"
         )
 
     selected_date = datetime(year, month, 1)
     st.write(f"선택된 년월: {selected_date.strftime('%Y년 %m월')}")
     
+    # 선택한 년월을 session_state에 저장 (YYYY-MM 형식)
+    st.session_state.selected_year_month = selected_date.strftime('%Y-%m')
+    
     window = st.selectbox(
         label='관측 기간',
         options = [1, 3],
         index = 0,
-        format_func=lambda op: f'{op}개월'
+        format_func=lambda op: f'{op}개월',
+        key="sidebar_window"
     )
+    
+    # 선택한 window를 session_state에 저장
+    st.session_state.selected_window = window
     
     st.markdown("---")
     
