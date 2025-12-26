@@ -44,23 +44,48 @@ dashboards:
 
   eda:
     filters:
-      - type: "multiselect"
-        key: "categories"
-        label: "분석 카테고리"
+      # === 기간 설정 ===
+      - type: "date_selector"
+        key: "as_of_month"
+        label: "📅 분석 기준 월"
         args:
-          options: ["매출", "비용", "수익"]
-          default: ["매출"]
+          default_month: "2025-11"
+        caption: "기준: {value}"
 
-      - type: "slider"
-        key: "confidence_interval"
-        label: "신뢰구간"
+      - type: "selectbox"
+        key: "window"
+        label: "📊 윈도우 크기"
         args:
-          min_value: 0.8
-          max_value: 0.99
-          value: 0.95
-          step: 0.01
-          format: "%.2f"
-        caption: "{value:.0%}"
+          options:
+            - label: "1개월"
+              value: 1
+            - label: "3개월"
+              value: 3
+            - label: "6개월"
+              value: 6
+          index: 0
+        caption: "{value}개월 윈도우"
+
+      # === 분석 옵션 ===
+      - type: "number_input"
+        key: "top_n"
+        label: "📊 상위 항목 개수"
+        args:
+          min_value: 5
+          max_value: 100
+          value: 10
+          step: 5
+        caption: "상위 {value}개 표시"
+
+      - type: "number_input"
+        key: "min_cases"
+        label: "📉 최소 보고 건수 (CFR)"
+        args:
+          min_value: 1
+          max_value: 100
+          value: 10
+          step: 5
+        caption: "최소 {value}건"
 
   cluster:
     filters:
@@ -101,12 +126,12 @@ dashboards:
 
       - type: "selectbox"
         key: "window"
-        label: "📊 비교 윈도우"
+        label: "📊 윈도우 크기"
         args:
           options:
-            - label: "1개월 (기준월 vs 전월)"
+            - label: "1개월"
               value: 1
-            - label: "3개월 (최근 3개월 vs 직전 3개월)"
+            - label: "3개월"
               value: 3
           index: 0
 

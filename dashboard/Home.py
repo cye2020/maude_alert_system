@@ -69,8 +69,8 @@ maude_lf = st.session_state.data
 # 탭 옵션 정의
 tab_options = {
     "📊 Overview": "overview",
-    "📈 Spike Detection": "spike",
-    "Detailed Analytics": 'eda',
+    "📈 Detailed Analytics": 'eda',
+    "🚨 Spike Detection": "spike",
     "🔍 Clustering Reports": "cluster"
 }
 

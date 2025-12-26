@@ -415,21 +415,12 @@ def create_spike_chart(
     if len(ts_df) > 0:
         all_months = sorted(ts_df["month"].unique().to_list())
 
-        # BaselineAggregator._calculate_time_windows() 로직 (src/utils/baseline_aggregator.py 참조)
-        from datetime import datetime
-        from dateutil.relativedelta import relativedelta
+        # BaselineAggregator를 사용하여 구간 계산
+        # BaselineAggregator 인스턴스 생성 (더미)
+        dummy_agg = BaselineAggregator(ts_df.lazy())
 
-        as_of_dt = datetime.strptime(as_of_month, "%Y-%m")
-
-        # 구간 계산 (공통 로직)
-        if window == 1:
-            # Window=1: recent=[as_of_month], base=[as_of_month - 1개월]
-            recent_months = [as_of_month]
-            baseline_months = [(as_of_dt - relativedelta(months=1)).strftime("%Y-%m")]
-        else:  # window == 3
-            # Window=3: recent=[M, M-1, M-2], base=[M-1, M-2, M-3]
-            recent_months = [(as_of_dt - relativedelta(months=i)).strftime("%Y-%m") for i in range(3)]
-            baseline_months = [(as_of_dt - relativedelta(months=i)).strftime("%Y-%m") for i in range(1, 4)]
+        # _get_window_months() 메서드로 구간 계산
+        recent_months, baseline_months = dummy_agg._get_window_months(as_of_month, window)
 
         # 디버깅 정보 출력
         st.sidebar.markdown("---")
@@ -443,22 +434,15 @@ def create_spike_chart(
         baseline_months_in_data = [m for m in baseline_months if m in all_months]
         comparison_months_in_data = [m for m in recent_months if m in all_months]
 
-        # 기준 구간 (파란색) - vrect 사용, 시작/끝 월 문자열로 직접 지정
+        # 기준 구간 (파란색)
         if baseline_months_in_data:
             baseline_sorted = sorted(baseline_months_in_data)
 
-            # Window=1: 단일 월이므로 앞뒤 여백 필요 (이전 월 중간 ~ 다음 월 중간)
-            # Window=3: 범위이므로 첫 월 ~ 마지막 월
-            if len(baseline_sorted) == 1:
-                # 단일 월: 해당 월의 인덱스 기준으로 앞뒤 0.5씩
-                base_idx = all_months.index(baseline_sorted[0])
-                # 이전 월과 다음 월 찾기
-                x0_month = all_months[base_idx - 1] if base_idx > 0 else baseline_sorted[0]
-                x1_month = all_months[base_idx + 1] if base_idx < len(all_months) - 1 else baseline_sorted[0]
-            else:
-                # 다중 월: 첫 월 ~ 마지막 월
-                x0_month = baseline_sorted[0]
-                x1_month = baseline_sorted[-1]
+            # months[0] ~ months[-1] + 1m
+            x0_month = baseline_sorted[0]
+            last_date = datetime.strptime(baseline_sorted[-1], '%Y-%m')
+            x1_date = last_date + relativedelta(months=1)
+            x1_month = x1_date.strftime('%Y-%m')
 
             fig.add_vrect(
                 x0=x0_month,
@@ -472,19 +456,15 @@ def create_spike_chart(
                 annotation_font=dict(size=10, color="blue")
             )
 
-        # 비교 구간 (주황색) - vrect 사용
+        # 비교 구간 (주황색)
         if comparison_months_in_data:
             comparison_sorted = sorted(comparison_months_in_data)
 
-            if len(comparison_sorted) == 1:
-                # 단일 월: 해당 월의 인덱스 기준으로 앞뒤 0.5씩
-                comp_idx = all_months.index(comparison_sorted[0])
-                x0_month = all_months[comp_idx - 1] if comp_idx > 0 else comparison_sorted[0]
-                x1_month = all_months[comp_idx + 1] if comp_idx < len(all_months) - 1 else comparison_sorted[0]
-            else:
-                # 다중 월: 첫 월 ~ 마지막 월
-                x0_month = comparison_sorted[0]
-                x1_month = comparison_sorted[-1]
+            # months[0] ~ months[-1] + 1m
+            x0_month = comparison_sorted[0]
+            last_date = datetime.strptime(comparison_sorted[-1], '%Y-%m')
+            x1_date = last_date + relativedelta(months=1)
+            x1_month = x1_date.strftime('%Y-%m')
 
             fig.add_vrect(
                 x0=x0_month,

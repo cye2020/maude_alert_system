@@ -6,6 +6,7 @@ import streamlit as st
 from typing import List, Optional
 from .constants import ColumnNames, PatientHarmLevels,Defaults
 from .data_utils import get_year_month_expr, apply_basic_filters
+from .data_manager import cluster_keyword_unpack
 from src import BaselineAggregator
 from dateutil.relativedelta import relativedelta
 
@@ -186,7 +187,7 @@ def analyze_defect_components(
     top_n: int = Defaults.TOP_N,
     _year_month_expr: Optional[pl.Expr] = None
 ) -> Optional[pl.DataFrame]:
-    """특정 결함 종류의 문제 기기 부품 분석
+    """특정 결함 종류의 문제 기기 부품 분석 (리스트 언팩 방식)
 
     Args:
         _lf: LazyFrame
@@ -201,7 +202,8 @@ def analyze_defect_components(
         _year_month_expr: 년-월 컬럼 생성 표현식
 
     Returns:
-        문제 부품 분포 DataFrame (None이면 데이터 없음)
+        문제 부품 분포 DataFrame (컬럼: problem_components, count, ratio)
+        None이면 데이터 없음
     """
     # 기본 필터링
     filtered_lf = apply_basic_filters(
@@ -220,28 +222,32 @@ def analyze_defect_components(
     filtered_lf = filtered_lf.filter(pl.col(ColumnNames.DEFECT_TYPE) == defect_type)
 
     # problem_components가 null이 아닌 데이터만 필터링
-    defect_data = filtered_lf.filter(pl.col(ColumnNames.PROBLEM_COMPONENTS).is_not_null())
+    defect_data = filtered_lf.filter(
+        pl.col(ColumnNames.PROBLEM_COMPONENTS).is_not_null()
+    ).select([ColumnNames.DEFECT_TYPE, ColumnNames.PROBLEM_COMPONENTS]).collect()
 
     # 전체 개수 계산
-    total = defect_data.select(pl.len()).collect().item()
-
-    if total == 0:
+    if len(defect_data) == 0:
         return None
 
-    # 문제 부품 분포 집계
-    component_dist = (
-        defect_data
-        .group_by(ColumnNames.PROBLEM_COMPONENTS)
-        .agg(pl.len().alias('count'))
-        .with_columns(
-            (pl.col('count') / total * 100)
-            .round(2)
-            .alias('percentage')
-        )
-        .sort('count', descending=True)
-        .head(top_n)
-        .collect()
+    # cluster_keyword_unpack을 사용하여 리스트를 언팩하고 키워드 추출
+    component_dist = cluster_keyword_unpack(
+        df=defect_data,
+        col_name=ColumnNames.PROBLEM_COMPONENTS,
+        cluster_col=ColumnNames.DEFECT_TYPE,
+        verbose=False
     )
+
+    # defect_type 컬럼 제거 (단일 defect_type이므로 불필요)
+    component_dist = component_dist.drop(ColumnNames.DEFECT_TYPE)
+
+    # ratio를 percentage로 변환 (0~1 -> 0~100)
+    component_dist = component_dist.with_columns(
+        (pl.col('ratio') * 100).round(2).alias('percentage')
+    ).drop('ratio')
+
+    # top_n 적용 및 정렬
+    component_dist = component_dist.sort('count', descending=True).head(top_n)
 
     return component_dist
 

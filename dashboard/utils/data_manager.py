@@ -17,6 +17,8 @@ import polars as pl
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
+import ast
+from collections import Counter
 
 
 # ==================== 세션 상태 관리 ====================
@@ -325,3 +327,113 @@ def generate_monthly_cache_key() -> str:
         "YYYY-MM" 형태의 캐시 키
     """
     return datetime.now().strftime("%Y-%m")
+
+
+# ==================== 키워드 분석 함수 ====================
+
+def cluster_keyword_unpack(
+    df: pl.DataFrame,
+    col_name: str,
+    cluster_col: str = 'defect_type',
+    verbose: bool = True
+) -> pl.DataFrame:
+    """
+    클러스터 별로 col_name마다 있는 리스트를 열어서 키워드 종류를 추출하고 count
+    (벡터화 연산으로 대용량 데이터 처리 최적화)
+
+    Parameters:
+    -----------
+    df : pl.DataFrame
+        클러스터 정보가 포함된 데이터프레임
+    col_name : str
+        리스트가 들어있는 열 이름 (예: 'problem_components')
+    cluster_col : str
+        클러스터 열 이름 (기본값: 'defect_type')
+    verbose : bool
+        결과 출력 여부 (기본값: True)
+
+    Returns:
+    --------
+    pl.DataFrame
+        클러스터별 키워드, count, ratio를 포함한 데이터프레임
+    """
+
+    # 1. 문자열을 리스트로 변환 (필요한 경우)
+    df_temp = df.select([cluster_col, col_name])
+
+    if df_temp[col_name].dtype == pl.Utf8:
+        df_temp = df_temp.with_columns(
+            pl.col(col_name)
+            .map_elements(lambda x: ast.literal_eval(x) if x else [], return_dtype=pl.List(pl.Utf8))
+        )
+
+    # 2. 전체 데이터를 한 번에 explode (벡터화)
+    exploded_df = (df_temp
+                   .explode(col_name)
+                   .filter(pl.col(col_name).is_not_null())
+                   .filter(pl.col(col_name) != "")  # 빈 문자열 제거
+                  )
+
+    # 3. 클러스터별로 그룹화하여 카운트 (벡터화)
+    keyword_counts = (exploded_df
+                      .with_columns(
+                          pl.col(col_name).str.to_lowercase().str.strip_chars()  # 소문자 + 공백 제거
+                          )
+                      .group_by([cluster_col, col_name])
+                      .agg(pl.len().alias('count'))
+                     )
+
+    # 4. 클러스터별 전체 키워드 수 계산
+    cluster_totals = (keyword_counts
+                      .group_by(cluster_col)
+                      .agg(pl.col('count').sum().alias('total_count'))
+                     )
+
+    # 5. ratio 계산 및 정렬
+    result_df = (keyword_counts
+                 .join(cluster_totals, on=cluster_col)
+                 .with_columns(
+                     (pl.col('count') / pl.col('total_count')).alias('ratio')
+                 )
+                 .select([cluster_col, col_name, 'count', 'ratio'])
+                 .sort([cluster_col, 'count'], descending=[False, True])
+                )
+
+    # 6. 결과 출력 (요약 정보)
+    if verbose:
+        for cluster_id in result_df[cluster_col].unique().sort():
+            cluster_data = result_df.filter(pl.col(cluster_col) == cluster_id)
+            print(f"\n=== Cluster {cluster_id} ===")
+            print(f"총 키워드 수: {cluster_data['count'].sum()}")
+            print(f"고유 키워드 수: {len(cluster_data)}")
+            print(f"Top 10:")
+            print(cluster_data.head(10))
+
+    return result_df
+
+
+@st.cache_data
+def preprocess_problem_components(
+    _df: pl.DataFrame,
+    col_name: str = 'problem_components',
+    cluster_col: str = 'defect_type'
+) -> pl.DataFrame:
+    """
+    데이터 로드 직후 problem_components 컬럼을 전처리하여 키워드 분석 결과 반환
+    (Streamlit 캐싱으로 중복 실행 방지)
+
+    Parameters:
+    -----------
+    _df : pl.DataFrame
+        원본 데이터프레임 (언더스코어로 시작하여 캐싱)
+    col_name : str
+        분석할 컬럼명 (기본값: 'problem_components')
+    cluster_col : str
+        클러스터 컬럼명 (기본값: 'defect_type')
+
+    Returns:
+    --------
+    pl.DataFrame
+        클러스터별 키워드 분석 결과
+    """
+    return cluster_keyword_unpack(_df, col_name, cluster_col, verbose=False)

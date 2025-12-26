@@ -24,6 +24,115 @@ from utils.analysis_cluster import (
     cluster_keyword_unpack,
     get_patient_harm_summary
 )
+from datetime import datetime
+
+
+def render_bookmark_manager():
+    """북마크 관리 UI"""
+    with st.expander("🔖 필터 설정 북마크", expanded=False):
+        col1, col2, col3 = st.columns([2, 1, 1])
+
+        with col1:
+            bookmark_name = st.text_input(
+                "북마크 이름",
+                placeholder="예: 2024년 상반기 분석",
+                key="bookmark_name_input"
+            )
+
+        with col2:
+            if st.button("💾 현재 설정 저장", width='stretch'):
+                if bookmark_name:
+                    save_bookmark(bookmark_name)
+                    st.success(f"✅ '{bookmark_name}' 저장됨")
+                    st.rerun()
+                else:
+                    st.warning("북마크 이름을 입력하세요")
+
+        with col3:
+            if st.button("🗑️ 모두 삭제", width='stretch'):
+                if 'bookmarks' in st.session_state:
+                    del st.session_state.bookmarks
+                    st.success("모든 북마크 삭제됨")
+                    st.rerun()
+
+        # 저장된 북마크 목록
+        if 'bookmarks' in st.session_state and st.session_state.bookmarks:
+            st.markdown("**저장된 북마크:**")
+
+            for bookmark_id, bookmark_data in st.session_state.bookmarks.items():
+                col_a, col_b, col_c = st.columns([3, 1, 1])
+
+                with col_a:
+                    st.caption(f"📌 **{bookmark_data['name']}** - {bookmark_data['timestamp']}")
+
+                with col_b:
+                    if st.button("불러오기", key=f"load_{bookmark_id}", width='stretch'):
+                        load_bookmark(bookmark_data)
+                        st.success(f"'{bookmark_data['name']}' 불러옴")
+                        st.rerun()
+
+                with col_c:
+                    if st.button("삭제", key=f"delete_{bookmark_id}", width='stretch'):
+                        del st.session_state.bookmarks[bookmark_id]
+                        st.success("북마크 삭제됨")
+                        st.rerun()
+
+                # 북마크 상세 정보
+                with st.expander(f"상세 정보: {bookmark_data['name']}", expanded=False):
+                    st.json(bookmark_data['filters'])
+        else:
+            st.info("저장된 북마크가 없습니다")
+
+
+def save_bookmark(name: str):
+    """현재 필터 설정을 북마크로 저장"""
+    if 'bookmarks' not in st.session_state:
+        st.session_state.bookmarks = {}
+
+    # 현재 필터 상태 수집
+    current_filters = {
+        'selected_dates': st.session_state.get('prev_selected_dates', []),
+        'selected_manufacturers': st.session_state.get('prev_selected_manufacturers', []),
+        'selected_products': st.session_state.get('prev_selected_products', []),
+        'as_of_month': st.session_state.get('selected_as_of_month'),
+        'window': st.session_state.get('selected_window'),
+        'top_n': st.session_state.get('top_n'),
+        'min_cases': st.session_state.get('min_cases')
+    }
+
+    bookmark_id = f"bookmark_{len(st.session_state.bookmarks)}"
+    st.session_state.bookmarks[bookmark_id] = {
+        'name': name,
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'filters': current_filters
+    }
+
+
+def load_bookmark(bookmark_data: dict):
+    """저장된 북마크에서 필터 설정 불러오기"""
+    filters = bookmark_data['filters']
+
+    # 세션 상태에 필터 값 복원
+    if filters.get('selected_dates'):
+        st.session_state.prev_selected_dates = filters['selected_dates']
+
+    if filters.get('selected_manufacturers'):
+        st.session_state.prev_selected_manufacturers = filters['selected_manufacturers']
+
+    if filters.get('selected_products'):
+        st.session_state.prev_selected_products = filters['selected_products']
+
+    if filters.get('as_of_month'):
+        st.session_state.selected_as_of_month = filters['as_of_month']
+
+    if filters.get('window'):
+        st.session_state.selected_window = filters['window']
+
+    if filters.get('top_n'):
+        st.session_state.top_n = filters['top_n']
+
+    if filters.get('min_cases'):
+        st.session_state.min_cases = filters['min_cases']
 
 
 def show(filters=None, lf: pl.LazyFrame = None):
@@ -33,12 +142,16 @@ def show(filters=None, lf: pl.LazyFrame = None):
         filters: 사이드바 필터 값
         lf: LazyFrame 데이터 (Home.py에서 전달)
     """
-    st.title("📈 Detailed Analysis")
+    st.title("📈 Detailed Analytics")
 
-    # 필터 값 사용
-    selected_date = filters.get("date")
-    categories = filters.get("categories", [])
-    confidence_interval = filters.get("confidence_interval", 0.95)
+    # 북마크 관리 UI (상단 배치)
+    render_bookmark_manager()
+
+    # 사이드바 필터 값 가져오기
+    selected_year_month = filters.get("as_of_month")  # 기준 월
+    sidebar_window = filters.get("window", 1)  # 윈도우 크기
+    sidebar_top_n = filters.get("top_n", Defaults.TOP_N)  # 상위 N개
+    sidebar_min_cases = filters.get("min_cases", Defaults.MIN_CASES)  # 최소 건수
 
     # 데이터 확인
     if lf is None:
@@ -62,14 +175,16 @@ def show(filters=None, lf: pl.LazyFrame = None):
             st.warning("사용 가능한 날짜 데이터가 없습니다. 데이터 파일과 날짜 컬럼을 확인해주세요.")
             st.stop()
 
-        # 필터 UI 렌더링
-        selected_dates, selected_manufacturers, selected_products, top_n = render_filter_ui(
+        # 필터 UI 렌더링 (사이드바 값 전달)
+        selected_dates, selected_manufacturers, selected_products = render_filter_ui(
             available_dates,
             available_manufacturers,
             available_products,
             lf,
             date_col,
-            year_month_expr
+            year_month_expr,
+            selected_year_month,
+            sidebar_window
         )
 
         # 인사이트 요약 (필터 선택 후)
@@ -80,7 +195,7 @@ def show(filters=None, lf: pl.LazyFrame = None):
                 selected_dates,
                 selected_manufacturers,
                 selected_products,
-                top_n,
+                sidebar_top_n,
                 year_month_expr
             )
 
@@ -91,7 +206,7 @@ def show(filters=None, lf: pl.LazyFrame = None):
             selected_dates,
             selected_manufacturers,
             selected_products,
-            top_n,
+            sidebar_top_n,
             year_month_expr
         )
 
@@ -125,7 +240,9 @@ def show(filters=None, lf: pl.LazyFrame = None):
             selected_dates,
             selected_manufacturers,
             selected_products,
-            year_month_expr
+            year_month_expr,
+            sidebar_min_cases,
+            sidebar_top_n
         )
 
         # defect type별 상위 문제 & 사건 유형별 분포
@@ -235,73 +352,54 @@ def render_filter_ui(
     available_products,
     lf,
     date_col,
-    year_month_expr
+    year_month_expr,
+    selected_year_month,
+    sidebar_window
 ):
-    """필터 UI 렌더링 (3단계 구조)"""
-    st.markdown("### 🔍 필터 설정")
+    """필터 UI 렌더링 (간소화: 사이드바 통합)"""
+    st.markdown("### 🔍 데이터 필터")
+    st.caption("💡 사이드바에서 기준 월, 윈도우 크기, 상위 개수 등을 설정할 수 있습니다")
 
-    # ==================== 1단계: 기간 선택 ====================
-    with st.expander("📅 1단계: 기간 선택", expanded=True):
+    # ==================== 기간 선택 (사이드바 기반 자동 계산) ====================
+    with st.expander("📅 분석 기간", expanded=True):
         prev_selected_dates = st.session_state.get('prev_selected_dates', [])
-        sidebar_year_month = st.session_state.get('selected_year_month', None)
-        sidebar_window = st.session_state.get('selected_window', 1)
 
-        # 기본값 설정
-        default_dates = [sidebar_year_month] if sidebar_year_month and sidebar_year_month in available_dates else []
-        if not default_dates and available_dates:
-            default_dates = [available_dates[0]]
-
-        if prev_selected_dates:
-            valid_prev_dates = [d for d in prev_selected_dates if d in available_dates]
-            if valid_prev_dates:
-                default_dates = valid_prev_dates
-
-        # 윈도우 기반 자동 선택
-        use_window = st.checkbox(
-            "윈도우 기간 자동 선택 (최근 k개월 + 직전 k개월)",
-            value=st.session_state.get('use_window', True if sidebar_year_month else False),
-            key='use_window_checkbox',
-            help="사이드바에서 선택한 기준 월을 중심으로 자동으로 윈도우 기간을 선택합니다"
-        )
-        st.session_state.use_window = use_window
-
-        if use_window and sidebar_year_month:
+        # 기본값 설정: 사이드바 기준 월 + 윈도우로 자동 계산
+        default_dates = []
+        if selected_year_month and selected_year_month in available_dates:
             recent_months, base_months = get_window_dates(
                 available_dates,
                 sidebar_window,
-                sidebar_year_month
+                selected_year_month
             )
-            window_dates = list(set(recent_months + base_months))
-            if prev_selected_dates:
-                valid_window_dates = [d for d in prev_selected_dates if d in available_dates]
-                final_default = valid_window_dates if valid_window_dates else window_dates
-            else:
-                final_default = window_dates
+            default_dates = list(set(recent_months + base_months))
 
-            selected_dates = st.multiselect(
-                "년-월 선택",
-                options=available_dates,
-                default=final_default,
-                key='dates_multiselect',
-                help="윈도우 기간이 자동 선택되었습니다. 필요시 수정 가능합니다"
-            )
-        else:
-            selected_dates = st.multiselect(
-                "년-월 선택",
-                options=available_dates,
-                default=default_dates,
-                key='dates_multiselect',
-                help="사이드바 값이 기본 적용되었습니다. 직접 선택하거나 수정 가능합니다"
-            )
+            # 이전 선택값이 있으면 유지
+            if prev_selected_dates:
+                valid_prev_dates = [d for d in prev_selected_dates if d in available_dates]
+                if valid_prev_dates:
+                    default_dates = valid_prev_dates
+        elif available_dates:
+            # 사이드바 값이 없으면 최근 데이터 기준
+            default_dates = [available_dates[0]]
+
+        selected_dates = st.multiselect(
+            "분석할 년-월 선택",
+            options=available_dates,
+            default=default_dates,
+            key='dates_multiselect',
+            help=f"사이드바 설정(기준월: {selected_year_month}, 윈도우: {sidebar_window}개월)을 기반으로 자동 선택되었습니다."
+        )
 
         if selected_dates:
             st.session_state.prev_selected_dates = selected_dates
-            st.info(f"✅ 선택된 기간: {len(selected_dates)}개월 ({', '.join(selected_dates[:3])}{'...' if len(selected_dates) > 3 else ''})")
+            ellipsis = '...' if len(selected_dates) > 3 else ''
+            st.info(f"✅ 선택된 기간: {len(selected_dates)}개월 ({', '.join(selected_dates[:3])}{ellipsis})")
         elif 'prev_selected_dates' in st.session_state and not selected_dates:
             del st.session_state.prev_selected_dates
 
-    # ==================== 2단계: 제조사/제품군 선택 ====================
-    with st.expander("🏭 2단계: 제조사 및 제품군 선택", expanded=True):
+    # ==================== 제조사/제품군 선택 ====================
+    with st.expander("🏭 제조사 및 제품군 선택", expanded=True):
         col1, col2 = st.columns(2)
 
         # 제조사 선택
@@ -323,17 +421,11 @@ def render_filter_ui(
                 if 'prev_selected_manufacturers' in st.session_state:
                     del st.session_state.prev_selected_manufacturers
 
-            help_text = (
-                f"선택된 년-월({len(selected_dates)}개)에 존재하는 제조사만 표시됩니다"
-                if selected_dates
-                else "제조사를 선택하면 해당 제조사의 제품군만 표시됩니다"
-            )
-
             selected_manufacturers = st.multiselect(
                 "제조사 선택 (선택 안 함 = 전체)",
                 options=manufacturer_options,
                 default=default_manufacturers,
-                help=help_text,
+                help=f"선택된 년-월({len(selected_dates) if selected_dates else 0}개)에 존재하는 제조사만 표시됩니다",
                 key='manufacturers_multiselect'
             )
 
@@ -362,17 +454,11 @@ def render_filter_ui(
                 if 'prev_selected_products' in st.session_state:
                     del st.session_state.prev_selected_products
 
-            help_text = (
-                f"선택된 제조사({len(selected_manufacturers)}개)의 제품군만 표시됩니다"
-                if selected_manufacturers
-                else "제품군을 선택하면 해당 제품군의 보고 건수만 표시됩니다"
-            )
-
             selected_products = st.multiselect(
                 "제품군 선택 (선택 안 함 = 전체)",
                 options=product_options,
                 default=default_products,
-                help=help_text,
+                help=f"선택된 제조사({len(selected_manufacturers) if selected_manufacturers else 0}개)의 제품군만 표시됩니다",
                 key='products_multiselect'
             )
 
@@ -390,23 +476,8 @@ def render_filter_ui(
                 filter_summary.append(f"제품군 {len(selected_products)}개")
             st.info(f"✅ 선택됨: {', '.join(filter_summary)}")
 
-    # ==================== 3단계: 분석 옵션 ====================
-    with st.expander("⚙️ 3단계: 분석 옵션", expanded=False):
-        default_top_n = st.session_state.get('top_n', Defaults.TOP_N)
-        top_n = st.number_input(
-            "상위 N개 표시",
-            min_value=1,
-            max_value=100,
-            value=default_top_n,
-            step=1,
-            key='top_n_input',
-            help="차트와 테이블에 표시할 상위 항목의 개수를 설정합니다"
-        )
-        st.session_state.top_n = top_n
-        st.caption(f"현재 설정: 상위 **{top_n}개** 항목을 표시합니다")
-
     st.markdown("---")
-    return selected_dates, selected_manufacturers, selected_products, top_n
+    return selected_dates, selected_manufacturers, selected_products
 
 
 def render_monthly_reports_chart(
@@ -668,17 +739,228 @@ def render_defect_analysis(
         unique_manufacturers = display_df["manufacturer_product"].unique()
 
         if len(unique_manufacturers) > 0:
-            view_mode = st.radio(
-                "보기 모드",
-                options=["단일 제조사-제품군", "전체 비교"],
-                horizontal=True
-            )
+            # 탭 방식으로 변경
+            tab1, tab2, tab3 = st.tabs(["📊 상위 5개 비교", "⚖️ 1:1 비교", "🔍 개별 분석"])
 
-            if view_mode == "단일 제조사-제품군":
+            with tab1:
+                # 상위 5개 제조사-제품군 비교
+                st.markdown("#### 상위 5개 제조사-제품군 결함 비교")
+
+                # 전체 건수 기준 상위 5개 추출
+                top5_manufacturers = (
+                    display_df.groupby("manufacturer_product")["count"]
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(5)
+                    .index.tolist()
+                )
+
+                top5_df = display_df[display_df["manufacturer_product"].isin(top5_manufacturers)]
+
+                # Plotly로 개선된 비교 차트
+                import plotly.graph_objects as go
+
+                fig = go.Figure()
+
+                for manufacturer in top5_manufacturers:
+                    mfr_data = top5_df[top5_df["manufacturer_product"] == manufacturer]
+
+                    fig.add_trace(go.Bar(
+                        name=manufacturer,
+                        x=mfr_data[ColumnNames.DEFECT_TYPE],
+                        y=mfr_data["percentage"],
+                        text=mfr_data["percentage"].apply(lambda x: f"{x:.1f}%"),
+                        textposition='outside',
+                        hovertemplate='<b>%{fullData.name}</b><br>결함 유형: %{x}<br>비율: %{y:.1f}%<extra></extra>'
+                    ))
+
+                fig.update_layout(
+                    barmode='group',
+                    xaxis_title="결함 유형",
+                    yaxis_title="비율 (%)",
+                    height=500,
+                    hovermode='x unified',
+                    legend=dict(
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
+                )
+
+                st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
+
+                # 상위 5개 상세 테이블
+                with st.expander("📋 상세 데이터"):
+                    top5_display = top5_df.rename(columns={
+                        "manufacturer_product": "제조사-제품군",
+                        ColumnNames.DEFECT_TYPE: "결함 유형",
+                        "count": "건수",
+                        "percentage": "비율(%)"
+                    }).sort_values(["제조사-제품군", "비율(%)"], ascending=[True, False])
+
+                    col_dl1, col_dl2 = st.columns([1, 5])
+                    with col_dl1:
+                        csv_data = top5_display.to_csv(index=False, encoding='utf-8-sig')
+                        st.download_button(
+                            label="📥 CSV 다운로드",
+                            data=csv_data,
+                            file_name=f"defect_top5_comparison_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
+                            mime="text/csv",
+                            key="download_defect_top5"
+                        )
+
+                    st.dataframe(top5_display, width='stretch', hide_index=True)
+
+            with tab2:
+                # 1:1 비교 모드
+                st.markdown("#### 제조사-제품군 1:1 비교")
+                st.caption("두 제조사-제품군의 결함 패턴을 나란히 비교합니다")
+
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    compare_a = st.selectbox(
+                        "비교 대상 A",
+                        options=unique_manufacturers,
+                        index=0,
+                        key="compare_a_selectbox"
+                    )
+
+                with col2:
+                    compare_b = st.selectbox(
+                        "비교 대상 B",
+                        options=unique_manufacturers,
+                        index=min(1, len(unique_manufacturers) - 1),
+                        key="compare_b_selectbox"
+                    )
+
+                if compare_a == compare_b:
+                    st.warning("⚠️ 서로 다른 제조사-제품군을 선택해주세요")
+                else:
+                    # 두 제조사-제품군 데이터 추출
+                    data_a = display_df[display_df["manufacturer_product"] == compare_a].copy()
+                    data_b = display_df[display_df["manufacturer_product"] == compare_b].copy()
+
+                    # 나란히 비교 차트
+                    import plotly.graph_objects as go
+                    from plotly.subplots import make_subplots
+
+                    fig = make_subplots(
+                        rows=1, cols=2,
+                        subplot_titles=(compare_a, compare_b),
+                        specs=[[{"type": "bar"}, {"type": "bar"}]]
+                    )
+
+                    # A 데이터
+                    fig.add_trace(
+                        go.Bar(
+                            x=data_a[ColumnNames.DEFECT_TYPE],
+                            y=data_a["percentage"],
+                            name=compare_a,
+                            marker_color='#3B82F6',
+                            text=data_a["percentage"].apply(lambda x: f"{x:.1f}%"),
+                            textposition='outside',
+                            showlegend=False
+                        ),
+                        row=1, col=1
+                    )
+
+                    # B 데이터
+                    fig.add_trace(
+                        go.Bar(
+                            x=data_b[ColumnNames.DEFECT_TYPE],
+                            y=data_b["percentage"],
+                            name=compare_b,
+                            marker_color='#F59E0B',
+                            text=data_b["percentage"].apply(lambda x: f"{x:.1f}%"),
+                            textposition='outside',
+                            showlegend=False
+                        ),
+                        row=1, col=2
+                    )
+
+                    fig.update_xaxes(title_text="결함 유형", row=1, col=1)
+                    fig.update_xaxes(title_text="결함 유형", row=1, col=2)
+                    fig.update_yaxes(title_text="비율 (%)", row=1, col=1)
+                    fig.update_yaxes(title_text="비율 (%)", row=1, col=2)
+
+                    fig.update_layout(height=500)
+
+                    st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
+
+                    # 차이 분석
+                    st.markdown("#### 📊 차이 분석")
+
+                    # 결함 유형별 차이 계산
+                    merged = data_a.merge(
+                        data_b,
+                        on=ColumnNames.DEFECT_TYPE,
+                        how='outer',
+                        suffixes=('_A', '_B')
+                    ).fillna(0)
+
+                    merged['차이 (A-B)'] = merged['percentage_A'] - merged['percentage_B']
+                    merged['절대 차이'] = merged['차이 (A-B)'].abs()
+
+                    diff_df = merged[[
+                        ColumnNames.DEFECT_TYPE,
+                        'percentage_A',
+                        'percentage_B',
+                        '차이 (A-B)',
+                        '절대 차이'
+                    ]].sort_values('절대 차이', ascending=False).rename(columns={
+                        ColumnNames.DEFECT_TYPE: '결함 유형',
+                        'percentage_A': f'{compare_a} (%)',
+                        'percentage_B': f'{compare_b} (%)'
+                    })
+
+                    # 차이가 큰 결함 유형 강조
+                    st.markdown("**가장 큰 차이를 보이는 결함 유형 (Top 3)**")
+                    top_diff = diff_df.head(3)
+
+                    for idx, row in top_diff.iterrows():
+                        defect = row['결함 유형']
+                        diff = row['차이 (A-B)']
+                        if diff > 0:
+                            st.info(f"🔹 **{defect}**: {compare_a}가 {abs(diff):.1f}%p 더 높음")
+                        else:
+                            st.info(f"🔸 **{defect}**: {compare_b}가 {abs(diff):.1f}%p 더 높음")
+
+                    # 상세 테이블
+                    with st.expander("📋 전체 비교 데이터"):
+                        st.dataframe(
+                            diff_df.style.background_gradient(
+                                subset=['차이 (A-B)'],
+                                cmap='RdYlGn_r',
+                                vmin=-50,
+                                vmax=50
+                            ),
+                            width='stretch',
+                            hide_index=True
+                        )
+
+                        col_dl1, col_dl2 = st.columns([1, 5])
+                        with col_dl1:
+                            csv_data = diff_df.to_csv(index=False, encoding='utf-8-sig')
+                            st.download_button(
+                                label="📥 CSV 다운로드",
+                                data=csv_data,
+                                file_name=f"defect_comparison_{compare_a}_vs_{compare_b}_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
+                                mime="text/csv",
+                                key="download_defect_comparison"
+                            )
+
+            with tab3:
+                # 개별 분석 (기존 방식)
+                st.markdown("#### 개별 제조사-제품군 결함 분석")
+
                 selected_manufacturer = st.selectbox(
                     "제조사-제품군 선택",
                     options=unique_manufacturers,
-                    index=0
+                    index=0,
+                    key="defect_individual_selectbox"
                 )
 
                 mfr_data = display_df[
@@ -716,47 +998,6 @@ def render_defect_analysis(
                     )
                 else:
                     st.info(f"{selected_manufacturer}에 대한 결함 데이터가 없습니다.")
-            else:
-                # 전체 비교
-                pivot_df = display_df.pivot_table(
-                    index=ColumnNames.DEFECT_TYPE,
-                    columns="manufacturer_product",
-                    values="percentage",
-                    aggfunc='first',
-                    fill_value=0
-                )
-
-                st.bar_chart(pivot_df, width='stretch')
-
-                # 다운로드 버튼
-                defect_comparison_df = display_df[[
-                    "manufacturer_product",
-                    ColumnNames.DEFECT_TYPE,
-                    "count",
-                    "percentage"
-                ]].sort_values(["manufacturer_product", "count"], ascending=[True, False]).rename(columns={
-                    "manufacturer_product": "제조사-제품군",
-                    ColumnNames.DEFECT_TYPE: "결함 유형",
-                    "count": "건수",
-                    "percentage": "비율(%)"
-                })
-
-                col_dl1, col_dl2 = st.columns([1, 5])
-                with col_dl1:
-                    csv_data = defect_comparison_df.to_csv(index=False, encoding='utf-8-sig')
-                    st.download_button(
-                        label="📥 CSV 다운로드",
-                        data=csv_data,
-                        file_name=f"defect_analysis_all_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
-                        mime="text/csv",
-                        key="download_defect_all"
-                    )
-
-                st.dataframe(
-                    defect_comparison_df,
-                    width='stretch',
-                    hide_index=True
-                )
         else:
             st.info("결함 데이터가 없습니다.")
     else:
@@ -876,7 +1117,9 @@ def render_cfr_analysis(
     selected_dates,
     selected_manufacturers,
     selected_products,
-    year_month_expr
+    year_month_expr,
+    sidebar_min_cases,
+    sidebar_top_n
 ):
     """기기별 치명률(CFR) 분석 렌더링 (시각화 추가)"""
     import plotly.graph_objects as go
@@ -885,33 +1128,11 @@ def render_cfr_analysis(
     st.subheader("💀 기기별 치명률(CFR) 분석")
 
     try:
-        col1, col2 = st.columns([2, 1])
+        # 사이드바에서 설정된 값 사용
+        top_n_cfr = sidebar_top_n
+        min_cases = sidebar_min_cases
 
-        with col1:
-            default_top_n_cfr = st.session_state.get('top_n_cfr', 20)
-            top_n_cfr = st.number_input(
-                "상위 N개 표시 (CFR 분석)",
-                min_value=1,
-                max_value=100,
-                value=default_top_n_cfr,
-                step=1,
-                help="None을 선택하면 전체 결과가 표시됩니다",
-                key='top_n_cfr_input'
-            )
-            st.session_state.top_n_cfr = top_n_cfr
-
-        with col2:
-            default_min_cases = st.session_state.get('min_cases', Defaults.MIN_CASES)
-            min_cases = st.number_input(
-                "최소 보고 건수",
-                min_value=1,
-                max_value=1000,
-                value=default_min_cases,
-                step=1,
-                help="이 값보다 적은 건수의 기기는 제외됩니다 (통계적 신뢰도 확보)",
-                key='min_cases_input'
-            )
-            st.session_state.min_cases = min_cases
+        st.caption(f"💡 사이드바 설정: 상위 {top_n_cfr}개 표시, 최소 {min_cases}건 이상")
 
         with st.spinner("기기별 치명률 분석 중..."):
             cfr_result = calculate_cfr_by_device(
@@ -948,16 +1169,16 @@ def render_cfr_analysis(
                 st.metric("분석 기기 수", f"{len(display_df):,}개")
 
             with summary_col2:
-                avg_cfr = display_df["CFR(%)"].mean()
-                st.metric("평균 CFR", f"{avg_cfr:.2f}%")
+                min_cfr = display_df["CFR(%)"].min()
+                st.metric("최소 CFR", f"{min_cfr:.2f}%")
 
             with summary_col3:
                 max_cfr = display_df["CFR(%)"].max()
                 st.metric("최대 CFR", f"{max_cfr:.2f}%")
 
             with summary_col4:
-                median_cfr = display_df["CFR(%)"].median()
-                st.metric("CFR 중앙값", f"{median_cfr:.2f}%")
+                cfr_range = max_cfr - min_cfr
+                st.metric("CFR 범위", f"{cfr_range:.2f}%p")
 
             st.markdown("---")
 
@@ -1049,6 +1270,103 @@ def render_cfr_analysis(
                 )
 
                 st.plotly_chart(fig_scatter, width='stretch', config={'displayModeBar': False})
+
+            st.markdown("---")
+
+            # ==================== 통계적 유의성 검정 ====================
+            st.markdown("### 📊 통계적 유의성 분석")
+            st.caption("평균 CFR과의 비교를 통한 통계적 유의성 검정")
+
+            try:
+                from utils.statistical_tests import (
+                    fisher_exact_test,
+                    interpret_significance,
+                    calculate_confidence_interval,
+                    get_significance_level
+                )
+
+                # 전체 평균 CFR 계산
+                total_deaths = display_df["사망"].sum()
+                total_cases = display_df["총 건수"].sum()
+                overall_cfr = (total_deaths / total_cases * 100) if total_cases > 0 else 0
+
+                st.info(f"📌 전체 평균 CFR: **{overall_cfr:.2f}%** (사망 {total_deaths:,}건 / 총 {total_cases:,}건)")
+
+                # 통계 검정 결과
+                significance_results = []
+
+                for idx, row in display_df.head(10).iterrows():
+                    device = row["제조사-제품군"]
+                    device_deaths = int(row["사망"])
+                    device_total = int(row["총 건수"])
+                    device_cfr = row["CFR(%)"]
+
+                    # 나머지 데이터
+                    other_deaths = total_deaths - device_deaths
+                    other_total = total_cases - device_total
+
+                    if other_total > 0:
+                        # Fisher's Exact Test
+                        odds_ratio, p_value = fisher_exact_test(
+                            device_deaths, device_total,
+                            other_deaths, other_total
+                        )
+
+                        # 신뢰구간 계산
+                        ci_lower, ci_upper = calculate_confidence_interval(device_deaths, device_total)
+
+                        significance_results.append({
+                            "제조사-제품군": device,
+                            "CFR(%)": device_cfr,
+                            "95% CI": f"[{ci_lower:.2f}, {ci_upper:.2f}]",
+                            "p-value": p_value,
+                            "유의성": get_significance_level(p_value),
+                            "해석": interpret_significance(p_value)
+                        })
+
+                if significance_results:
+                    sig_df = pd.DataFrame(significance_results)
+
+                    # 유의한 결과만 강조 표시
+                    significant_devices = sig_df[sig_df["p-value"] < 0.05]
+
+                    if len(significant_devices) > 0:
+                        st.markdown("**🔴 통계적으로 유의한 기기 (p < 0.05)**")
+                        for _, row in significant_devices.iterrows():
+                            device = row["제조사-제품군"]
+                            cfr = row["CFR(%)"]
+                            sig = row["유의성"]
+                            interpretation = row["해석"]
+                            ci = row["95% CI"]
+
+                            if cfr > overall_cfr:
+                                st.error(f"**{device}** {sig}: CFR {cfr:.2f}% (평균보다 높음) - {interpretation}, 95% CI {ci}")
+                            else:
+                                st.success(f"**{device}** {sig}: CFR {cfr:.2f}% (평균보다 낮음) - {interpretation}, 95% CI {ci}")
+                    else:
+                        st.info("통계적으로 유의한 차이를 보이는 기기가 없습니다 (α = 0.05)")
+
+                    # 상세 테이블
+                    with st.expander("📋 통계 검정 상세 결과"):
+                        st.dataframe(
+                            sig_df.style.apply(
+                                lambda x: ['background-color: #fee' if v < 0.05 else '' for v in x],
+                                subset=['p-value']
+                            ),
+                            width='stretch',
+                            hide_index=True
+                        )
+
+                        st.caption("""
+                        **범례:**
+                        - *** : p < 0.001 (매우 유의함)
+                        - ** : p < 0.01 (유의함)
+                        - * : p < 0.05 (유의함)
+                        - CI: Confidence Interval (신뢰구간)
+                        """)
+
+            except Exception as e:
+                st.warning(f"통계적 유의성 검정 중 오류 발생: {str(e)}")
 
             st.markdown("---")
 
