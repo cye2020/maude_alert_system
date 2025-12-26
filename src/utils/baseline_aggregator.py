@@ -71,7 +71,13 @@ class BaselineAggregator:
         return months[0]
     
     def _get_window_months(self, as_of_month: str, window: int) -> tuple[list[str], list[str]]:
-        """윈도우별 recent/base 월 리스트를 반환합니다."""
+        """
+        윈도우별 recent/base 월 리스트를 반환합니다.
+        
+        기준 구간(base)은 최근 구간(recent)과 겹치지 않도록 설정합니다.
+        - window=1: recent=[당월], base=[전월]
+        - window=3: recent=[당월, -1, -2], base=[-3, -4, -5] (겹치지 않음)
+        """
         as_of_date = datetime.strptime(as_of_month, "%Y-%m")
         
         if window == 1:
@@ -79,7 +85,8 @@ class BaselineAggregator:
             base = [(as_of_date - relativedelta(months=1)).strftime("%Y-%m")]
         else:  # window == 3
             recent = [(as_of_date - relativedelta(months=i)).strftime("%Y-%m") for i in range(3)]
-            base = [(as_of_date - relativedelta(months=i)).strftime("%Y-%m") for i in range(1, 4)]
+            # base는 recent 직전 3개월 (겹치지 않음)
+            base = [(as_of_date - relativedelta(months=i)).strftime("%Y-%m") for i in range(3, 6)]
         
         return recent, base
     
@@ -260,7 +267,7 @@ class BaselineAggregator:
         ]).drop(["_mean", "_std"])
     
     def _add_ensemble_results(self, df: pl.DataFrame) -> pl.DataFrame:
-        """앙상블 결과를 추가합니다."""
+        """앙상블 결과(pattern)를 추가합니다."""
         return df.with_columns(
             pl.when(
                 pl.col("is_spike").cast(pl.Int8) +
@@ -290,7 +297,8 @@ class BaselineAggregator:
             "ratio", "score_log", "score_sqrt", "score_ratio",
             "log_base_mean", "log_base_std", "z_score", "z_log",
             "lambda_pois", "p_pois", "p_adjusted", "score_pois",
-            "is_spike", "is_spike_z", "is_spike_p", "pattern"
+            "pattern",
+            "is_spike", "is_spike_z", "is_spike_p"
         ]
         # 존재하는 컬럼만 선택
         existing = [c for c in col_order if c in df.columns]
@@ -365,6 +373,9 @@ class BaselineAggregator:
         combined = pl.concat(results)
         
         # 5. 지표 계산
+        if verbose:
+            print("지표 계산 중...")
+        
         combined = self._calculate_ratio_metrics(combined)
         combined = self._calculate_zscore_metrics(combined, eps)
         combined = self._calculate_poisson_metrics(combined, alpha, correction_method)
@@ -378,6 +389,18 @@ class BaselineAggregator:
         # 8. 컬럼 정리
         combined = self._reorder_columns(combined)
         combined = combined.sort(["keyword", "window"])
+        
+        if verbose:
+            n_keywords = combined["keyword"].n_unique()
+            spike_w1 = combined.filter(
+                (pl.col("window") == 1) & 
+                (pl.col("pattern").is_in(["severe", "alert"]))
+            ).height
+            spike_w3 = combined.filter(
+                (pl.col("window") == 3) & 
+                (pl.col("pattern").is_in(["severe", "alert"]))
+            ).height
+            print(f"\n완료: 키워드 {n_keywords}개, 스파이크(2+) W1={spike_w1}, W3={spike_w3}")
         
         return combined.lazy()
     
