@@ -2,7 +2,6 @@
 from datetime import datetime
 from typing import Any, Dict, Optional, List, Tuple
 import streamlit as st
-from streamlit_datetime_picker import date_time_picker
 from dateutil.relativedelta import relativedelta
 
 import sys
@@ -286,41 +285,6 @@ class SidebarManager:
 
             self.start_date = start_date
             self.end_date = end_date
-
-        elif widget_type == "date_time_picker":
-            # streamlit-datetime-picker를 사용한 단일 날짜 선택기
-
-            picker = args.get("picker", "datetime")
-            value = args.get("value")
-            minDate = args.get("minDate")
-            maxDate = args.get("maxDate")
-            allowClear = args.get("allowClear", True)
-            size = args.get("size", "middle")
-
-            # 기본값 설정
-            if value is None:
-                value = self.TODAY
-
-            # 3년 전 계산 (defaults.yaml에서 설정된 기간 사용)
-            analysis_period_years = self.cfg.defaults.get("analysis_period_years", 3)
-            
-            if minDate is None:
-                minDate = self.TODAY - relativedelta(years=analysis_period_years - 1)
-
-            if maxDate is None:
-                maxDate = self.TODAY
-                
-
-            selected_value = date_time_picker(
-                label=label,
-                picker=picker,
-                value=value,
-                minDate=minDate,
-                maxDate=maxDate,
-                allowClear=allowClear,
-                size=size,
-                key=widget_key
-            )
 
         # Caption 렌더링 (있는 경우)
         if caption_template and selected_value is not None:
