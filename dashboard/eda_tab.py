@@ -5,6 +5,12 @@ import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
+import ast
+import re
+import html
+import plotly.graph_objects as go
+import plotly.express as px
+import streamlit.components.v1 as components
 
 @st.cache_data # 캐싱 
 def load_data():
@@ -390,10 +396,22 @@ def get_window_dates(available_dates, window_size, as_of_month=None):
 def show(filters=None):
     st.title("📈 Detailed Analysis")
 
-    # 필터 값 사용
-    selected_date = filters.get("date")
-    categories = filters.get("categories", [])
-    confidence_interval = filters.get("confidence_interval", 0.95)
+    # 필터 값 사용 (filters가 None인 경우 session_state에서 가져오기)
+    if filters is None:
+        # Home.py에서 설정한 session_state 값 사용
+        from datetime import datetime
+        selected_year_month = st.session_state.get('selected_year_month', None)
+        if selected_year_month:
+            year, month = map(int, selected_year_month.split('-'))
+            selected_date = datetime(year, month, 1)
+        else:
+            selected_date = datetime.now().replace(day=1)
+        categories = []
+        confidence_interval = 0.95
+    else:
+        selected_date = filters.get("date")
+        categories = filters.get("categories", [])
+        confidence_interval = filters.get("confidence_interval", 0.95)
     
 
     # ==================== 월별 보고서 수 그래프 ====================
@@ -423,7 +441,7 @@ def show(filters=None):
             
             # 사이드바에서 선택한 년월 및 window 사용
             sidebar_year_month = st.session_state.get('selected_year_month', None)
-            sidebar_window = st.session_state.get('selected_window', 1)
+            sidebar_window = st.session_state.get('sidebar_window', 1)
             
             # 윈도우 기반 날짜 범위 계산
             if sidebar_year_month:
@@ -873,228 +891,226 @@ def show(filters=None):
     else:
         st.info("결함 분석을 위해 년-월을 선택해주세요.")
 
-    # ==================== 문제 부품 분석 ====================
-    st.subheader("문제 부품 분석")
+    # # ==================== 문제 부품 분석 ====================
+    # st.subheader("문제 부품 분석")
     
-    @st.cache_data
-    def get_available_defect_types(_lf,
-                                   manufacturer_col='manufacturer_name',
-                                   product_col='product_code',
-                                   date_col='date_received',
-                                   selected_dates=None,
-                                   selected_manufacturers=None,
-                                   selected_products=None,
-                                   _year_month_expr=None):
-        """
-        필터링된 데이터에서 사용 가능한 결함 유형 목록 반환
-        """
-        year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, date_col)
+    # @st.cache_data
+    # def get_available_defect_types(_lf,
+    #                                manufacturer_col='manufacturer_name',
+    #                                product_col='product_code',
+    #                                date_col='date_received',
+    #                                selected_dates=None,
+    #                                selected_manufacturers=None,
+    #                                selected_products=None,
+    #                                _year_month_expr=None):
+    #     """
+    #     필터링된 데이터에서 사용 가능한 결함 유형 목록 반환
+    #     """
+    #     year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, date_col)
         
-        filtered_lf = _lf.filter(pl.col('defect_type').is_not_null())
+    #     filtered_lf = _lf.filter(pl.col('defect_type').is_not_null())
         
-        # 날짜 필터 적용
-        if selected_dates and len(selected_dates) > 0:
-            filtered_lf = (
-                filtered_lf
-                .with_columns(year_month_expr)
-                .filter(pl.col("year_month").is_in(selected_dates))
-            )
+    #     # 날짜 필터 적용
+    #     if selected_dates and len(selected_dates) > 0:
+    #         filtered_lf = (
+    #             filtered_lf
+    #             .with_columns(year_month_expr)
+    #             .filter(pl.col("year_month").is_in(selected_dates))
+    #         )
         
-        # 제조사 필터 적용
-        if selected_manufacturers and len(selected_manufacturers) > 0:
-            filtered_lf = filtered_lf.filter(pl.col(manufacturer_col).is_in(selected_manufacturers))
+    #     # 제조사 필터 적용
+    #     if selected_manufacturers and len(selected_manufacturers) > 0:
+    #         filtered_lf = filtered_lf.filter(pl.col(manufacturer_col).is_in(selected_manufacturers))
         
-        # 제품군 필터 적용
-        if selected_products and len(selected_products) > 0:
-            filtered_lf = filtered_lf.filter(pl.col(product_col).is_in(selected_products))
+    #     # 제품군 필터 적용
+    #     if selected_products and len(selected_products) > 0:
+    #         filtered_lf = filtered_lf.filter(pl.col(product_col).is_in(selected_products))
         
-        defect_types = (
-            filtered_lf
-            .select(pl.col('defect_type'))
-            .unique()
-            .sort('defect_type')
-            .collect()
-        )['defect_type'].to_list()
+    #     defect_types = (
+    #         filtered_lf
+    #         .select(pl.col('defect_type'))
+    #         .unique()
+    #         .sort('defect_type')
+    #         .collect()
+    #     )['defect_type'].to_list()
         
-        return defect_types
+    #     return defect_types
     
-    @st.cache_data
-    def analyze_defect_components(_lf,
-                                  defect_type,
-                                  manufacturer_col='manufacturer_name',
-                                  product_col='product_code',
-                                  date_col='date_received',
-                                  selected_dates=None,
-                                  selected_manufacturers=None,
-                                  selected_products=None,
-                                  top_n=10,
-                                  _year_month_expr=None):
-        """
-        특정 결함 종류의 문제 기기 부품 분석
+    # @st.cache_data
+    # def analyze_defect_components(_lf,
+    #                               defect_type,
+    #                               manufacturer_col='manufacturer_name',
+    #                               product_col='product_code',
+    #                               date_col='date_received',
+    #                               selected_dates=None,
+    #                               selected_manufacturers=None,
+    #                               selected_products=None,
+    #                               top_n=10,
+    #                               _year_month_expr=None):
+    #     """
+    #     특정 결함 종류의 문제 기기 부품 분석
         
-        Args:
-            _lf: LazyFrame
-            defect_type: 분석할 결함 종류
-            manufacturer_col: 제조사 컬럼명
-            product_col: 제품군 컬럼명
-            date_col: 날짜 컬럼명
-            selected_dates: 선택된 년-월 리스트
-            selected_manufacturers: 선택된 제조사 리스트
-            selected_products: 선택된 제품군 리스트
-            top_n: 상위 N개 문제 부품 표시
-            _year_month_expr: 년-월 컬럼 생성 표현식
+    #     Args:
+    #         _lf: LazyFrame
+    #         defect_type: 분석할 결함 종류
+    #         manufacturer_col: 제조사 컬럼명
+    #         product_col: 제품군 컬럼명
+    #         date_col: 날짜 컬럼명
+    #         selected_dates: 선택된 년-월 리스트
+    #         selected_manufacturers: 선택된 제조사 리스트
+    #         selected_products: 선택된 제품군 리스트
+    #         top_n: 상위 N개 문제 부품 표시
+    #         _year_month_expr: 년-월 컬럼 생성 표현식
         
-        Returns:
-            문제 부품 분포 DataFrame
-        """
-        year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, date_col)
+    #     Returns:
+    #         문제 부품 분포 DataFrame
+    #     """
+    #     year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, date_col)
         
-        # 기본 필터링
-        filtered_lf = _lf.filter(pl.col('defect_type') == defect_type)
+    #     # 기본 필터링
+    #     filtered_lf = _lf.filter(pl.col('defect_type') == defect_type)
         
-        # 날짜 필터 적용
-        if selected_dates and len(selected_dates) > 0:
-            filtered_lf = (
-                filtered_lf
-                .with_columns(year_month_expr)
-                .filter(pl.col("year_month").is_in(selected_dates))
-            )
+    #     # 날짜 필터 적용
+    #     if selected_dates and len(selected_dates) > 0:
+    #         filtered_lf = (
+    #             filtered_lf
+    #             .with_columns(year_month_expr)
+    #             .filter(pl.col("year_month").is_in(selected_dates))
+    #         )
         
-        # 제조사 필터 적용
-        if selected_manufacturers and len(selected_manufacturers) > 0:
-            filtered_lf = filtered_lf.filter(pl.col(manufacturer_col).is_in(selected_manufacturers))
+    #     # 제조사 필터 적용
+    #     if selected_manufacturers and len(selected_manufacturers) > 0:
+    #         filtered_lf = filtered_lf.filter(pl.col(manufacturer_col).is_in(selected_manufacturers))
         
-        # 제품군 필터 적용
-        if selected_products and len(selected_products) > 0:
-            filtered_lf = filtered_lf.filter(pl.col(product_col).is_in(selected_products))
+    #     # 제품군 필터 적용
+    #     if selected_products and len(selected_products) > 0:
+    #         filtered_lf = filtered_lf.filter(pl.col(product_col).is_in(selected_products))
         
-        # problem_components가 null이 아닌 데이터만 필터링
-        defect_data = filtered_lf.filter(pl.col('problem_components').is_not_null())
+    #     # problem_components가 null이 아닌 데이터만 필터링
+    #     defect_data = filtered_lf.filter(pl.col('problem_components').is_not_null())
         
-        # 전체 개수 계산
-        total = defect_data.select(pl.len()).collect().item()
+    #     # 전체 개수 계산
+    #     total = defect_data.select(pl.len()).collect().item()
         
-        if total == 0:
-            return None
+    #     if total == 0:
+    #         return None
         
-        # 문제 부품 분포 집계
-        component_dist = (
-            defect_data
-            .group_by('problem_components')
-            .agg(pl.len().alias('count'))
-            .with_columns(
-                (pl.col('count') / total * 100)
-                .round(2)
-                .alias('percentage')
-            )
-            .sort('count', descending=True)
-            .head(top_n)
-            .collect()
-        )
+    #     # 문제 부품 분포 집계
+    #     component_dist = (
+    #         defect_data
+    #         .group_by('problem_components')
+    #         .agg(pl.len().alias('count'))
+    #         .with_columns(
+    #             (pl.col('count') / total * 100)
+    #             .round(2)
+    #             .alias('percentage')
+    #         )
+    #         .sort('count', descending=True)
+    #         .head(top_n)
+    #         .collect()
+    #     )
         
-        return component_dist
+    #     return component_dist
     
-    # 문제 부품 분석 UI
-    if lf is not None and selected_dates:
-        try:
-            # 사용 가능한 결함 유형 가져오기
-            with st.spinner("결함 유형 목록 로딩 중..."):
-                available_defect_types = get_available_defect_types(
-                    lf,
-                    date_col=date_col,
-                    selected_dates=selected_dates,
-                    selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
-                    selected_products=selected_products if selected_products else None,
-                    _year_month_expr=year_month_expr
-                )
+    # # 문제 부품 분석 UI
+    # if lf is not None and selected_dates:
+    #     try:
+    #         # 사용 가능한 결함 유형 가져오기
+    #         with st.spinner("결함 유형 목록 로딩 중..."):
+    #             available_defect_types = get_available_defect_types(
+    #                 lf,
+    #                 date_col=date_col,
+    #                 selected_dates=selected_dates,
+    #                 selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
+    #                 selected_products=selected_products if selected_products else None,
+    #                 _year_month_expr=year_month_expr
+    #             )
             
-            if len(available_defect_types) > 0:
-                # 결함 유형 선택
-                col1, col2 = st.columns([2, 1])
+    #         if len(available_defect_types) > 0:
+    #             # 결함 유형 선택
+    #             col1, col2 = st.columns([2, 1])
                 
-                with col1:
-                    # 이전에 선택한 결함 유형 가져오기
-                    prev_selected_defect_type = st.session_state.get('prev_selected_defect_type', None)
-                    default_index = 0
-                    if prev_selected_defect_type and prev_selected_defect_type in available_defect_types:
-                        default_index = available_defect_types.index(prev_selected_defect_type)
+    #             with col1:
+    #                 # 이전에 선택한 결함 유형 가져오기
+    #                 prev_selected_defect_type = st.session_state.get('prev_selected_defect_type', None)
+    #                 default_index = 0
+    #                 if prev_selected_defect_type and prev_selected_defect_type in available_defect_types:
+    #                     default_index = available_defect_types.index(prev_selected_defect_type)
                     
-                    selected_defect_type = st.selectbox(
-                        "결함 유형 선택",
-                        options=available_defect_types,
-                        index=default_index,
-                        help="분석할 결함 유형을 선택하세요",
-                        key='defect_type_selectbox'
-                    )
-                    # 선택값 저장
-                    st.session_state.prev_selected_defect_type = selected_defect_type
+    #                 selected_defect_type = st.selectbox(
+    #                     "결함 유형 선택",
+    #                     options=available_defect_types,
+    #                     index=default_index,
+    #                     help="분석할 결함 유형을 선택하세요",
+    #                     key='defect_type_selectbox'
+    #                 )
+    #                 # 선택값 저장
+    #                 st.session_state.prev_selected_defect_type = selected_defect_type
                 
-                with col2:
-                    default_top_n_components = st.session_state.get('top_n_components', 10)
-                    top_n_components = st.number_input(
-                        "상위 N개 표시",
-                        min_value=1,
-                        max_value=50,
-                        value=default_top_n_components,
-                        step=1,
-                        key='top_n_components_input'
-                    )
-                    st.session_state.top_n_components = top_n_components
+    #             with col2:
+    #                 default_top_n_components = st.session_state.get('top_n_components', 10)
+    #                 top_n_components = st.number_input(
+    #                     "상위 N개 표시",
+    #                     min_value=1,
+    #                     max_value=50,
+    #                     value=default_top_n_components,
+    #                     step=1,
+    #                     key='top_n_components_input'
+    #                 )
+    #                 st.session_state.top_n_components = top_n_components
                 
-                # 문제 부품 분석 실행
-                if selected_defect_type:
-                    with st.spinner("문제 부품 분석 중..."):
-                        component_df = analyze_defect_components(
-                            lf,
-                            defect_type=selected_defect_type,
-                            manufacturer_col='manufacturer_name',
-                            product_col='product_code',
-                            date_col=date_col,
-                            selected_dates=selected_dates,
-                            selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
-                            selected_products=selected_products if selected_products else None,
-                            top_n=top_n_components,
-                            _year_month_expr=year_month_expr
-                        )
+    #             # 문제 부품 분석 실행
+    #             if selected_defect_type:
+    #                 with st.spinner("문제 부품 분석 중..."):
+    #                     component_df = analyze_defect_components(
+    #                         lf,
+    #                         defect_type=selected_defect_type,
+    #                         manufacturer_col='manufacturer_name',
+    #                         product_col='product_code',
+    #                         date_col=date_col,
+    #                         selected_dates=selected_dates,
+    #                         selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
+    #                         selected_products=selected_products if selected_products else None,
+    #                         top_n=top_n_components,
+    #                         _year_month_expr=year_month_expr
+    #                     )
                     
-                    if component_df is not None and len(component_df) > 0:
-                        # 결과를 pandas DataFrame으로 변환
-                        display_df = component_df.to_pandas().copy()
+    #                 if component_df is not None and len(component_df) > 0:
+    #                     # 결과를 pandas DataFrame으로 변환
+    #                     display_df = component_df.to_pandas().copy()
                         
-                        # problem_components를 문자열로 변환 (리스트 타입인 경우)
-                        display_df['problem_components'] = display_df['problem_components'].apply(
-                            lambda x: str(x) if x is not None else "(NULL)"
-                        )
+    #                     # problem_components를 문자열로 변환 (리스트 타입인 경우)
+    #                     display_df['problem_components'] = display_df['problem_components'].apply(
+    #                         lambda x: str(x) if x is not None else "(NULL)"
+    #                     )
                         
-                        # 표시용 컬럼명 변경
-                        display_df.insert(0, "순위", range(1, len(display_df) + 1))
-                        display_df = display_df[["순위", "problem_components", "count", "percentage"]]
-                        display_df.columns = ["순위", "문제 부품", "건수", "비율(%)"]
+    #                     # 표시용 컬럼명 변경
+    #                     display_df.insert(0, "순위", range(1, len(display_df) + 1))
+    #                     display_df = display_df[["순위", "problem_components", "count", "percentage"]]
+    #                     display_df.columns = ["순위", "문제 부품", "건수", "비율(%)"]
                         
-                        # # 막대 차트 표시 (건수 기준)
-                        # chart_data = display_df.set_index("문제 부품")[["건수"]]
-                        # st.bar_chart(chart_data, use_container_width=True)
+    #                     # # 막대 차트 표시 (건수 기준)
+    #                     # chart_data = display_df.set_index("문제 부품")[["건수"]]
+    #                     # st.bar_chart(chart_data, use_container_width=True)
                         
-                        # 표 표시
-                        st.dataframe(
-                            display_df,
-                            use_container_width=True,
-                            hide_index=True
-                        )
-                    else:
-                        st.info(f"'{selected_defect_type}' 결함 유형에 대한 문제 부품 데이터가 없습니다.")
-            else:
-                st.info("선택한 조건에 해당하는 결함 유형이 없습니다.")
+    #                     # 표 표시
+    #                     st.dataframe(
+    #                         display_df,
+    #                         use_container_width=True,
+    #                         hide_index=True
+    #                     )
+    #                 else:
+    #                     st.info(f"'{selected_defect_type}' 결함 유형에 대한 문제 부품 데이터가 없습니다.")
+    #         else:
+    #             st.info("선택한 조건에 해당하는 결함 유형이 없습니다.")
                 
-        except Exception as e:
-            st.error(f"문제 부품 분석 중 오류가 발생했습니다: {str(e)}")
-            st.exception(e)
-    elif lf is not None:
-        st.info("문제 부품 분석을 위해 년-월을 선택해주세요.")
+    #     except Exception as e:
+    #         st.error(f"문제 부품 분석 중 오류가 발생했습니다: {str(e)}")
+    #         st.exception(e)
+    # elif lf is not None:
+    #     st.info("문제 부품 분석을 위해 년-월을 선택해주세요.")
 
-    # ==================== 기기별 치명률(CFR) 분석 ====================
-    st.subheader("기기별 치명률(CFR) 분석")
-    
+    # ==================== CFR 계산 함수 정의 ====================
     @st.cache_data
     def calculate_cfr_by_device(_lf,
                                 manufacturer_col='manufacturer_name',
@@ -1197,6 +1213,491 @@ def show(filters=None):
         result = device_stats.collect()
         
         return result
+
+    # ==================== defect type별 상위 문제 ====================
+    st.subheader("defect type별 상위 문제")
+    
+    @st.cache_data
+    def cluster_keyword_unpack(_lf, 
+                                col_name='problem_components',
+                                cluster_col='defect_type',
+                                   selected_dates=None,
+                                   selected_manufacturers=None,
+                                   selected_products=None,
+                                top_n=10,
+                                   _year_month_expr=None):
+        """
+        defect type 별로 col_name마다 있는 리스트를 열어서 키워드 종류를 추출하고 count
+        (벡터화 연산으로 대용량 데이터 처리 최적화)
+
+        Parameters:
+        -----------
+        _lf : pl.LazyFrame
+            defect type 정보가 포함된 LazyFrame
+        col_name : str
+            리스트가 들어있는 열 이름 (예: 'problem_components')
+        cluster_col : str
+            defect type 열 이름 (기본값: 'defect_type')
+        selected_dates: 선택된 년-월 리스트
+        selected_manufacturers: 선택된 제조사 리스트
+        selected_products: 선택된 제품군 리스트
+        top_n: 상위 N개 키워드만 반환
+        _year_month_expr: 년-월 컬럼 생성 표현식
+
+        Returns:
+        --------
+        pl.DataFrame
+            defect type별 키워드, count, ratio를 포함한 데이터프레임
+        """
+        year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, 'date_received')
+        
+        # 기본 필터링
+        lf_temp = _lf.select([cluster_col, col_name, 'manufacturer_name', 'product_code', 'date_received'])
+        
+        # 날짜 필터 적용
+        if selected_dates and len(selected_dates) > 0:
+            lf_temp = (
+                lf_temp
+                .with_columns(year_month_expr)
+                .filter(pl.col("year_month").is_in(selected_dates))
+            )
+        
+        # 제조사 필터 적용
+        if selected_manufacturers and len(selected_manufacturers) > 0:
+            lf_temp = lf_temp.filter(pl.col('manufacturer_name').is_in(selected_manufacturers))
+        
+        # 제품군 필터 적용
+        if selected_products and len(selected_products) > 0:
+            lf_temp = lf_temp.filter(pl.col('product_code').is_in(selected_products))
+        
+        # 필요한 컬럼만 선택
+        lf_temp = lf_temp.select([cluster_col, col_name])
+        
+        # 1. 문자열을 리스트로 변환 (필요한 경우)
+        schema = lf_temp.collect_schema()
+        if schema[col_name] == pl.Utf8:
+            def safe_literal_eval(x):
+                if not x or x == 'null' or x == 'None':
+                    return []
+                try:
+                    result = ast.literal_eval(x)
+                    return result if isinstance(result, list) else []
+                except (ValueError, SyntaxError):
+                    return []
+            
+            lf_temp = lf_temp.with_columns(
+                pl.col(col_name)
+                .map_elements(safe_literal_eval, return_dtype=pl.List(pl.Utf8))
+            )
+
+        # 2. 전체 데이터를 한 번에 explode (벡터화)
+        exploded_lf = (lf_temp
+                      .explode(col_name)
+                      .filter(pl.col(col_name).is_not_null())
+                      .filter(pl.col(col_name) != "")  # 빈 문자열 제거
+                     )
+
+        # 3. defect type별로 그룹화하여 카운트 (벡터화)
+        keyword_counts = (exploded_lf
+                          .with_columns(
+                              pl.col(col_name).str.to_lowercase().str.strip_chars()  # 소문자 + 공백 제거
+                              )
+                          .group_by([cluster_col, col_name])
+                          .agg(pl.len().alias('count'))
+                         )
+
+        # 4. defect type별 전체 키워드 수 계산
+        cluster_totals = (keyword_counts
+                          .group_by(cluster_col)
+                          .agg(pl.col('count').sum().alias('total_count'))
+                         )
+
+        # 5. ratio 계산 및 정렬
+        result_lf = (keyword_counts
+                     .join(cluster_totals, on=cluster_col)
+                     .with_columns(
+                         (pl.col('count') / pl.col('total_count') * 100).round(2).alias('ratio')
+                     )
+                     .select([cluster_col, col_name, 'count', 'ratio'])
+                     .sort([cluster_col, 'count'], descending=[False, True])
+                    )
+
+        # 6. defect type별 상위 N개만 선택
+        result_df = (
+            result_lf
+            .with_columns(
+                pl.col('count').rank('dense', descending=True).over(cluster_col).alias('rank')
+            )
+            .filter(pl.col('rank') <= top_n)
+            .drop('rank')
+            .collect()
+        )
+        
+        return result_df
+    
+    @st.cache_data
+    def get_available_clusters(_lf,
+                                cluster_col='defect_type',
+                                  selected_dates=None,
+                                  selected_manufacturers=None,
+                                  selected_products=None,
+                                  _year_month_expr=None):
+        """
+        필터링된 데이터에서 사용 가능한 defect type 목록 반환
+        """
+        year_month_expr = _year_month_expr if _year_month_expr is not None else get_year_month_expr(_lf, 'date_received')
+        
+        filtered_lf = _lf.filter(pl.col(cluster_col).is_not_null())
+        
+        # 날짜 필터 적용
+        if selected_dates and len(selected_dates) > 0:
+            filtered_lf = (
+                filtered_lf
+                .with_columns(year_month_expr)
+                .filter(pl.col("year_month").is_in(selected_dates))
+            )
+        
+        # 제조사 필터 적용
+        if selected_manufacturers and len(selected_manufacturers) > 0:
+            filtered_lf = filtered_lf.filter(pl.col('manufacturer_name').is_in(selected_manufacturers))
+        
+        # 제품군 필터 적용
+        if selected_products and len(selected_products) > 0:
+            filtered_lf = filtered_lf.filter(pl.col('product_code').is_in(selected_products))
+        
+        clusters = (
+            filtered_lf
+            .select(pl.col(cluster_col))
+            .unique()
+            .sort(cluster_col)
+            .collect()
+        )[cluster_col].to_list()
+        
+        return clusters
+    
+    # defect type별 상위 문제 분석 UI
+    if lf is not None:
+        try:
+            # 사용 가능한 defect type 가져오기
+            with st.spinner("defect type 목록 로딩 중..."):
+                available_clusters = get_available_clusters(
+                    lf,
+                    cluster_col='defect_type',
+                    selected_dates=selected_dates if selected_dates else None,
+                    selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
+                    selected_products=selected_products if selected_products else None,
+                    _year_month_expr=year_month_expr
+                )
+            
+            if len(available_clusters) > 0:
+                # 레이아웃: 좌우 반반으로 나누어 오른쪽에 defect type별 상위 문제
+                main_col, cluster_col = st.columns([1, 1])
+                
+                with cluster_col:
+                    # 제목
+                    st.markdown("### defect type별 상위 문제")
+                    
+                    # 이전에 선택한 defect type 가져오기
+                    prev_selected_cluster = st.session_state.get('prev_selected_cluster', None)
+                    default_index = 0
+                    if prev_selected_cluster and prev_selected_cluster in available_clusters:
+                        default_index = available_clusters.index(prev_selected_cluster)
+                    
+                    selected_cluster = st.selectbox(
+                        "카테고리 선택",
+                        options=available_clusters,
+                        index=default_index,
+                        help="분석할 defect type를 선택하세요",
+                        key='cluster_selectbox',
+                        label_visibility="collapsed"
+                    )
+                    # 선택값 저장
+                    st.session_state.prev_selected_cluster = selected_cluster
+                    
+                    # 상위 N개 설정 (기본값 10개)
+                    top_n_cluster = 10
+                
+                    # defect type별 상위 문제 분석 실행
+                    if selected_cluster:
+                        with st.spinner("defect type별 상위 문제 분석 중..."):
+                            cluster_result = cluster_keyword_unpack(
+                                lf,
+                                col_name='problem_components',
+                                cluster_col='defect_type',
+                                selected_dates=selected_dates if selected_dates else None,
+                            selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
+                            selected_products=selected_products if selected_products else None,
+                                top_n=top_n_cluster,
+                            _year_month_expr=year_month_expr
+                        )
+                    
+                        # 선택된 defect type의 데이터만 필터링
+                        cluster_data = cluster_result.filter(
+                            pl.col('defect_type') == selected_cluster
+                        )
+                        
+                        if len(cluster_data) > 0:
+                            # 결과를 pandas DataFrame으로 변환
+                            display_df = cluster_data.to_pandas().copy()
+                            
+                            # problem_components를 문자열로 변환
+                            display_df['problem_components'] = display_df['problem_components'].apply(
+                                lambda x: str(x) if x is not None else "(NULL)"
+                            )
+                            
+                            # 정렬 (count 내림차순)
+                            display_df = display_df.sort_values('count', ascending=False).reset_index(drop=True)
+                            
+                            # HTML/CSS를 사용한 부드럽고 둥근 막대 차트
+                            max_visible_items = 10  # 화면에 보이는 항목 수
+                            item_height = 55  # 각 항목의 높이
+                            container_height = max_visible_items * item_height  # 스크롤 컨테이너 높이
+                            
+                            # 최대 비율 계산 (막대 길이 계산용)
+                            max_ratio = display_df['ratio'].max() if len(display_df) > 0 else 100
+                            
+                            # HTML/CSS 스타일과 컨테이너 (f-string 사용)
+                            bar_height = item_height - 10
+                            html_content = f"""
+                            <style>
+                                .cluster-bar-container {{
+                                    height: {container_height}px;
+                                    overflow-y: auto;
+                                    overflow-x: hidden;
+                                    padding: 10px 5px;
+                                    scroll-behavior: smooth;
+                                }}
+                                .cluster-bar-container::-webkit-scrollbar {{
+                                    width: 8px;
+                                }}
+                                .cluster-bar-container::-webkit-scrollbar-track {{
+                                    background: #f1f1f1;
+                                    border-radius: 10px;
+                                }}
+                                .cluster-bar-container::-webkit-scrollbar-thumb {{
+                                    background: #888;
+                                    border-radius: 10px;
+                                }}
+                                .cluster-bar-container::-webkit-scrollbar-thumb:hover {{
+                                    background: #555;
+                                }}
+                                .cluster-item {{
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 10px;
+                                    margin-bottom: 12px;
+                                    padding: 8px 0;
+                                    transition: transform 0.2s ease;
+                                }}
+                                .cluster-item:hover {{
+                                    transform: translateX(3px);
+                                }}
+                                .component-name {{
+                                    width: 140px;
+                                    font-size: 14px;
+                                    color: #374151;
+                                    flex-shrink: 0;
+                                    text-align: left;
+                                    font-weight: 500;
+                                    overflow: hidden;
+                                    text-overflow: ellipsis;
+                                    white-space: nowrap;
+                                }}
+                                .bar-wrapper {{
+                                    flex: 1;
+                                    position: relative;
+                                    height: {bar_height}px;
+                                    background-color: #F3F4F6;
+                                    border-radius: 20px;
+                                    overflow: hidden;
+                                }}
+                                .bar-fill {{
+                                    position: absolute;
+                                    left: 0;
+                                    top: 0;
+                                    height: 100%;
+                                    background: linear-gradient(90deg, #3B82F6 0%, #2563EB 100%);
+                                    border-radius: 20px;
+                                    transition: width 0.3s ease;
+                                    box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+                                }}
+                                .bar-content {{
+                                    position: absolute;
+                                    top: 50%;
+                                    transform: translateY(-50%);
+                                    left: 15px;
+                                    font-size: 15px;
+                                    font-weight: 600;
+                                    color: white;
+                                    text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+                                    z-index: 2;
+                                }}
+                                .bar-ratio {{
+                                    position: absolute;
+                                    top: 50%;
+                                    transform: translateY(-50%);
+                                    right: 15px;
+                                    font-size: 14px;
+                                    font-weight: 500;
+                                    color: #6B7280;
+                                    background-color: rgba(243, 244, 246, 0.95);
+                                    padding: 5px 10px;
+                                    border-radius: 12px;
+                                    z-index: 2;
+                                    backdrop-filter: blur(4px);
+                                }}
+                            </style>
+                            <div class="cluster-bar-container">
+                            """
+                            
+                            for idx, row in display_df.iterrows():
+                                component = row['problem_components']
+                                count = int(row['count'])
+                                ratio = float(row['ratio'])
+                                # 막대 길이는 비율에 비례 (최대 비율을 100%로 설정)
+                                bar_width = (ratio / max_ratio) * 100 if max_ratio > 0 else 0
+                                
+                                # 컴포넌트 이름이 너무 길면 자르기
+                                display_component = component[:30] + "..." if len(component) > 30 else component
+                                
+                                # HTML 이스케이프 처리
+                                escaped_component = html.escape(str(component))
+                                escaped_display = html.escape(str(display_component))
+                                
+                                html_content += f"""
+                                <div class="cluster-item">
+                                    <div class="component-name" title="{escaped_component}">{escaped_display}</div>
+                                    <div class="bar-wrapper">
+                                        <div class="bar-fill" style="width: {bar_width}%;"></div>
+                                        <span class="bar-content">{count:,}</span>
+                                        <span class="bar-ratio">{ratio:.1f}%</span>
+                                    </div>
+                                </div>
+                                """
+                            
+                            html_content += "</div>"
+                            
+                            # HTML 렌더링 (components.html 사용)
+                            components.html(html_content, height=container_height + 20, scrolling=True)
+                        else:
+                            st.info(f"'{selected_cluster}' defect type에 대한 문제 부품 데이터가 없습니다.")
+                
+                with main_col:
+                    # 좌측 영역: CFR 분석의 사망/부상/오작동 파이 차트
+                    if lf is not None:
+                        try:
+                            # CFR 데이터 가져오기 (전체 데이터, 필터 적용)
+                            with st.spinner("CFR 데이터 로딩 중..."):
+                                cfr_data = calculate_cfr_by_device(
+                                    lf,
+                                    manufacturer_col='manufacturer_name',
+                                    product_col='product_code',
+                                    event_column='event_type',
+                                    date_col=date_col,
+                                    selected_dates=selected_dates if selected_dates else None,
+                                    selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
+                                    selected_products=selected_products if selected_products else None,
+                                    top_n=None,  # 전체 데이터
+                                    min_cases=1,  # 최소 제한 없음
+                                    _year_month_expr=year_month_expr
+                                )
+                            
+                            if len(cfr_data) > 0:
+                                # 전체 합계 계산
+                                total_deaths = cfr_data['death_count'].sum()
+                                total_injuries = cfr_data['injury_count'].sum()
+                                total_malfunctions = cfr_data['malfunction_count'].sum()
+                                total_all = total_deaths + total_injuries + total_malfunctions
+                                
+                                if total_all > 0:
+                                    # 파이 차트 데이터 준비
+                                    pie_data = pd.DataFrame({
+                                        '유형': ['사망', '부상', '오작동'],
+                                        '건수': [total_deaths, total_injuries, total_malfunctions],
+                                        '비율': [
+                                            (total_deaths / total_all * 100),
+                                            (total_injuries / total_all * 100),
+                                            (total_malfunctions / total_all * 100)
+                                        ]
+                                    })
+                                    
+                                    # Plotly 파이 차트 생성
+                                    fig_pie = go.Figure(data=[go.Pie(
+                                        labels=pie_data['유형'],
+                                        values=pie_data['건수'],
+                                        hole=0.4,  # 도넛 차트 스타일
+                                        marker=dict(
+                                            colors=['#DC2626', '#F59E0B', '#3B82F6'],  # 빨강(사망), 주황(부상), 파랑(오작동)
+                                            line=dict(color='#FFFFFF', width=2)
+                                        ),
+                                        textinfo='label+percent+value',
+                                        texttemplate='%{label}<br>%{value:,}건<br>(%{percent})',
+                                        hovertemplate='<b>%{label}</b><br>건수: %{value:,}<br>비율: %{percent}<extra></extra>'
+                                    )])
+                                    
+                                    fig_pie.update_layout(
+                                        title=dict(
+                                            text='사건 유형별 분포',
+                                            font=dict(size=18, color='#1F2937'),
+                                            x=0.5,
+                                            xanchor='center'
+                                        ),
+                                        showlegend=True,
+                                        legend=dict(
+                                            orientation="v",
+                                            yanchor="middle",
+                                            y=0.5,
+                                            xanchor="left",
+                                            x=1.05
+                                        ),
+                                        height=400,
+                                        margin=dict(l=20, r=20, t=60, b=20),
+                                        paper_bgcolor='white',
+                                        plot_bgcolor='white'
+                                    )
+                                    
+                                    # 파이 차트 표시
+                                    st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False})
+                                    
+                                    # 요약 정보
+                                    st.markdown("**전체 요약**")
+                                    summary_col1, summary_col2, summary_col3 = st.columns(3)
+                                    
+                                    with summary_col1:
+                                        st.metric(
+                                            "사망",
+                                            f"{total_deaths:,}건",
+                                            # delta=f"{pie_data[pie_data['유형']=='사망']['비율'].values[0]:.1f}%"
+                                        )
+                                    
+                                    with summary_col2:
+                                        st.metric(
+                                            "부상",
+                                            f"{total_injuries:,}건",
+                                            # delta=f"{pie_data[pie_data['유형']=='부상']['비율'].values[0]:.1f}%"
+                                        )
+                                    
+                                    with summary_col3:
+                                        st.metric(
+                                            "오작동",
+                                            f"{total_malfunctions:,}건",
+                                            # delta=f"{pie_data[pie_data['유형']=='오작동']['비율'].values[0]:.1f}%"
+                                        )
+                                else:
+                                    st.info("사건 데이터가 없습니다.")
+                            else:
+                                st.info("CFR 데이터가 없습니다.")
+                        except Exception as e:
+                            st.error(f"파이 차트 생성 중 오류가 발생했습니다: {str(e)}")
+            else:
+                st.info("선택한 조건에 해당하는 defect type가 없습니다.")
+                
+        except Exception as e:
+            st.error(f"defect type별 상위 문제 분석 중 오류가 발생했습니다: {str(e)}")
+            st.exception(e)
+
+    # ==================== 기기별 치명률(CFR) 분석 ====================
+    st.subheader("기기별 치명률(CFR) 분석")
     
     # 기기별 치명률 분석 UI
     if lf is not None:
@@ -1262,13 +1763,6 @@ def show(filters=None):
                     "CFR(%)", "부상률(%)", "오작동률(%)"
                 ]
                 
-                # 표 표시
-                st.dataframe(
-                    display_df,
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
                 # 요약 통계
                 st.markdown("**요약 통계**")
                 summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
@@ -1287,6 +1781,13 @@ def show(filters=None):
                 with summary_col4:
                     median_cfr = display_df["CFR(%)"].median()
                     st.metric("CFR 중앙값", f"{median_cfr:.2f}%")
+                
+                # 표 표시
+                st.dataframe(
+                    display_df,
+                    use_container_width=True,
+                    hide_index=True
+                )
             else:
                 st.info(f"선택한 조건에 해당하는 데이터가 없습니다. (최소 {min_cases}건 이상의 보고 건수 필요)")
                 
