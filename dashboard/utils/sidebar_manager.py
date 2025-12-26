@@ -241,6 +241,52 @@ class SidebarManager:
 
             selected_value = st.number_input(**number_input_kwargs)
 
+        elif widget_type == "date_selector":
+            # 단일 년-월 선택기 (Spike Detection용)
+            default_month = args.get("default_month", "2025-11")
+
+            # 기본값 파싱
+            try:
+                default_dt = datetime.strptime(default_month, "%Y-%m")
+            except:
+                default_dt = self.TODAY.replace(day=1)
+
+            # 년월 범위 계산 (최근 3년)
+            min_dt = (self.TODAY - relativedelta(years=2)).replace(day=1, month=1)
+            max_dt = self.TODAY.replace(day=1)
+
+            # 년도와 월 선택
+            col1, col2 = st.columns(2)
+
+            with col1:
+                year_options = range(min_dt.year, max_dt.year + 1)
+                default_year_idx = list(year_options).index(default_dt.year) if default_dt.year in year_options else len(year_options) - 1
+
+                selected_year = st.selectbox(
+                    "년도",
+                    options=list(year_options),
+                    index=default_year_idx,
+                    format_func=lambda x: f"{x}년",
+                    key=f"{widget_key}_year",
+                    label_visibility="collapsed"
+                )
+
+            with col2:
+                month_options = range(1, 13)
+                default_month_idx = default_dt.month - 1
+
+                selected_month = st.selectbox(
+                    "월",
+                    options=list(month_options),
+                    index=default_month_idx,
+                    format_func=lambda x: f"{x:02d}월",
+                    key=f"{widget_key}_month",
+                    label_visibility="collapsed"
+                )
+
+            # YYYY-MM 형식 문자열로 반환
+            selected_value = f"{selected_year:04d}-{selected_month:02d}"
+
         elif widget_type == "month_range_picker":
             # 슬라이더를 사용한 년월 범위 선택
 

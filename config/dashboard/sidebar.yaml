@@ -91,71 +91,80 @@ dashboards:
 
   spike:
     filters:
+      # === 기본 설정 ===
       - type: "date_selector"
         key: "as_of_month"
-        label: "📅 기준 월"
+        label: "📅 분석 기준 월"
         args:
           default_month: "2025-11"
-        caption: "분석 기준: {value}"
+        caption: "기준: {value}"
 
       - type: "selectbox"
         key: "window"
-        label: "📊 윈도우"
+        label: "📊 비교 윈도우"
         args:
           options:
-            - label: "1개월"
+            - label: "1개월 (기준월 vs 전월)"
               value: 1
-            - label: "3개월"
+            - label: "3개월 (최근 3개월 vs 직전 3개월)"
               value: 3
           index: 0
 
+      # === 스파이크 탐지 임계값 ===
       - type: "number_input"
         key: "min_c_recent"
-        label: "📈 최소 최근 케이스 수"
+        label: "📈 최소 케이스 수"
         args:
-          min_value: 0
-          max_value: 1000
+          min_value: 5
+          max_value: 100
           value: 20
-          step: 1
-        caption: "{value}건 이상"
+          step: 5
+        caption: "최근 기간 {value}건 이상"
 
       - type: "number_input"
         key: "z_threshold"
         label: "📉 Z-score 임계값"
         args:
-          min_value: 0.0
-          max_value: 10.0
+          min_value: 1.0
+          max_value: 5.0
           value: 2.0
-          step: 0.1
+          step: 0.5
           format: "%.1f"
-        caption: "Z ≥ {value}"
+        caption: "Z ≥ {value}σ"
 
+      # === 고급 설정 ===
       - type: "number_input"
         key: "eps"
-        label: "🔢 Epsilon (eps)"
+        label: "🔢 Epsilon"
         args:
           min_value: 0.01
-          max_value: 10.0
+          max_value: 1.0
           value: 0.1
-          step: 0.1
+          step: 0.05
           format: "%.2f"
-        caption: "eps = {value}"
+        caption: "로그 변환용 상수"
 
       - type: "selectbox"
         key: "alpha"
-        label: "⚡ 유의수준 (alpha)"
+        label: "⚡ 유의수준"
         args:
           options: [0.05, 0.01, 0.001]
           index: 0
           format_func: "{value:.3f}"
-        caption: "α = {value}"
+        caption: "α = {value} (Poisson 검정)"
 
       - type: "selectbox"
         key: "correction"
         label: "🔧 다중검정 보정"
         args:
-          options: ["bonferroni", "sidak", "fdr_bh"]
-          index: 2
+          options:
+            - label: "FDR (Benjamini-Hochberg)"
+              value: "fdr_bh"
+            - label: "Bonferroni"
+              value: "bonferroni"
+            - label: "Sidak"
+              value: "sidak"
+          index: 0
 
       - type: "number_input"
         key: "min_methods"
@@ -165,4 +174,4 @@ dashboards:
           max_value: 3
           value: 2
           step: 1
-        caption: "{value}개 이상"
+        caption: "{value}개 이상 (Ratio/Z-score/Poisson)"

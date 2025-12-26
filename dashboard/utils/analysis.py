@@ -480,6 +480,7 @@ def get_spike_time_series(
 def calculate_big_numbers(
     _data: pl.LazyFrame,
     segment: Optional[str] = None,
+    segment_value: Optional[str] = None,
     start_date = None,
     end_date = None,
 ) -> dict:
@@ -487,7 +488,8 @@ def calculate_big_numbers(
 
     Args:
         _data: LazyFrame 데이터
-        segment: 세그먼트 컬럼명 (현재는 사용 안함, 차트만 segment 적용)
+        segment: 세그먼트 컬럼명 (필터링할 컬럼)
+        segment_value: 세그먼트 값 (특정 제조사, 제품 등)
         start_date: 분석 시작 날짜 (datetime 객체)
         end_date: 분석 종료 날짜 (datetime 객체)
 
@@ -507,7 +509,11 @@ def calculate_big_numbers(
         사용자가 2024-01 ~ 2025-12 선택 시 (24개월)
         - 현재 기간: 2024-01 ~ 2025-12
         - 이전 기간: 2022-01 ~ 2023-12 (24개월 전으로 슬라이딩)
-    """  
+    """
+    # Segment 필터 적용
+    if segment and segment_value:
+        _data = _data.filter(pl.col(segment) == segment_value)
+
     # 날짜 범위가 지정되지 않은 경우 전체 데이터에서 최신 날짜 기준
     if not start_date or not end_date:
         max_date = _data.select(pl.col(ColumnNames.DATE_RECEIVED).max()).collect()[ColumnNames.DATE_RECEIVED][0]
@@ -648,3 +654,163 @@ def calculate_big_numbers(
         "prev_most_critical_defect_type": prev_most_critical_defect_type,
         "prev_most_critical_defect_rate": prev_most_critical_defect_rate,
     }
+
+
+# ==================== Phase 2: Treemap & Risk Matrix ====================
+
+@st.cache_data(show_spinner=False)
+def get_treemap_data(
+    _lf: pl.LazyFrame,
+    start_date = None,
+    end_date = None,
+    segment_col: Optional[str] = None,
+    segment_value: Optional[str] = None,
+    top_n: int = 10
+) -> pl.DataFrame:
+    """Treemap용 데이터 집계 (Defect Type → Patient Harm Level)
+
+    Args:
+        _lf: LazyFrame 데이터
+        start_date: 시작 날짜 (datetime 객체)
+        end_date: 종료 날짜 (datetime 객체)
+        segment_col: 세그먼트 컬럼명 (예: "manufacturer_name", "product_code")
+        segment_value: 세그먼트 값 (예: "MEDTRONIC", "FMH")
+        top_n: 상위 N개 Defect Type만 표시
+
+    Returns:
+        계층 구조 DataFrame (defect_type, patient_harm, count, severe_harm_rate)
+    """
+    # 날짜 필터링
+    filtered_data = _lf
+    if start_date and end_date:
+        filtered_data = filtered_data.filter(
+            (pl.col(ColumnNames.DATE_RECEIVED) >= start_date) &
+            (pl.col(ColumnNames.DATE_RECEIVED) <= end_date)
+        )
+
+    # 세그먼트 필터링
+    if segment_col and segment_value:
+        filtered_data = filtered_data.filter(pl.col(segment_col) == segment_value)
+
+    # Top N Defect Type 추출
+    top_defects = (
+        filtered_data
+        .filter(~pl.col(ColumnNames.DEFECT_TYPE).is_in(Defaults.EXCLUDE_DEFECT_TYPES))
+        .group_by(ColumnNames.DEFECT_TYPE)
+        .agg(pl.len().alias("total_count"))
+        .sort("total_count", descending=True)
+        .limit(top_n)
+        .select(ColumnNames.DEFECT_TYPE)
+        .collect()
+    )
+
+    top_defect_list = top_defects[ColumnNames.DEFECT_TYPE].to_list()
+
+    # Defect Type × Patient Harm 집계
+    result = (
+        filtered_data
+        .filter(pl.col(ColumnNames.DEFECT_TYPE).is_in(top_defect_list))
+        .group_by([ColumnNames.DEFECT_TYPE, ColumnNames.PATIENT_HARM])
+        .agg(pl.len().alias("count"))
+        .with_columns([
+            # Defect Type별 전체 count
+            pl.col("count").sum().over(ColumnNames.DEFECT_TYPE).alias("defect_total"),
+            # Defect Type별 severe harm count
+            pl.when(pl.col(ColumnNames.PATIENT_HARM).is_in(PatientHarmLevels.SERIOUS))
+              .then(pl.col("count"))
+              .otherwise(0)
+              .sum()
+              .over(ColumnNames.DEFECT_TYPE)
+              .alias("severe_count")
+        ])
+        .with_columns(
+            # 치명률 계산
+            (pl.col("severe_count") / pl.col("defect_total") * 100).alias("severe_harm_rate")
+        )
+        .sort([ColumnNames.DEFECT_TYPE, "count"], descending=[False, True])
+        .collect()
+    )
+
+    return result
+
+
+@st.cache_data(show_spinner=False)
+def get_risk_matrix_data(
+    _lf: pl.LazyFrame,
+    start_date = None,
+    end_date = None,
+    segment_col: Optional[str] = None,
+    segment_value: Optional[str] = None,
+    view_mode: str = "defect_type",
+    top_n: int = 20
+) -> pl.DataFrame:
+    """Risk Matrix용 데이터 집계
+
+    Args:
+        _lf: LazyFrame 데이터
+        start_date: 시작 날짜 (datetime 객체)
+        end_date: 종료 날짜 (datetime 객체)
+        segment_col: 세그먼트 컬럼명
+        segment_value: 세그먼트 값
+        view_mode: "defect_type", "manufacturer", "product"
+        top_n: 상위 N개만 표시
+
+    Returns:
+        DataFrame (entity, report_count, severe_harm_rate, defect_confirmed_rate)
+    """
+    # 날짜 필터링
+    filtered_data = _lf
+    if start_date and end_date:
+        filtered_data = filtered_data.filter(
+            (pl.col(ColumnNames.DATE_RECEIVED) >= start_date) &
+            (pl.col(ColumnNames.DATE_RECEIVED) <= end_date)
+        )
+
+    # view_mode에 따라 group_by 컬럼 결정
+    if view_mode == "defect_type":
+        group_col = ColumnNames.DEFECT_TYPE
+        # 세그먼트 필터 적용
+        if segment_col and segment_value:
+            filtered_data = filtered_data.filter(pl.col(segment_col) == segment_value)
+        # exclude 필터
+        filtered_data = filtered_data.filter(~pl.col(group_col).is_in(Defaults.EXCLUDE_DEFECT_TYPES))
+
+    elif view_mode == "manufacturer":
+        group_col = ColumnNames.MANUFACTURER
+        # 특정 제품코드의 제조사들 비교
+        if segment_value:
+            filtered_data = filtered_data.filter(pl.col(ColumnNames.PRODUCT_CODE) == segment_value)
+
+    elif view_mode == "product":
+        group_col = ColumnNames.PRODUCT_CODE
+        # 특정 제조사의 제품들 비교
+        if segment_value:
+            filtered_data = filtered_data.filter(pl.col(ColumnNames.MANUFACTURER) == segment_value)
+
+    else:
+        group_col = ColumnNames.DEFECT_TYPE
+
+    # 집계
+    result = (
+        filtered_data
+        .group_by(group_col)
+        .agg([
+            pl.len().alias("report_count"),
+            pl.when(pl.col(ColumnNames.PATIENT_HARM).is_in(PatientHarmLevels.SERIOUS))
+              .then(1).otherwise(0).sum().alias("severe_harm_count"),
+            pl.when(pl.col(ColumnNames.DEFECT_CONFIRMED) == True)
+              .then(1).otherwise(0).sum().alias("defect_confirmed_count")
+        ])
+        .with_columns([
+            (pl.col("severe_harm_count") / pl.col("report_count") * 100).alias("severe_harm_rate"),
+            (pl.col("defect_confirmed_count") / pl.col("report_count") * 100).alias("defect_confirmed_rate")
+        ])
+        .sort("report_count", descending=True)
+        .limit(top_n)
+        .collect()
+    )
+
+    # 컬럼명을 'entity'로 통일
+    result = result.rename({group_col: "entity"})
+
+    return result

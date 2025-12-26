@@ -70,6 +70,7 @@ maude_lf = st.session_state.data
 tab_options = {
     "📊 Overview": "overview",
     "📈 Spike Detection": "spike",
+    "Detailed Analytics": 'eda',
     "🔍 Clustering Reports": "cluster"
 }
 
@@ -129,6 +130,7 @@ else:
 # 선택된 탭의 콘텐츠 표시
 if current_tab == "overview":
     o_tab.show(filters, maude_lf)
+elif current_tab == 'eda':
     e_tab.show(filters, maude_lf)
 elif current_tab == 'spike':
     s_tab.show(filters, maude_lf)
