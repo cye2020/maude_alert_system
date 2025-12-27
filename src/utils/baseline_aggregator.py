@@ -247,27 +247,34 @@ class BaselineAggregator:
         df = df.join(stats_df, on="window", how="left")
         
         return df.with_columns([
-            # is_spike (ratio 기반)
+            # is_spike (ratio 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("score_ratio") >= (pl.col("_mean") + z_threshold * pl.col("_std"))) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike"),
-            
-            # is_spike_z (z-score 기반)
+
+            # is_spike_z (z-score 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("z_log") >= z_threshold) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_z"),
-            
-            # is_spike_p (Poisson 기반)
+
+            # is_spike_p (Poisson 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("p_adjusted") <= alpha) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_p")
         ]).drop(["_mean", "_std"])
     
     def _add_ensemble_results(self, df: pl.DataFrame) -> pl.DataFrame:
-        """앙상블 결과(pattern)를 추가합니다."""
+        """앙상블 결과(pattern)를 추가합니다.
+
+        증가하지 않은 키워드(is_spike + is_spike_z + is_spike_p == 0)는
+        패턴을 null로 설정합니다.
+        """
         return df.with_columns(
             pl.when(
                 pl.col("is_spike").cast(pl.Int8) +
@@ -284,7 +291,12 @@ class BaselineAggregator:
                 pl.col("is_spike_z").cast(pl.Int8) +
                 pl.col("is_spike_p").cast(pl.Int8) == 1
             ).then(pl.lit("attention"))
-            .otherwise(pl.lit("general"))
+            .when(
+                pl.col("is_spike").cast(pl.Int8) +
+                pl.col("is_spike_z").cast(pl.Int8) +
+                pl.col("is_spike_p").cast(pl.Int8) == 0
+            ).then(pl.lit(None))  # 패턴 없음
+            .otherwise(pl.lit("general"))  # 혹시 모를 예외 케이스
             .alias("pattern")
         )
     
