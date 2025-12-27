@@ -123,8 +123,11 @@ def show(filters=None, lf: pl.LazyFrame = None):
     spike_df = result_df.filter(pl.col("is_spike_ensemble") == True)
 
     # ========================================
-    # 💡 SECTION 0: 핵심 인사이트 (최상단 배치)
+    # 💡 SECTION 0: 핵심 인사이트 (최상단 배치) - terminology 기반
     # ========================================
+    from dashboard.utils.terminology import get_term_manager
+
+    term = get_term_manager()
     st.subheader("💡 핵심 인사이트")
 
     if len(spike_df) > 0:
@@ -138,44 +141,32 @@ def show(filters=None, lf: pl.LazyFrame = None):
             c_recent = top_critical["C_recent"][0]
             c_base = top_critical["C_base"][0]
 
-            st.error(f"""
-🚨 **최고 위험 급증**: **{keyword}**
-- 보고 건수: {c_base}건 → **{c_recent}건** ({ratio:.2f}배 급증)
-- 3가지 탐지 방법 모두 급증으로 판정
-- ⚠️ **즉시 조사 권장** (FDA 보고서 검토, 원인 분석 필요)
-            """)
+            st.error(term.format_message('spike_critical',
+                                        keyword=keyword,
+                                        c_base=c_base,
+                                        c_recent=c_recent,
+                                        ratio=ratio))
 
         # 2️⃣ 새롭게 등장한 급증 (이전 기간엔 없었던 키워드)
         new_spikes = spike_df.filter(pl.col("C_base") < 5)  # 기준 기간에 거의 없었던 키워드
         if len(new_spikes) > 0:
             new_count = len(new_spikes)
             new_keywords = new_spikes.head(3)["keyword"].to_list()
-            st.warning(f"""
-⚡ **신규 등장 급증**: {new_count}개
-- 예시: {', '.join(new_keywords)}
-- 과거에 거의 보고되지 않았으나 최근 급증
-- 💡 신규 제품 출시 또는 새로운 문제 발생 가능성
-            """)
+            st.warning(term.format_message('spike_new',
+                                          new_count=new_count,
+                                          examples=', '.join(new_keywords)))
 
         # 3️⃣ 패턴별 요약
         severe_count = len(spike_df.filter(pl.col("pattern") == "severe"))
         if severe_count > 0:
-            st.warning(f"""
-🔴 **심각 패턴**: {severe_count}개
-- 높은 급증률 + 많은 보고 건수 조합
-- **우선순위 높음**: 상위 10개 키워드 개별 검토 필요
-            """)
+            st.warning(term.format_message('spike_severe_pattern', severe_count=severe_count))
         else:
             alert_count = len(spike_df.filter(pl.col("pattern") == "alert"))
             if alert_count > 0:
-                st.info(f"""
-🟠 **경고 패턴**: {alert_count}개
-- 중간 수준의 급증 또는 보고 건수
-- 모니터링 필요
-                """)
+                st.info(term.format_message('spike_alert_pattern', alert_count=alert_count))
     else:
-        st.success("✅ 현재 기간에 통계적으로 유의미한 급증이 탐지되지 않았습니다.")
-        st.info("💡 이는 좋은 신호입니다. 제품 품질이 안정적으로 유지되고 있습니다.")
+        st.success(term.messages.get('spike_none'))
+        st.info(term.messages.get('spike_none_good'))
 
     st.markdown("---")
 

@@ -305,14 +305,51 @@ message_templates:
   analyzing: '분석 중...'
   analysis_complete: '✅ 분석이 완료되었습니다.'
 
-  # 분석 결과 포맷
-  high_cfr_alert: '⚠️ **{device}**의 치명률이 **{cfr:.2f}%**로 매우 높습니다 (중대 피해 {count:,}건)'
-  low_cfr_info: '✅ 평균 치명률이 **{cfr:.2f}%**로 양호한 수준입니다'
+  # ========== Cluster 탭 인사이트 ==========
+  # 개별 클러스터
+  cluster_most_cases: '📊 **Cluster {cluster_id}**가 가장 많은 케이스를 포함합니다 ({count:,}건)'
+  cluster_highest_cfr: '⚠️ **Cluster {cluster_id}**의 치명률이 {cfr:.2f}%로 가장 높습니다 (중대 피해 {severe_count:,}건)'
+  cluster_lowest_cfr: '✅ **Cluster {cluster_id}**의 치명률이 {cfr:.2f}%로 가장 낮습니다'
+  cluster_common_components: '🔧 **여러 클러스터에서 공통으로 발견된 문제 부품**: {parts}'
 
-  spike_detected: '🚨 **{entity}**에서 급증 탐지 ({period}): {count:,}건 → {new_count:,}건'
+  # 권장사항
+  cluster_recommendation_high_cfr: '- **Cluster {cluster_id}**에 대한 집중 조사 및 안전성 개선이 필요합니다'
+  cluster_recommendation_large: '- **Cluster {cluster_id}**의 대량 케이스에 대한 패턴 분석을 수행하세요'
+  cluster_recommendation_common_parts: '- 여러 클러스터에서 반복되는 문제 부품에 대한 근본 원인 분석이 필요합니다'
+  cluster_recommendation_none: '- 현재 데이터에서 특별한 조치가 필요한 항목은 없습니다'
 
-  cluster_high_risk: '⚠️ **Cluster {cluster_id}**의 치명률이 **{cfr:.2f}%**로 가장 높습니다 (중대 피해 {count:,}건)'
-  cluster_low_risk: '✅ **Cluster {cluster_id}**의 치명률이 **{cfr:.2f}%**로 가장 낮습니다'
+  # ========== EDA 탭 인사이트 ==========
+  eda_top_product: '📊 **{manufacturer_product}**의 보고 건수가 **{count:,}건**으로 가장 많습니다'
+  eda_high_cfr: '⚠️ **{device}**의 치명률이 {cfr:.2f}%로 매우 높습니다 (중대 피해 {count:,}건)'
+  eda_avg_cfr_good: '✅ 평균 치명률이 {avg_cfr:.2f}%로 양호한 수준입니다'
+  eda_top_defect_type: '🔧 가장 빈번한 결함 유형은 **{defect_type}** ({count:,}건)입니다'
+  eda_no_anomaly: '특이사항이 감지되지 않았습니다'
+
+  # ========== Spike 탭 인사이트 ==========
+  spike_critical: |
+    🚨 **최고 위험 급증**: **{keyword}**
+    - 보고 건수: {c_base:,}건 → **{c_recent:,}건** ({ratio:.2f}배 급증)
+    - 3가지 탐지 방법 모두 급증으로 판정
+    - ⚠️ **즉시 조사 권장** (FDA 보고서 검토, 원인 분석 필요)
+  spike_new: |
+    ⚡ **신규 등장 급증**: {new_count}개
+    - 예시: {examples}
+    - 과거에 거의 보고되지 않았으나 최근 급증
+    - 💡 신규 제품 출시 또는 새로운 문제 발생 가능성
+  spike_severe_pattern: |
+    🔴 **심각 패턴**: {severe_count}개
+    - 높은 급증률 + 많은 보고 건수 조합
+    - **우선순위 높음**: 상위 10개 키워드 개별 검토 필요
+  spike_alert_pattern: |
+    🟠 **경고 패턴**: {alert_count}개
+    - 중간 수준의 급증 또는 보고 건수
+    - 모니터링 필요
+  spike_none: '✅ 현재 기간에 통계적으로 유의미한 급증이 탐지되지 않았습니다.'
+  spike_none_good: '💡 이는 좋은 신호입니다. 제품 품질이 안정적으로 유지되고 있습니다.'
+
+  # ========== Overview 탭 ==========
+  overview_high_cfr: '⚠️ **{device}**의 치명률이 {cfr:.2f}%로 매우 높습니다 (중대 피해 {count:,}건)'
+  overview_low_cfr: '✅ 평균 치명률이 {cfr:.2f}%로 양호한 수준입니다'
 
 # ==================== 사용 예시 ====================
 # 이 파일을 사용하는 방법:

@@ -428,4 +428,3 @@ def show(filters=None, lf: pl.LazyFrame = None):
         products=selected_products
     )
 
-    st.markdown("---")

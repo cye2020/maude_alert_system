@@ -432,43 +432,52 @@ def create_defect_confirmed_pie_chart(
     )
 
 
-def create_component_bar_chart(
-    component_df: pl.DataFrame,
-    component_col: str,
+def create_horizontal_bar_chart(
+    df: pl.DataFrame,
+    category_col: str,
     count_col: str = 'count',
     ratio_col: str = 'ratio',
     top_n: int = 10,
-    title: str = ""
+    title: Optional[str] = "",
+    xaxis_title: str = "발생 건수",
+    yaxis_title: Optional[str] = "",
+    colorscale: str = 'Blues'
 ) -> Optional[go.Figure]:
-    """문제 부품 막대 차트 생성 (공통)
+    """수평 막대 차트 생성 (공통 - 부품/결함유형 등에 사용)
 
     Args:
-        component_df: 부품 데이터 DataFrame
-        component_col: 부품명 컬럼
+        df: 데이터 DataFrame
+        category_col: 카테고리 컬럼명 (부품명, 결함유형 등)
         count_col: 건수 컬럼
         ratio_col: 비율 컬럼
         top_n: 상위 N개
-        title: 차트 제목
+        title: 차트 제목 (None이면 제목 없음)
+        xaxis_title: x축 제목
+        yaxis_title: y축 제목 (None이면 제목 없음)
+        colorscale: 색상 스케일
 
     Returns:
         Plotly Figure 객체 또는 None (데이터 없을 때)
 
     Example:
-        >>> fig = create_component_bar_chart(
-        ...     component_df=df,
-        ...     component_col='problem_components',
-        ...     top_n=10
+        >>> from dashboard.utils.terminology import get_term_manager
+        >>> term = get_term_manager()
+        >>> fig = create_horizontal_bar_chart(
+        ...     df=component_df,
+        ...     category_col='problem_components',
+        ...     xaxis_title=term.korean.metrics.report_count,
+        ...     colorscale='Blues'
         ... )
         >>> st.plotly_chart(fig)
     """
-    if component_df is None or len(component_df) == 0:
+    if df is None or len(df) == 0:
         return None
 
     # Top N 추출
-    top_df = component_df.head(top_n)
+    top_df = df.head(top_n)
 
     # 데이터 준비
-    components = top_df[component_col].to_list()
+    categories = top_df[category_col].to_list()
     counts = top_df[count_col].to_list()
     ratios = top_df[ratio_col].to_list()
 
@@ -477,11 +486,11 @@ def create_component_bar_chart(
 
     fig.add_trace(go.Bar(
         x=counts,
-        y=components,
+        y=categories,
         orientation='h',
         marker=dict(
             color=counts,
-            colorscale='Blues',
+            colorscale=colorscale,
             showscale=False,
             line=dict(color='rgba(0,0,0,0.2)', width=1)
         ),
@@ -492,9 +501,9 @@ def create_component_bar_chart(
 
     # 레이아웃
     fig.update_layout(
-        title=title if title else None,
-        xaxis_title="발생 건수",
-        yaxis_title="",
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title if yaxis_title else "",
         height=max(400, len(top_df) * 35),
         margin=dict(l=20, r=20, t=40 if title else 20, b=40),
         yaxis={'categoryorder': 'total ascending'},
@@ -502,6 +511,44 @@ def create_component_bar_chart(
     )
 
     return fig
+
+
+def create_component_bar_chart(
+    component_df: pl.DataFrame,
+    component_col: str,
+    count_col: str = 'count',
+    ratio_col: str = 'ratio',
+    top_n: int = 10,
+    title: Optional[str] = None,
+    xaxis_title: str = "발생 건수",
+    yaxis_title: Optional[str] = None
+) -> Optional[go.Figure]:
+    """문제 부품 막대 차트 생성 (하위 호환성 유지용 래퍼)
+
+    Args:
+        component_df: 부품 데이터 DataFrame
+        component_col: 부품명 컬럼
+        count_col: 건수 컬럼
+        ratio_col: 비율 컬럼
+        top_n: 상위 N개
+        title: 차트 제목
+        xaxis_title: x축 제목
+        yaxis_title: y축 제목
+
+    Returns:
+        Plotly Figure 객체 또는 None (데이터 없을 때)
+    """
+    return create_horizontal_bar_chart(
+        df=component_df,
+        category_col=component_col,
+        count_col=count_col,
+        ratio_col=ratio_col,
+        top_n=top_n,
+        title=title,
+        xaxis_title=xaxis_title,
+        yaxis_title=yaxis_title,
+        colorscale='Blues'
+    )
 
 
 # ==================== 메트릭 표시 ====================

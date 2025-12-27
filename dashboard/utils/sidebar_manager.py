@@ -1,6 +1,7 @@
 # filter_manager.py
 from datetime import datetime
-from typing import Any, Dict, Optional, List, Tuple
+from typing import Any, Dict, Optional, List, Tuple, Callable
+from functools import wraps
 import streamlit as st
 from dateutil.relativedelta import relativedelta
 
@@ -11,6 +12,46 @@ root_path = Path(__file__).parent.parent.parent
 sys.path.append(str(root_path))
 
 from dashboard.utils.dashboard_config import get_config
+
+
+# ==================== 데코레이터 ====================
+
+def check_enabled(config_path: str):
+    """enabled 플래그를 체크하는 데코레이터
+
+    Args:
+        config_path: 체크할 설정 경로 (예: 'common.header', 'common.date_selector')
+
+    Returns:
+        enabled=False면 None을 반환, True면 원래 함수 실행
+
+    Example:
+        @check_enabled('common.header')
+        def render_header(self):
+            # header의 enabled가 False면 실행되지 않음
+            ...
+    """
+    def decorator(func: Callable) -> Callable:
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            # config_path를 따라 설정 탐색
+            parts = config_path.split('.')
+            config = self.cfg.sidebar
+
+            for part in parts:
+                config = config.get(part, {})
+                if not config:
+                    # 설정이 없으면 기본적으로 활성화
+                    return func(self, *args, **kwargs)
+
+            # enabled 체크
+            if not config.get('enabled', True):
+                return None
+
+            return func(self, *args, **kwargs)
+
+        return wrapper
+    return decorator
 
 
 class SidebarManager:
@@ -31,6 +72,7 @@ class SidebarManager:
 
     # ==================== 공통 컴포넌트 ====================
 
+    @check_enabled('common.header')
     def render_header(self):
         """프로젝트 로고 및 정보 렌더링"""
         header_config = self.common_config.get("header", {})
@@ -51,6 +93,7 @@ class SidebarManager:
             """)
             st.markdown("---")
 
+    @check_enabled('common.date_selector')
     def render_date_selector(self) -> Optional[datetime]:
         """날짜 선택기 렌더링 (공통 필터 - 탭 전환 시에도 값 유지)
 
@@ -58,9 +101,6 @@ class SidebarManager:
             선택된 날짜 (datetime 객체) 또는 None
         """
         date_config = self.common_config.get("date_selector", {})
-
-        if not date_config.get("enabled", False):
-            return None
 
         # 년도 범위 계산
         year_range = date_config.get("year_range", [-2, 0])
@@ -154,13 +194,8 @@ class SidebarManager:
         else:
             widget_key = f"{self.dashboard_type}_{key}"  # 대시보드별 필터
 
-        # 라벨 렌더링
-        st.markdown(f"### {label}")
-
-        # help 텍스트가 있으면 info로 표시
+        # help 텍스트 추출 (위젯 파라미터로 전달)
         help_text = filter_config.get("help")
-        if help_text:
-            st.info(f"📌 {help_text}")
 
         # 위젯 타입별 렌더링
         selected_value = None
@@ -180,7 +215,7 @@ class SidebarManager:
                     options=option_labels,
                     index=index,
                     key=widget_key,
-                    label_visibility="collapsed"
+                    help=help_text
                 )
 
                 # label에 해당하는 value 찾기
@@ -193,7 +228,7 @@ class SidebarManager:
                     "options": options,
                     "index": index,
                     "key": widget_key,
-                    "label_visibility": "collapsed"
+                    "help": help_text
                 }
 
                 if format_func_template:
@@ -267,7 +302,7 @@ class SidebarManager:
                 options=options,
                 default=default,
                 key=widget_key,
-                label_visibility="collapsed"
+                help=help_text
             )
 
             # 선택값 저장 (다음 렌더링에서 참조)
@@ -288,7 +323,7 @@ class SidebarManager:
                 step=step,
                 format=format_str,
                 key=widget_key,
-                label_visibility="collapsed"
+                help=help_text
             )
 
         elif widget_type == "number_input":
@@ -305,7 +340,7 @@ class SidebarManager:
                 "value": value,
                 "step": step,
                 "key": widget_key,
-                "label_visibility": "collapsed"
+                "help": help_text
             }
 
             if format_str:
@@ -326,6 +361,8 @@ class SidebarManager:
             # 년월 범위 계산 (최근 3년)
             min_dt = (self.TODAY - relativedelta(years=2)).replace(day=1, month=1)
             max_dt = self.TODAY.replace(day=1)
+
+            st.markdown(f"##### {label}")
 
             # 년도와 월 선택
             col1, col2 = st.columns(2)
@@ -376,12 +413,13 @@ class SidebarManager:
 
             # 슬라이더로 범위 선택
             selected_range = st.slider(
-                label="분석 기간 (년-월)",
+                label=label,  # YAML에서 설정한 label 사용
                 min_value=min_date,
                 max_value=max_date,
                 value=(default_start, max_date),
                 key=widget_key,
-                format="YYYY-MM"
+                format="YYYY-MM",
+                help=help_text
             )
 
             # datetime 객체로 변환 (매월 1일, 시간은 00:00:00)
@@ -429,7 +467,7 @@ class SidebarManager:
         with st.sidebar:
             # 공통: 헤더 (로고 + 프로젝트 정보)
             self.render_header()
-
+            st.markdown('---')
             # 공통: 날짜 선택기
             selected_date = self.render_date_selector()
             if selected_date:

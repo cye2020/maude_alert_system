@@ -13,7 +13,7 @@ from dashboard.utils.ui_components import (
     convert_date_range_to_months,
     create_harm_pie_chart,
     create_defect_confirmed_pie_chart,
-    create_component_bar_chart
+    create_horizontal_bar_chart
 )
 
 
@@ -143,21 +143,21 @@ def show(filters=None, lf: pl.LazyFrame = None):
 def render_individual_cluster_analysis(lf, available_clusters, selected_dates, year_month_expr, manufacturers, products):
     """개별 클러스터 상세 분석"""
     st.markdown("### 🔍 개별 클러스터 상세 분석")
-    st.caption("특정 클러스터의 환자 피해, 문제 부품, 시계열 추이를 분석합니다")
+    st.caption(f"특정 클러스터의 {Terms.KOREAN.PATIENT_HARM}, {Terms.KOREAN.PROBLEM_COMPONENT}, 시계열 추이를 분석합니다")
 
     # 설명 추가
     with st.expander("ℹ️ 개별 클러스터 분석이란?", expanded=False):
-        st.markdown("""
+        st.markdown(f"""
         **개별 클러스터 분석**은 특정 클러스터(문제 유형 그룹)에 대한 상세 정보를 제공합니다.
 
         **구성 요소**:
-        - **요약 메트릭**: 전체 케이스 수, 치명률(CFR), 사망/부상 통계
-        - **환자 피해 분포**: 사망, 중증/경증 부상, 부상 없음의 비율을 파이 차트로 표시
-        - **상위 문제 부품**: 해당 클러스터에서 가장 빈번하게 보고된 문제 부품 순위
+        - **요약 메트릭**: 전체 케이스 수, {Terms.KOREAN.CFR}, 사망/부상 통계
+        - **{Terms.KOREAN.PATIENT_HARM} 분포**: 사망, 중증/경증 부상, 부상 없음의 비율을 파이 차트로 표시
+        - **상위 {Terms.KOREAN.PROBLEM_COMPONENT}**: 해당 클러스터에서 가장 빈번하게 보고된 {Terms.KOREAN.PROBLEM_COMPONENT} 순위
         - **시계열 추이**: 월별 케이스 수 변화를 통해 증가/감소 트렌드 파악
 
         **인사이트**:
-        - 치명률이 높은 클러스터는 우선적으로 안전 조치가 필요합니다
+        - {Terms.KOREAN.CFR}이 높은 클러스터는 우선적으로 안전 조치가 필요합니다
         - 특정 부품이 압도적으로 많이 보고된다면 해당 부품의 품질 개선이 시급합니다
         - 시계열에서 급증하는 구간은 특정 사건이나 리콜과 연관될 수 있습니다
         """)
@@ -239,7 +239,7 @@ def render_individual_cluster_analysis(lf, available_clusters, selected_dates, y
     col_left, col_right = st.columns([1, 1])
 
     with col_left:
-        st.markdown("#### 🎯 환자 피해 분포")
+        st.markdown(f"#### 🎯 {Terms.KOREAN.PATIENT_HARM} 분포")
 
         harm_summary = cluster_data['harm_summary']
 
@@ -255,45 +255,52 @@ def render_individual_cluster_analysis(lf, available_clusters, selected_dates, y
         if fig_pie:
             st.plotly_chart(fig_pie, width='stretch', config={'displayModeBar': False})
         else:
-            st.info("환자 피해 데이터가 없습니다.")
+            st.info(f"{Terms.KOREAN.PATIENT_HARM} 데이터가 없습니다.")
 
     with col_right:
-        st.markdown(f"#### 🔧 상위 {top_n}개 문제 부품")
+        st.markdown(f"#### 🔧 상위 {top_n}개 {Terms.KOREAN.PROBLEM_COMPONENT}")
 
         top_components = cluster_data['top_components']
 
         # 공통 함수 사용
         if len(top_components) > 0:
-            fig_bar = create_component_bar_chart(
-                component_df=top_components,
-                component_col=ColumnNames.PROBLEM_COMPONENTS,
+            fig_bar = create_horizontal_bar_chart(
+                df=top_components,
+                category_col=ColumnNames.PROBLEM_COMPONENTS,
                 count_col='count',
                 ratio_col='ratio',
-                top_n=top_n
+                top_n=top_n,
+                xaxis_title=Terms.KOREAN.REPORT_COUNT,
+                yaxis_title=None,  # y축 제목 없음 (부품명이 이미 y축에 표시됨)
+                colorscale='Blues'
             )
 
             if fig_bar:
                 st.plotly_chart(fig_bar, width='stretch', config={'displayModeBar': False})
 
-            # 상세 데이터
-            with st.expander("📋 상세 데이터"):
+            # 상세 데이터 - 컬럼명 한글로 변경
+            with st.expander(f"📋 {Terms.KOREAN.DATA_TABLE}"):
+                # 컬럼명을 한글로 변경
+                top_components_display = top_components.rename({
+                    ColumnNames.PROBLEM_COMPONENTS: Terms.KOREAN.PROBLEM_COMPONENT,
+                    'count': Terms.KOREAN.REPORT_COUNT,
+                    'ratio': f"{Terms.KOREAN.RATIO} (%)"
+                })
+
                 # 소수점 2자리 표시 포맷 적용
-                if 'ratio' in top_components.columns:
-                    st.dataframe(
-                        top_components,
-                        width='stretch',
-                        hide_index=True,
-                        column_config={
-                            "ratio": st.column_config.NumberColumn(
-                                "ratio",
-                                format="%.2f"
-                            )
-                        }
-                    )
-                else:
-                    st.dataframe(top_components, width='stretch', hide_index=True)
+                st.dataframe(
+                    top_components_display,
+                    width='stretch',
+                    hide_index=True,
+                    column_config={
+                        f"{Terms.KOREAN.RATIO} (%)": st.column_config.NumberColumn(
+                            f"{Terms.KOREAN.RATIO} (%)",
+                            format="%.2f"
+                        )
+                    }
+                )
         else:
-            st.info("해당 클러스터에는 부품 정보가 없습니다.")
+            st.info(f"해당 클러스터에는 {Terms.KOREAN.COMPONENT} 정보가 없습니다.")
 
     st.markdown("---")
 
@@ -306,34 +313,32 @@ def render_individual_cluster_analysis(lf, available_clusters, selected_dates, y
         defect_types = cluster_data['defect_types']
 
         if len(defect_types) > 0:
-            fig_defect = px.bar(
-                defect_types.to_pandas(),
-                x='count',
-                y=ColumnNames.DEFECT_TYPE,
-                orientation='h',
-                text='ratio',
-                labels={ColumnNames.DEFECT_TYPE: Terms.KOREAN.DEFECT_TYPE, 'count': Terms.KOREAN.REPORT_COUNT},
-                color='count',
-                color_continuous_scale='Oranges'
+            # 공통 함수 사용
+            fig_defect = create_horizontal_bar_chart(
+                df=defect_types,
+                category_col=ColumnNames.DEFECT_TYPE,
+                count_col='count',
+                ratio_col='ratio',
+                top_n=top_n,
+                xaxis_title=Terms.KOREAN.REPORT_COUNT,
+                yaxis_title=None,  # y축 제목 없음
+                colorscale='Oranges'
             )
 
-            fig_defect.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-            fig_defect.update_layout(
-                height=400,
-                showlegend=False,
-                yaxis={'categoryorder': 'total ascending'},
-                margin=dict(l=20, r=20, t=20, b=20)
-            )
+            if fig_defect:
+                st.plotly_chart(fig_defect, width='stretch', config={'displayModeBar': False})
 
-            st.plotly_chart(fig_defect, width='stretch', config={'displayModeBar': False})
-
-            with st.expander("📋 상세 데이터"):
+            with st.expander(f"📋 {Terms.KOREAN.DATA_TABLE}"):
                 # 컬럼명 한글로 변경
                 defect_types_display = defect_types.rename({
                     ColumnNames.DEFECT_TYPE: Terms.KOREAN.DEFECT_TYPE,
                     'count': Terms.KOREAN.REPORT_COUNT,
                     'ratio': f"{Terms.KOREAN.RATIO} (%)"
                 })
+                # 결함 유형 컬럼을 문자열로 변환 (Arrow 직렬화 에러 방지)
+                defect_types_display = defect_types_display.with_columns(
+                    pl.col(Terms.KOREAN.DEFECT_TYPE).cast(pl.Utf8)
+                )
                 st.dataframe(
                     defect_types_display,
                     width='stretch',
@@ -434,18 +439,18 @@ def render_cluster_comparison(lf, available_clusters, selected_dates, year_month
 
     # 설명 추가
     with st.expander("ℹ️ 클러스터 비교란?", expanded=False):
-        st.markdown("""
+        st.markdown(f"""
         **클러스터 비교**는 두 개의 클러스터(문제 유형 그룹)를 직접 대조하여 차이점을 분석합니다.
 
         **비교 항목**:
-        - **핵심 메트릭**: 전체 케이스 수, 치명률, 사망/부상 건수 비교
-        - **환자 피해 분포**: 두 클러스터의 피해 심각도 패턴 차이
-        - **상위 문제 부품**: 각 클러스터에서 주로 보고되는 부품의 차이
+        - **핵심 메트릭**: 전체 케이스 수, {Terms.KOREAN.CFR}, 사망/부상 건수 비교
+        - **{Terms.KOREAN.PATIENT_HARM} 분포**: 두 클러스터의 피해 심각도 패턴 차이
+        - **상위 {Terms.KOREAN.PROBLEM_COMPONENT}**: 각 클러스터에서 주로 보고되는 부품의 차이
         - **시계열 추이**: 시간에 따른 보고 건수 변화 패턴 비교
 
         **인사이트**:
-        - 케이스 수는 많지만 치명률이 낮은 클러스터 vs. 케이스는 적지만 치명률이 높은 클러스터를 구분할 수 있습니다
-        - 문제 부품이 겹치는 클러스터는 공통 원인이 있을 가능성이 있습니다
+        - 케이스 수는 많지만 {Terms.KOREAN.CFR}이 낮은 클러스터 vs. 케이스는 적지만 {Terms.KOREAN.CFR}이 높은 클러스터를 구분할 수 있습니다
+        - {Terms.KOREAN.PROBLEM_COMPONENT}이 겹치는 클러스터는 공통 원인이 있을 가능성이 있습니다
         - 시계열 추이가 유사하다면 동일한 외부 요인(예: 리콜, 규제 변화)의 영향을 받을 수 있습니다
         """)
 
@@ -524,7 +529,7 @@ def render_cluster_comparison(lf, available_clusters, selected_dates, year_month
     st.markdown("---")
 
     # ==================== 2. 환자 피해 비교 (나란히) ====================
-    st.markdown("#### 🎯 환자 피해 분포 비교")
+    st.markdown(f"#### 🎯 {Terms.KOREAN.PATIENT_HARM} 분포 비교")
 
     fig = make_subplots(
         rows=1, cols=2,
@@ -651,6 +656,9 @@ def render_cluster_comparison(lf, available_clusters, selected_dates, year_month
                 'count': Terms.KOREAN.REPORT_COUNT,
                 'ratio': f"{Terms.KOREAN.RATIO} (%)"
             })
+            # 결함 유형 컬럼을 문자열로 변환 (Arrow 직렬화 에러 방지)
+            if Terms.KOREAN.DEFECT_TYPE in defect_a_display.columns:
+                defect_a_display[Terms.KOREAN.DEFECT_TYPE] = defect_a_display[Terms.KOREAN.DEFECT_TYPE].astype(str)
             if f"{Terms.KOREAN.RATIO} (%)" in defect_a_display.columns:
                 st.dataframe(
                     defect_a_display,
@@ -670,6 +678,9 @@ def render_cluster_comparison(lf, available_clusters, selected_dates, year_month
                 'count': Terms.KOREAN.REPORT_COUNT,
                 'ratio': f"{Terms.KOREAN.RATIO} (%)"
             })
+            # 결함 유형 컬럼을 문자열로 변환 (Arrow 직렬화 에러 방지)
+            if Terms.KOREAN.DEFECT_TYPE in defect_b_display.columns:
+                defect_b_display[Terms.KOREAN.DEFECT_TYPE] = defect_b_display[Terms.KOREAN.DEFECT_TYPE].astype(str)
             if f"{Terms.KOREAN.RATIO} (%)" in defect_b_display.columns:
                 st.dataframe(
                     defect_b_display,
@@ -851,7 +862,7 @@ def render_cluster_overview(lf, available_clusters, selected_dates, year_month_e
     st.markdown("---")
 
     # ==================== 2. 클러스터별 환자 피해 분포 (적층 바) ====================
-    st.markdown("#### 🎯 클러스터별 환자 피해 분포")
+    st.markdown(f"#### 🎯 클러스터별 {Terms.KOREAN.PATIENT_HARM} 분포")
 
     fig_stacked = go.Figure()
 
@@ -1063,12 +1074,15 @@ def render_cluster_overview(lf, available_clusters, selected_dates, year_month_e
 
 
 def render_cluster_insights(lf, available_clusters, selected_dates, year_month_expr, manufacturers, products):
-    """자동 인사이트 생성"""
+    """자동 인사이트 생성 (terminology 기반)"""
+    from dashboard.utils.terminology import get_term_manager
+
+    term = get_term_manager()
     st.subheader("💡 핵심 인사이트")
 
     insights = []
 
-    with st.spinner("인사이트 생성 중..."):
+    with st.spinner(term.messages.get('analyzing', '분석 중...')):
         # 모든 클러스터 데이터 수집
         all_data = []
         for cluster_id in available_clusters:
@@ -1087,7 +1101,9 @@ def render_cluster_insights(lf, available_clusters, selected_dates, year_month_e
         largest_cluster = max(all_data, key=lambda x: x[1]['total_count'])
         insights.append({
             "type": "info",
-            "text": f"📊 **Cluster {largest_cluster[0]}**가 가장 많은 케이스를 포함합니다 ({largest_cluster[1]['total_count']:,}건)"
+            "text": term.format_message('cluster_most_cases',
+                                       cluster_id=largest_cluster[0],
+                                       count=largest_cluster[1]['total_count'])
         })
 
         # 2. 가장 위험한 클러스터 (치명률 기준: 사망 + 중증부상)
@@ -1100,14 +1116,19 @@ def render_cluster_insights(lf, available_clusters, selected_dates, year_month_e
         if highest_cfr[1] > 0:
             insights.append({
                 "type": "error",
-                "text": f"⚠️ **Cluster {highest_cfr[0]}**의 치명률이 **{highest_cfr[1]:.2f}%**로 가장 높습니다 (중대 피해 {highest_cfr[2]:,}건)"
+                "text": term.format_message('cluster_highest_cfr',
+                                           cluster_id=highest_cfr[0],
+                                           cfr=highest_cfr[1],
+                                           severe_count=highest_cfr[2])
             })
 
         # 3. 가장 안전한 클러스터
         lowest_cfr = min(cfr_rates, key=lambda x: x[1])
         insights.append({
             "type": "success",
-            "text": f"✅ **Cluster {lowest_cfr[0]}**의 치명률이 **{lowest_cfr[1]:.2f}%**로 가장 낮습니다"
+            "text": term.format_message('cluster_lowest_cfr',
+                                       cluster_id=lowest_cfr[0],
+                                       cfr=lowest_cfr[1])
         })
 
         # 4. 공통 문제 부품
@@ -1125,7 +1146,7 @@ def render_cluster_insights(lf, available_clusters, selected_dates, year_month_e
             if common_parts:
                 insights.append({
                     "type": "warning",
-                    "text": f"🔧 **여러 클러스터에서 공통으로 발견된 문제 부품**: {common_parts}"
+                    "text": term.format_message('cluster_common_components', parts=common_parts)
                 })
 
     # 인사이트 표시
@@ -1144,25 +1165,29 @@ def render_cluster_insights(lf, available_clusters, selected_dates, year_month_e
 
     st.markdown("---")
 
-    # 권장 사항
+    # 권장 사항 (terminology 기반)
     st.markdown("### 🎯 권장 사항")
 
     recommendations = []
 
     # 치명률 높은 클러스터에 대한 권장
     if highest_cfr[1] > 5.0:
-        recommendations.append(f"- **Cluster {highest_cfr[0]}**에 대한 집중 조사 및 안전성 개선이 필요합니다")
+        recommendations.append(
+            term.format_message('cluster_recommendation_high_cfr', cluster_id=highest_cfr[0])
+        )
 
     # 케이스 수 많은 클러스터
     if largest_cluster[1]['total_count'] > 100:
-        recommendations.append(f"- **Cluster {largest_cluster[0]}**의 대량 케이스에 대한 패턴 분석을 수행하세요")
+        recommendations.append(
+            term.format_message('cluster_recommendation_large', cluster_id=largest_cluster[0])
+        )
 
     # 공통 부품
     if all_components:
-        recommendations.append(f"- 여러 클러스터에서 반복되는 문제 부품에 대한 근본 원인 분석이 필요합니다")
+        recommendations.append(term.messages.get('cluster_recommendation_common_parts'))
 
     if recommendations:
         for rec in recommendations:
             st.markdown(rec)
     else:
-        st.markdown("- 현재 데이터에서 특별한 조치가 필요한 항목은 없습니다")
+        st.markdown(term.messages.get('cluster_recommendation_none'))
