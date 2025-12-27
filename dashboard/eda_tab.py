@@ -4,7 +4,7 @@ import polars as pl
 import pandas as pd
 
 # utils 함수 import
-from utils.constants import ColumnNames, Defaults, PatientHarmLevels, DisplayNames
+from utils.constants import ColumnNames, Defaults, PatientHarmLevels, DisplayNames, Terms
 from utils.data_utils import get_year_month_expr
 from utils.filter_helpers import (
     get_available_filters,
@@ -149,7 +149,7 @@ def show(filters=None, lf: pl.LazyFrame = None):
             top_n
         )
 
-        # ==================== defect type별 상위 문제 & 사건 유형별 분포 ====================
+        # ==================== 결함 유형별 상위 문제 부품 및 환자 피해 분포 ====================
         st.markdown("---")
         render_cluster_and_event_analysis(
             lf,
@@ -195,7 +195,6 @@ def render_smart_insights(
         min_cases: 최소 케이스 수
     """
     st.subheader("💡 핵심 인사이트")
-    st.markdown("---")
 
     insights = []
 
@@ -1321,15 +1320,22 @@ def render_cluster_and_event_analysis(
     defect_types,
     year_month_expr
 ):
-    """defect type별 상위 문제 & 사건 유형별 분포 렌더링 (하이브리드 필터: defect_types 제외)"""
+    """결함 유형별 상위 문제 부품 및 환자 피해 분포 렌더링 (하이브리드 필터: defect_types 제외)"""
     import plotly.graph_objects as go
     import streamlit.components.v1 as components
     import html
 
-    st.subheader("📊 defect type별 상위 문제 & 사건 유형 분포")
+    title = Terms.section_title(
+        'entity_multi_analysis',
+        entity=Terms.KOREAN.DEFECT_TYPE,
+        item1='상위 문제 부품',
+        item2='환자 피해 분포'
+    )
+
+    st.subheader(f"📊 {title}")
 
     # 설명 추가
-    with st.expander("ℹ️ defect type별 상위 문제 & 환자 피해 분포란?", expanded=False):
+    with st.expander(f"ℹ️ {Terms.KOREAN.DEFECT_TYPE}별 상위 문제 부품 및 환자 피해 분포란?", expanded=False):
         st.markdown("""
         **이 섹션**은 결함 유형(defect type)별로 어떤 문제 부품이 많이 보고되었는지, 그리고 전체적으로 환자 피해가 어떻게 분포되어 있는지 보여줍니다.
 
@@ -1338,7 +1344,7 @@ def render_cluster_and_event_analysis(
         - 전체 부작용 보고 중 실제로 심각한 피해로 이어진 비율을 파악할 수 있습니다
         - 결함 유형 필터를 선택하면 해당 결함 유형의 환자 피해 분포만 표시됩니다
 
-        **defect type별 상위 문제**:
+        **결함 유형별 상위 문제 부품**:
         - 특정 결함 유형(카테고리)을 선택하면 해당 결함에서 가장 빈번하게 보고된 문제 부품 상위 10개를 표시합니다
         - 각 부품의 건수와 비율을 직관적인 막대 차트로 확인할 수 있습니다
 
@@ -1387,16 +1393,16 @@ def render_cluster_and_event_analysis(
             # 좌우 레이아웃
             event_col, cluster_col = st.columns([1, 1])
 
-            # 우측: defect type별 상위 문제
+            # 우측: 결함 유형별 상위 문제 부품
             with cluster_col:
-                st.markdown("### defect type별 상위 문제")
+                st.markdown(f"### {Terms.KOREAN.DEFECT_TYPE}별 상위 문제 부품")
 
                 # 상위 N개 설정 (기본값 10개)
                 top_n_cluster = 10
 
-                # defect type별 상위 문제 분석 실행
+                # 결함 유형별 상위 문제 분석 실행
                 if selected_cluster:
-                    with st.spinner("defect type별 상위 문제 분석 중..."):
+                    with st.spinner(f"{Terms.KOREAN.DEFECT_TYPE}별 상위 문제 부품 분석 중..."):
                         cluster_result = cluster_keyword_unpack(
                             lf,
                             col_name=ColumnNames.PROBLEM_COMPONENTS,
@@ -1648,24 +1654,24 @@ def render_cluster_and_event_analysis(
                     summary_col1, summary_col2, summary_col3, summary_col4, summary_col5 = st.columns(5)
 
                     with summary_col1:
-                        st.metric("사망", f"{total_deaths:,}건")
+                        st.metric(Terms.KOREAN.DEATH_COUNT, f"{total_deaths:,}건")
 
                     with summary_col2:
-                        st.metric("중증 부상", f"{total_serious:,}건")
+                        st.metric(Terms.KOREAN.SERIOUS_INJURY, f"{total_serious:,}건")
 
                     with summary_col3:
-                        st.metric("경증 부상", f"{total_minor:,}건")
+                        st.metric(Terms.KOREAN.MINOR_INJURY, f"{total_minor:,}건")
 
                     with summary_col4:
-                        st.metric("부상 없음", f"{total_none:,}건")
+                        st.metric(Terms.KOREAN.NO_HARM, f"{total_none:,}건")
 
                     with summary_col5:
                         st.metric("Unknown", f"{total_unknown:,}건")
                 else:
                     st.info("환자 피해 데이터가 없습니다.")
         else:
-            st.info("선택한 조건에 해당하는 defect type가 없습니다.")
+            st.info(f"선택한 조건에 해당하는 {Terms.KOREAN.DEFECT_TYPE}가 없습니다.")
 
     except Exception as e:
-        st.error(f"defect type별 상위 문제 분석 중 오류가 발생했습니다: {str(e)}")
+        st.error(f"{Terms.KOREAN.DEFECT_TYPE}별 상위 문제 부품 분석 중 오류가 발생했습니다: {str(e)}")
         st.exception(e)

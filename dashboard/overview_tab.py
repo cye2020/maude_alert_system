@@ -4,7 +4,7 @@ import streamlit as st
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils.analysis import calculate_big_numbers, get_risk_matrix_data
-from utils.constants import ColumnNames, PatientHarmLevels, Defaults, DisplayNames
+from utils.constants import ColumnNames, PatientHarmLevels, Defaults, DisplayNames, Terms
 from dashboard.utils.ui_components import render_filter_summary_badge
 
 def plot_sparkline(data_list, key="sparkline"):
@@ -85,7 +85,7 @@ def plot_dual_axis_chart(
     )
 
     # 3. Dual-Axis 차트 생성
-    st.subheader("📈 보고 건수 및 중대 피해율 추이")
+    st.subheader(f"📈 {Terms.KOREAN.REPORT_COUNT} 및 {Terms.KOREAN.SEVERE_HARM_RATE} {Terms.KOREAN.TREND}")
 
     # subplots 사용하여 이중 축 생성
     fig = make_subplots(specs=[[{"secondary_y": True}]])
@@ -95,7 +95,7 @@ def plot_dual_axis_chart(
         go.Bar(
             x=agg_data["date"],
             y=agg_data["count"],
-            name="보고 건수",
+            name=Terms.KOREAN.REPORT_COUNT,
             marker_color='rgba(31, 119, 180, 0.6)',
             yaxis='y'
         ),
@@ -107,7 +107,7 @@ def plot_dual_axis_chart(
         go.Scatter(
             x=agg_data["date"],
             y=agg_data["severe_harm_rate"],
-            name="중대 피해율 (%)",
+            name=f"{Terms.KOREAN.SEVERE_HARM_RATE} (%)",
             mode='lines+markers',
             line=dict(color='red', width=2),
             marker=dict(size=6),
@@ -378,12 +378,12 @@ def show(filters=None, lf: pl.LazyFrame = None):
     st.markdown("---")
 
     # Risk Matrix Analysis
-    st.subheader("🔍 리스크 매트릭스")
+    st.subheader(f"🔍 {Terms.KOREAN.RISK_MATRIX}")
 
     # 설명 추가
-    with st.expander("ℹ️ 리스크 매트릭스란?", expanded=False):
-        st.markdown("""
-        **리스크 매트릭스**는 발생 빈도와 치명률을 동시에 고려하여 위험도를 평가하는 도구입니다.
+    with st.expander(f"ℹ️ {Terms.KOREAN.RISK_MATRIX}란?", expanded=False):
+        st.markdown(f"""
+        **{Terms.KOREAN.RISK_MATRIX}**는 발생 빈도와 {Terms.KOREAN.CFR}을 동시에 고려하여 위험도를 평가하는 도구입니다.
 
         **해석 방법**:
         - **오른쪽 위**: 빈도 높음 + 치명률 높음 = **최고 위험**

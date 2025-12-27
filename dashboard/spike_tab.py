@@ -255,6 +255,26 @@ def show(filters=None, lf: pl.LazyFrame = None):
     severe_keywords = result_df.filter(pl.col("pattern") == "severe").sort("ratio", descending=True)["keyword"].to_list()
     alert_keywords = result_df.filter(pl.col("pattern") == "alert").sort("ratio", descending=True)["keyword"].to_list()
 
+    # # 🔍 디버그: 날짜-제조사-제품군-키워드 매핑
+    # st.write("### 🔍 디버그: 날짜-제조사-제품군-키워드 매핑")
+    # debug_mapping = (
+    #     filtered_lf
+    #     .select([
+    #         pl.col("date_received").dt.truncate("1mo").alias("month"),
+    #         pl.col(ColumnNames.MANUFACTURER).alias("manufacturer"),
+    #         pl.col(ColumnNames.PRODUCT_CODE).alias("product"),
+    #         pl.col(ColumnNames.DEFECT_TYPE).alias("keyword")
+    #     ])
+    #     .filter(pl.col("keyword").is_in(all_keywords[:20]))  # 상위 20개 키워드만
+    #     .group_by(["month", "manufacturer", "product", "keyword"])
+    #     .agg(pl.len().alias("count"))
+    #     .sort(["month", "keyword", "count"], descending=[True, False, True])
+    #     .head(100)
+    #     .collect()
+    # )
+    # st.write(f"**매핑 데이터 (상위 100행)**:")
+    # st.dataframe(debug_mapping, height=300)
+
     # 빠른 선택 버튼
     st.markdown("**🔘 빠른 선택**")
     col_btn1, col_btn2, col_btn3, col_btn4, col_btn5 = st.columns(5)
@@ -302,7 +322,7 @@ def show(filters=None, lf: pl.LazyFrame = None):
     # 선택된 키워드로 시계열 데이터 가져오기
     if len(selected_keywords) > 0:
         ts_df_filtered = get_spike_time_series(
-            _lf=lf,
+            _lf=filtered_lf,
             keywords=selected_keywords,
             start_month=start_month,
             end_month=as_of_month,

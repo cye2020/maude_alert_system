@@ -6,7 +6,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from utils.analysis_cluster import cluster_check, get_available_clusters
-from utils.constants import ColumnNames, Defaults, ChartStyles, DisplayNames, HarmColors
+from utils.constants import ColumnNames, Defaults, ChartStyles, DisplayNames, HarmColors, Terms
 from utils.data_utils import get_year_month_expr
 from dashboard.utils.ui_components import (
     render_filter_summary_badge,
@@ -220,16 +220,16 @@ def render_individual_cluster_analysis(lf, available_clusters, selected_dates, y
                   delta=f"{severe_harm_count:,}건", delta_color="inverse")
     with col3:
         death_rate = (death_count / cluster_data['total_count'] * 100) if cluster_data['total_count'] > 0 else 0
-        st.metric("사망", f"{death_count:,}",
+        st.metric(Terms.KOREAN.DEATH_COUNT, f"{death_count:,}",
                   delta=f"{death_rate:.2f}%", delta_color="inverse")
     with col4:
         serious_rate = (serious_count / cluster_data['total_count'] * 100) if cluster_data['total_count'] > 0 else 0
-        st.metric("중증 부상", f"{serious_count:,}",
+        st.metric(Terms.KOREAN.SERIOUS_INJURY, f"{serious_count:,}",
                   delta=f"{serious_rate:.2f}%", delta_color="inverse")
     with col5:
         minor_count = cluster_data['harm_summary']['total_minor_injuries']
         minor_rate = (minor_count / cluster_data['total_count'] * 100) if cluster_data['total_count'] > 0 else 0
-        st.metric("경증 부상", f"{minor_count:,}",
+        st.metric(Terms.KOREAN.MINOR_INJURY, f"{minor_count:,}",
                   delta=f"{minor_rate:.2f}%", delta_color="inverse")
 
     st.markdown("---")
@@ -418,15 +418,15 @@ def render_cluster_comparison(lf, available_clusters, selected_dates, year_month
 
     with col1:
         st.markdown(f"**Cluster {cluster_a}**")
-        st.metric("전체 케이스", f"{data_a['total_count']:,}")
-        st.metric("사망", f"{data_a['harm_summary']['total_deaths']:,}")
-        st.metric("중증 부상", f"{data_a['harm_summary']['total_serious_injuries']:,}")
+        st.metric(Terms.KOREAN.TOTAL_CASES, f"{data_a['total_count']:,}")
+        st.metric(Terms.KOREAN.DEATH_COUNT, f"{data_a['harm_summary']['total_deaths']:,}")
+        st.metric(Terms.KOREAN.SERIOUS_INJURY, f"{data_a['harm_summary']['total_serious_injuries']:,}")
 
     with col2:
         st.markdown(f"**Cluster {cluster_b}**")
-        st.metric("전체 케이스", f"{data_b['total_count']:,}")
-        st.metric("사망", f"{data_b['harm_summary']['total_deaths']:,}")
-        st.metric("중증 부상", f"{data_b['harm_summary']['total_serious_injuries']:,}")
+        st.metric(Terms.KOREAN.TOTAL_CASES, f"{data_b['total_count']:,}")
+        st.metric(Terms.KOREAN.DEATH_COUNT, f"{data_b['harm_summary']['total_deaths']:,}")
+        st.metric(Terms.KOREAN.SERIOUS_INJURY, f"{data_b['harm_summary']['total_serious_injuries']:,}")
 
     st.markdown("---")
 

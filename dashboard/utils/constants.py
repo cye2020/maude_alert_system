@@ -1,5 +1,9 @@
 # constants.py
-"""공통 상수 및 설정 값 (YAML에서 로드)"""
+"""공통 상수 및 설정 값 (YAML에서 로드)
+
+이 모듈은 모든 대시보드에서 사용하는 공통 상수를 정의합니다.
+용어 통일을 위해 terminology.yaml을 함께 사용합니다.
+"""
 
 import sys
 from pathlib import Path
@@ -9,12 +13,16 @@ root_path = Path(__file__).parent.parent.parent
 sys.path.append(str(root_path))
 
 from dashboard.utils.dashboard_config import get_config
+from dashboard.utils.terminology import get_term_manager
 
 
 # Config 로드
 _config = get_config()
 _defaults_config = _config._defaults if hasattr(_config, '_defaults') else {}
 _ui_standards = _config._ui_standards if hasattr(_config, '_ui_standards') else {}
+
+# Terminology Manager (용어 통일)
+_term = get_term_manager()
 
 
 class ColumnNames:
@@ -191,3 +199,115 @@ class SeverityColors:
     ALERT = _severity_colors.get('alert', '#F59E0B')
     ATTENTION = _severity_colors.get('attention', '#ffd700')
     GENERAL = _severity_colors.get('general', '#2ca02c')
+
+
+# ==================== 용어 통일 (Terminology) ====================
+class Terms:
+    """용어 통일 클래스
+
+    terminology.yaml에서 용어를 동적으로 로드하여 일관된 용어 사용을 보장합니다.
+
+    Usage:
+        >>> Terms.KOREAN.CFR  # '치명률'
+        >>> Terms.KOREAN.DEATH_RATE  # '사망률'
+        >>> Terms.COLUMN.DEATH_COUNT  # 'death_count'
+        >>> Terms.format_message('high_cfr_alert', device='ABC', cfr=12.5, count=100)
+    """
+
+    # 동적으로 생성된 한국어 용어 (terminology.yaml에서 자동 로드)
+    KOREAN = _term.korean if hasattr(_term, 'korean') else type('KOREAN', (), {})()
+
+    # 동적으로 생성된 컬럼명 (terminology.yaml에서 자동 로드)
+    COLUMN = _term.columns.calculated_columns if hasattr(_term, 'columns') else type('COLUMN', (), {})()
+
+    @staticmethod
+    def get_column_header(col_name: str) -> str:
+        """컬럼명 -> 표시용 한글 헤더 변환
+
+        Args:
+            col_name: 영문 컬럼명
+
+        Returns:
+            한글 컬럼 헤더
+
+        Example:
+            >>> Terms.get_column_header('death_count')
+            '사망'
+        """
+        headers = _term.column_headers
+        return headers.get(col_name, col_name)
+
+    @staticmethod
+    def rename_columns(df, mapping: dict = None):
+        """DataFrame 컬럼명을 한글로 변환
+
+        Args:
+            df: polars 또는 pandas DataFrame
+            mapping: 커스텀 매핑 (없으면 기본 매핑 사용)
+
+        Returns:
+            컬럼명이 변환된 DataFrame
+        """
+        if mapping is None:
+            mapping = _term.column_headers
+
+        # polars인지 pandas인지 확인
+        if hasattr(df, 'rename'):
+            # polars
+            return df.rename(mapping)
+        else:
+            # pandas
+            return df.rename(columns=mapping)
+
+    @staticmethod
+    def format_message(template_key: str, **kwargs) -> str:
+        """메시지 템플릿 포맷
+
+        Args:
+            template_key: 메시지 템플릿 키
+            **kwargs: 템플릿 변수
+
+        Returns:
+            포맷된 메시지
+
+        Example:
+            >>> Terms.format_message('high_cfr_alert', device='ABC', cfr=12.5, count=100)
+        """
+        return _term.format_message(template_key, **kwargs)
+
+    @staticmethod
+    def get_description(term_key: str) -> str:
+        """용어 설명 가져오기
+
+        Args:
+            term_key: 용어 키
+
+        Returns:
+            설명 텍스트
+        """
+        return _term.get_description(term_key)
+
+    @staticmethod
+    def section_title(template_key: str, **kwargs) -> str:
+        """섹션 제목 생성 (템플릿 사용)
+
+        Args:
+            template_key: 템플릿 키 (예: 'entity_analysis', 'metric_by_entity')
+            **kwargs: 템플릿 변수
+
+        Returns:
+            생성된 제목
+
+        Example:
+            >>> Terms.section_title('entity_analysis', entity='결함 유형')
+            '결함 유형 분석'
+            >>> Terms.section_title('metric_by_entity', entity='제조사', metric='치명률')
+            '제조사별 치명률'
+        """
+        template = _term.get(f'korean_terms.sections.{template_key}', '')
+        if not template:
+            return ''
+        try:
+            return template.format(**kwargs)
+        except KeyError as e:
+            return f"[Title format error: missing {e}]"
