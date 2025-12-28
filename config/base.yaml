@@ -31,10 +31,20 @@ paths:
 datasets:
   maude:
     name: "maude"
+    # Bronze Layer - Raw Data
     bronze_file: "maude_raw.parquet"
-    silver_file: "maude_cleaned.parquet"
-    gold_file: "maude_final.parquet"
-    
+
+    # Silver Layer - Cleaned & Transformed (3 stages)
+    silver:
+      stage1_basic_cleaning: "maude_basic_cleaned.parquet"      # 1차 전처리: 기본적인 데이터 정제
+      stage2_text_processing: "maude_text_processed.parquet"    # 텍스트 전처리: 필드 정규화, 클리닝
+      stage3_clustering: "maude_clustered.parquet"              # 클러스터링: 유사 케이스 그룹핑
+
+    # Gold Layer - Business Aggregates (TBD)
+    # 필터 조합이 많아 동적 집계 방식 검토 중
+    # (년월별-제조사별-기기별-제품군별-defect_type별-cluster별)
+    gold: null
+
   udi:
     name: "udi"
     bronze_file: "udi_raw.parquet"

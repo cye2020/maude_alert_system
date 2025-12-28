@@ -1,0 +1,369 @@
+# terminology.yaml
+# 용어 통일을 위한 중앙 단어 사전
+# 모든 dashboard 코드에서 이 config를 참조하여 일관성 있는 용어 사용
+
+# ==================== 데이터베이스 컬럼명 매핑 ====================
+# 실제 DB 컬럼명 -> 표준 이름 매핑
+column_names:
+  # 기본 컬럼
+  manufacturer: 'manufacturer_name'
+  product_code: 'product_code'
+  date_received: 'date_received'
+  date_occurred: 'date_occurred'
+
+  # 결함/이벤트 관련
+  defect_type: 'defect_type'
+  problem_components: 'problem_components'
+  event_type: 'event_type'
+
+  # 환자 피해 관련
+  patient_harm: 'patient_harm'
+  defect_confirmed: 'defect_confirmed'
+
+  # 기타
+  udi_di: 'udi_di'
+  cluster: 'cluster'
+
+  # 계산된 컬럼명 (분석 결과에서 사용)
+  calculated_columns:
+    death_count: 'death_count'
+    serious_injury_count: 'serious_injury_count'
+    minor_injury_count: 'minor_injury_count'
+    no_harm_count: 'no_harm_count'
+    severe_harm_count: 'severe_harm_count'  # death + serious_injury
+    total_cases: 'total_count'
+    total_count: 'total_count'
+    cfr: 'cfr'  # Case Fatality Rate
+    manufacturer_product: 'manufacturer_product'
+
+# ==================== 한국어 용어 사전 ====================
+# 표준 용어 정의 (코드 전체에서 일관되게 사용)
+korean_terms:
+  # 지표/메트릭 (핵심 - 절대 혼용 금지)
+  metrics:
+    cfr: '치명률'                    # Case Fatality Rate (사망 + 중증부상)
+    cfr_full: '치명률(CFR)'          # 괄호 포함 버전
+    death_rate: '사망률'             # Death rate only (사망만)
+    death_count: '사망'
+    death_count_full: '사망 건수'
+
+    serious_injury: '중증 부상'
+    serious_injury_count: '중증 부상 건수'
+    serious_injury_rate: '중증 부상률'
+
+    minor_injury: '경증 부상'
+    minor_injury_count: '경증 부상 건수'
+    minor_injury_rate: '경증 부상률'
+
+    no_harm: '부상 없음'
+    no_harm_count: '부상 없음 건수'
+
+    severe_harm: '중대 피해'         # 사망 + 중증 부상 통칭
+    severe_harm_count: '중대 피해 건수'
+    severe_harm_rate: '중대 피해 발생률'
+
+    total_reports: '총 보고 건수'
+    total_cases: '전체 케이스'
+    total_count: '전체 건수'
+    report_count: '보고 건수'
+    case_count: '케이스 수'
+
+  # 엔티티 (주체/대상)
+  entities:
+    manufacturer: '제조사'
+    product: '제품군'
+    product_code: '제품 코드'
+    device: '기기'
+    manufacturer_product: '제조사-제품군'
+
+    defect_type: '결함 유형'
+    defect_confirmed: '결함 확정'
+    defect_confirmed_rate: '제조사 결함 확정률'
+
+    component: '부품'
+    problem_component: '문제 부품'
+
+    cluster: '클러스터'
+    cluster_id: '클러스터 ID'
+
+    patient_harm: '환자 피해'
+    event_type: '이벤트 유형'
+
+  # 시간 관련
+  time:
+    date_received: '보고 접수일'
+    date_occurred: '사건 발생일'
+    date_range: '기간'
+    period: '기간'
+    monthly: '월별'
+    yearly: '연도별'
+    time_series: '시계열'
+    trend: '추이'
+
+  # 분석/통계 용어
+  analysis:
+    ratio: '비율'
+    percentage: '백분율'
+    rate: '발생률'
+    proportion: '비중'
+    average: '평균'
+    median: '중앙값'
+    min: '최소'
+    max: '최대'
+    range: '범위'
+
+    top_n: '상위 N개'
+    ranking: '순위'
+    distribution: '분포'
+    comparison: '비교'
+
+    # 패턴 용어 (통일)
+    spike: '급증'
+    increase: '증가'
+    decrease: '감소'
+    stable: '안정'
+    pattern: '패턴'
+
+    # 분석 타입
+    overview: '개요'
+    detailed_analysis: '상세 분석'
+    eda: '탐색적 데이터 분석'
+    spike_detection: '급증 탐지'
+    cluster_analysis: '클러스터 분석'
+    defect_analysis: '결함 분석'
+    component_analysis: '부품 분석'
+    harm_analysis: '피해 분석'
+    risk_analysis: '리스크 분석'
+
+    # 차트/섹션
+    summary: '요약'
+    insights: '인사이트'
+    data_table: '상세 데이터'
+    visualization: '시각화'
+    chart: '차트'
+    graph: '그래프'
+    matrix: '매트릭스'
+    heatmap: '히트맵'
+
+  # 품질/상태
+  quality:
+    missing_value: '(정보 없음)'
+    unknown: '알 수 없음'
+    other: '기타'
+    none: '없음'
+
+  # 위험도/심각도
+  severity:
+    critical: '심각'
+    severe: '중대'
+    high: '높음'
+    medium: '보통'
+    low: '낮음'
+    alert: '경고'
+    attention: '주의'
+    general: '일반'
+
+  # 섹션 제목 (차트/분석 섹션)
+  sections:
+    # 기본
+    overview: '개요'
+    summary: '요약'
+    details: '상세 정보'
+    insights: '인사이트'
+    recommendations: '권장사항'
+
+    # 차트 제목
+    time_series_chart: '시계열 차트'
+    monthly_trend: '월별 추이'
+    distribution_chart: '분포 차트'
+    comparison_chart: '비교 차트'
+    risk_matrix: '리스크 매트릭스'
+
+    # 분석 섹션
+    defect_type_analysis: '결함 유형 분석'
+    component_analysis: '문제 부품 분석'
+    harm_distribution: '환자 피해 분포'
+    event_type_distribution: '사건 유형 분포'
+    cfr_analysis: '치명률(CFR) 분석'
+    spike_analysis: '급증 패턴 분석'
+    cluster_overview: '클러스터 개요'
+
+    # 복합 제목 템플릿 (사용 시 .format() 필요)
+    top_items_by_entity: '{entity}별 상위 {metric}'  # 예: "제조사별 상위 보고 건수"
+    entity_analysis: '{entity} 분석'                  # 예: "결함 유형 분석"
+    metric_by_entity: '{entity}별 {metric}'           # 예: "제조사별 치명률"
+    entity_multi_analysis: '{entity}별 {item1} 및 {item2}'  # 예: "결함 유형별 상위 문제 부품 및 사건 유형 분포"
+    entity_distribution: '{entity}별 {metric} {analysis_type}'  # 예: "제조사별 보고 건수 분포"
+
+# ==================== 영문 용어 사전 ====================
+# 영문 표준 용어 (API, 데이터 분석 등에서 사용)
+english_terms:
+  metrics:
+    cfr: 'CFR'  # Case Fatality Rate
+    death_rate: 'Death Rate'
+    death_count: 'Death Count'
+    serious_injury_rate: 'Serious Injury Rate'
+    severe_harm_rate: 'Severe Harm Rate'
+
+  entities:
+    manufacturer: 'Manufacturer'
+    product: 'Product'
+    device: 'Device'
+    component: 'Component'
+    cluster: 'Cluster'
+
+  analysis:
+    spike: 'Spike'
+    increase: 'Increase'
+    decrease: 'Decrease'
+    trend: 'Trend'
+
+# ==================== 용어 설명 (툴팁/도움말용) ====================
+term_descriptions:
+  cfr: |
+    치명률(Case Fatality Rate, CFR)은 전체 보고 건수 중 중대한 피해(사망, 중증 부상)가 발생한 비율입니다.
+    계산식: (사망 건수 + 중증 부상 건수) / 전체 보고 건수 × 100
+
+  death_rate: |
+    사망률은 전체 보고 건수 중 사망이 발생한 비율입니다.
+    계산식: 사망 건수 / 전체 보고 건수 × 100
+
+  severe_harm: |
+    중대 피해는 사망과 중증 부상을 포함하는 심각한 환자 피해를 의미합니다.
+
+  spike: |
+    급증(Spike)은 특정 기간 동안 보고 건수가 평균 대비 현저히 증가한 패턴을 의미합니다.
+    통계적으로 유의미한 증가만을 탐지합니다.
+
+  cluster: |
+    클러스터는 유사한 특성을 가진 부작용 보고를 그룹화한 것입니다.
+    머신러닝 알고리즘을 통해 자동으로 분류됩니다.
+
+# ==================== UI 표시 형식 ====================
+# 자주 사용하는 포맷 패턴
+display_formats:
+  # 숫자 포맷
+  integer: '{:,}'           # 1,234
+  percentage: '{:.2f}%'     # 12.34%
+  percentage_delta: '{:+.2f}%p'  # +1.23%p
+  decimal_2: '{:.2f}'       # 12.34
+
+  # 날짜 포맷
+  date_yyyymm: '%Y-%m'      # 2024-01
+  date_full: '%Y-%m-%d'     # 2024-01-15
+  date_korean: '%Y년 %m월'  # 2024년 01월
+
+  # 범위 표시
+  date_range_separator: ' ~ '
+  item_separator: ' · '
+
+  # 메트릭 표시
+  metric_with_count: '{label}: {value:,}건'
+  metric_with_percentage: '{label}: {value:.2f}%'
+  count_with_entity: '{count}개 {entity}'
+
+# ==================== 컬럼 헤더 매핑 ====================
+# DataFrame 표시용 컬럼명 (영문 -> 한글)
+column_headers:
+  # 기본
+  manufacturer_name: '제조사'
+  manufacturer_product: '제조사-제품군'
+  product_code: '제품군'
+  date_received: '보고 접수일'
+  date_occurred: '발생일'
+
+  # 건수
+  total_count: '전체 건수'
+  total_cases: '전체 케이스'
+  death_count: '사망'
+  serious_injury_count: '중증 부상'
+  minor_injury_count: '경증 부상'
+  no_harm_count: '부상 없음'
+  severe_harm_count: '중대피해'
+
+  # 비율
+  cfr: '치명률(%)'
+  death_rate: '사망률(%)'
+  serious_injury_rate: '중증 부상률(%)'
+  severe_harm_rate: '중대 피해 발생률(%)'
+
+  # 기타
+  defect_type: '결함 유형'
+  problem_components: '문제 부품'
+  cluster: '클러스터'
+  event_type: '이벤트 유형'
+  patient_harm: '환자 피해'
+
+# ==================== 메시지 템플릿 ====================
+message_templates:
+  # 에러/경고
+  no_data: '선택한 조건에 해당하는 데이터가 없습니다.'
+  min_data_required: '⚠️ 분석을 위해 최소 {min_count}건 이상의 데이터가 필요합니다.'
+
+  # 정보
+  loading: '데이터 로딩 중...'
+  analyzing: '분석 중...'
+  analysis_complete: '✅ 분석이 완료되었습니다.'
+
+  # ========== Cluster 탭 인사이트 ==========
+  # 개별 클러스터
+  cluster_most_cases: '📊 **Cluster {cluster_id}**가 가장 많은 케이스를 포함합니다 ({count:,}건)'
+  cluster_highest_cfr: '⚠️ **Cluster {cluster_id}**의 치명률이 {cfr:.2f}%로 가장 높습니다 (중대 피해 {severe_count:,}건)'
+  cluster_lowest_cfr: '✅ **Cluster {cluster_id}**의 치명률이 {cfr:.2f}%로 가장 낮습니다'
+  cluster_common_components: '🔧 **여러 클러스터에서 공통으로 발견된 문제 부품**: {parts}'
+
+  # 권장사항
+  cluster_recommendation_high_cfr: '- **Cluster {cluster_id}**에 대한 집중 조사 및 안전성 개선이 필요합니다'
+  cluster_recommendation_large: '- **Cluster {cluster_id}**의 대량 케이스에 대한 패턴 분석을 수행하세요'
+  cluster_recommendation_common_parts: '- 여러 클러스터에서 반복되는 문제 부품에 대한 근본 원인 분석이 필요합니다'
+  cluster_recommendation_none: '- 현재 데이터에서 특별한 조치가 필요한 항목은 없습니다'
+
+  # ========== EDA 탭 인사이트 ==========
+  eda_top_product: '📊 **{manufacturer_product}**의 보고 건수가 **{count:,}건**으로 가장 많습니다'
+  eda_high_cfr: '⚠️ **{device}**의 치명률이 {cfr:.2f}%로 매우 높습니다 (중대 피해 {count:,}건)'
+  eda_avg_cfr_good: '✅ 평균 치명률이 {avg_cfr:.2f}%로 양호한 수준입니다'
+  eda_top_defect_type: '🔧 가장 빈번한 결함 유형은 **{defect_type}** ({count:,}건)입니다'
+  eda_no_anomaly: '특이사항이 감지되지 않았습니다'
+
+  # ========== Spike 탭 인사이트 ==========
+  spike_critical: |
+    🚨 **최고 위험 급증**: **{keyword}**
+    - 보고 건수: {c_base:,}건 → **{c_recent:,}건** ({ratio:.2f}배 급증)
+    - 3가지 탐지 방법 모두 급증으로 판정
+    - ⚠️ **즉시 조사 권장** (FDA 보고서 검토, 원인 분석 필요)
+  spike_new: |
+    ⚡ **신규 등장 급증**: {new_count}개
+    - 예시: {examples}
+    - 과거에 거의 보고되지 않았으나 최근 급증
+    - 💡 신규 제품 출시 또는 새로운 문제 발생 가능성
+  spike_severe_pattern: |
+    🔴 **심각 패턴**: {severe_count}개
+    - 높은 급증률 + 많은 보고 건수 조합
+    - **우선순위 높음**: 상위 10개 키워드 개별 검토 필요
+  spike_alert_pattern: |
+    🟠 **경고 패턴**: {alert_count}개
+    - 중간 수준의 급증 또는 보고 건수
+    - 모니터링 필요
+  spike_none: '✅ 현재 기간에 통계적으로 유의미한 급증이 탐지되지 않았습니다.'
+  spike_none_good: '💡 이는 좋은 신호입니다. 제품 품질이 안정적으로 유지되고 있습니다.'
+
+  # ========== Overview 탭 ==========
+  overview_high_cfr: '⚠️ **{device}**의 치명률이 {cfr:.2f}%로 매우 높습니다 (중대 피해 {count:,}건)'
+  overview_low_cfr: '✅ 평균 치명률이 {cfr:.2f}%로 양호한 수준입니다'
+
+# ==================== 사용 예시 ====================
+# 이 파일을 사용하는 방법:
+#
+# from dashboard.utils.terminology import TerminologyManager
+#
+# term = TerminologyManager()
+#
+# # 용어 가져오기
+# cfr_label = term.get('korean_terms.metrics.cfr')  # '치명률'
+# death_col = term.get('column_names.calculated_columns.death_count')  # 'death_count'
+#
+# # 컬럼 헤더 변환
+# df = df.rename(term.column_headers)
+#
+# # 메시지 포맷
+# msg = term.format_message('high_cfr_alert', device='ABC Corp - XYZ', cfr=12.5, count=100)

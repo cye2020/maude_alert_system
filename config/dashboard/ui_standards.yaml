@@ -1,0 +1,206 @@
+# UI 표준화 설정
+# 모든 대시보드에서 일관된 UI 경험을 제공하기 위한 표준 정의
+
+# ==================== 페이지/탭 정보 ====================
+page_titles:
+  overview: "개요"
+  eda: "상세 분석"
+  spike: "급증 탐지"
+  cluster: "클러스터 분석"
+
+# 아이콘
+icons:
+  overview: "📊"
+  eda: "📈"
+  spike: "🚨"
+  cluster: "🔍"
+
+# 전체 페이지 제목 (아이콘 + 제목)
+full_titles:
+  overview: "📊 개요"
+  eda: "📈 상세 분석"
+  spike: "🚨 급증 탐지"
+  cluster: "🔍 클러스터 분석"
+
+# ==================== 메트릭 라벨 ====================
+metric_labels:
+  # 기본 메트릭
+  total_reports: "총 보고 건수"
+  total_cases: "전체 케이스"
+  total_count: "전체 건수"
+
+  # 피해 관련
+  cfr: "치명률"
+  death_rate: "사망률"
+  death_count: "사망"
+  serious_injury: "중증 부상"
+  serious_injury_rate: "중증 부상률"
+  minor_injury: "경증 부상"
+  minor_injury_rate: "경증 부상률"
+  no_harm: "부상 없음"
+  severe_harm_rate: "중대 피해 발생률"
+
+  # 엔티티
+  manufacturer: "제조사"
+  product: "제품군"
+  defect_type: "결함 유형"
+  cluster: "클러스터"
+  component: "부품"
+  problem_component: "문제 부품"
+
+  # 분석
+  defect_confirmed_rate: "제조사 결함 확정률"
+  most_critical_defect_type: "가장 치명적인 결함 유형"
+  report_count: "보고 건수"
+  ratio: "비율"
+  percentage: "백분율"
+
+# ==================== 차트/섹션 제목 ====================
+section_titles:
+  # 공통
+  summary: "요약"
+  overview: "개요"
+  detailed_analysis: "상세 분석"
+  insights: "인사이트"
+  data_table: "상세 데이터"
+
+  # 분석별
+  time_series: "시계열 분석"
+  monthly_trend: "월별 추이"
+  monthly_reports: "월별 보고서 수"
+  harm_distribution: "환자 피해 분포"
+  defect_analysis: "결함 분석"
+  component_analysis: "문제 부품 분석"
+  cfr_analysis: "기기별 치명률(CFR) 분석"
+  risk_matrix: "리스크 매트릭스"
+  cluster_comparison: "클러스터 비교"
+  spike_detection: "스파이크 탐지"
+
+# ==================== 공통 레이아웃 ====================
+layout:
+  # 메트릭 행
+  metrics_columns: 4
+  metrics_large_columns: 3
+  metrics_small_columns: 5
+
+  # 차트 높이
+  chart_heights:
+    small: 400
+    medium: 600
+    large: 800
+    extra_large: 1000
+
+  # 테이블 설정
+  table:
+    default_rows: 50
+    max_rows: 200
+    min_rows: 10
+
+  # 컬럼 비율
+  column_ratios:
+    two_equal: [1, 1]
+    two_wide_left: [2, 1]
+    two_wide_right: [1, 2]
+    three_equal: [1, 1, 1]
+    four_equal: [1, 1, 1, 1]
+
+# ==================== 색상 팔레트 ====================
+colors:
+  # 환자 피해 (Harm)
+  harm:
+    death: "#DC2626"           # 빨강 (사망)
+    serious_injury: "#F59E0B"  # 주황 (중증 부상)
+    minor_injury: "#ffd700"    # 금색 (경증 부상)
+    no_harm: "#2ca02c"         # 초록 (부상 없음)
+    unknown: "#9CA3AF"         # 회색 (알 수 없음)
+
+  # 패턴/위험도 (Severity)
+  severity:
+    severe: "#DC2626"      # 🔴 심각
+    alert: "#F59E0B"       # 🟠 경고
+    attention: "#ffd700"   # 🟡 주의
+    general: "#2ca02c"     # 🟢 일반
+
+  # 차트 기본 색상
+  primary: "#1f77b4"    # 파랑
+  secondary: "#ff7f0e"  # 주황
+  success: "#2ca02c"    # 초록
+  warning: "#F59E0B"    # 주황
+  danger: "#DC2626"     # 빨강
+  info: "#3B82F6"       # 밝은 파랑
+
+  # Plotly 색상 팔레트
+  qualitative:
+    default: "Plotly"      # 10색상까지
+    extended: "Dark24"     # 24색상까지
+    large: "Dark24"        # 24개 이상은 반복
+
+# ==================== HTML 차트 스타일 ====================
+html_chart_styles:
+  # 막대 차트 (Bar Chart)
+  bar_chart:
+    item_height: 55           # 각 항목 높이 (px)
+    bar_height: 45            # 막대 높이 (px)
+    border_radius: 20         # 둥근 모서리 (px)
+    gradient_start: "#3B82F6" # 그라데이션 시작 색
+    gradient_end: "#2563EB"   # 그라데이션 끝 색
+    background: "#F3F4F6"     # 배경색
+    text_color: "#374151"     # 텍스트 색
+    hover_transform: "translateX(3px)"  # 호버 시 이동
+    shadow: "0 2px 4px rgba(59, 130, 246, 0.3)"
+
+  # 스크롤 가능한 컨테이너
+  scrollable_container:
+    max_visible_items: 10     # 화면에 보이는 최대 항목 수
+    scrollbar_width: 8        # 스크롤바 너비 (px)
+    scrollbar_color: "#888"   # 스크롤바 색
+    scrollbar_hover: "#555"   # 스크롤바 호버 색
+    scrollbar_track: "#f1f1f1"  # 스크롤바 트랙 색
+
+# ==================== 필터 요약 배지 ====================
+filter_badge:
+  # 포맷
+  date_format: "{start} ~ {end}"
+  count_format: "{count}개 {entity}"
+  separator: " · "
+  default_text: "🌐 전체 데이터"
+
+  # 아이콘
+  icons:
+    date: "📅"
+    manufacturer: "🏭"
+    product: "📦"
+    cluster: "🔍"
+    defect_type: "🔧"
+
+# ==================== 버튼 스타일 ====================
+button_labels:
+  download_csv: "📥 CSV 다운로드"
+  show_details: "📋 상세 보기"
+  hide_details: "🔼 접기"
+  reset: "🔄 초기화"
+  apply: "✅ 적용"
+  compare: "⚖️ 비교"
+  export: "📤 내보내기"
+
+# ==================== 메시지 템플릿 ====================
+messages:
+  # 정보 메시지
+  no_data: "선택한 조건에 해당하는 데이터가 없습니다."
+  loading: "데이터 로딩 중..."
+  analyzing: "분석 중..."
+
+  # 경고 메시지
+  select_period: "⚠️ 분석할 기간을 선택해주세요 (사이드바에서 날짜 범위 설정)"
+  min_data_required: "⚠️ 분석을 위해 최소 {min_count}건 이상의 데이터가 필요합니다."
+
+  # 성공 메시지
+  analysis_complete: "✅ 분석이 완료되었습니다."
+  data_loaded: "✅ 데이터가 로드되었습니다."
+
+# ==================== 다국어 지원 (향후 확장) ====================
+language:
+  default: "ko"  # 한국어
+  supported:
+    - "ko"
+    # - "en"  # 향후 추가

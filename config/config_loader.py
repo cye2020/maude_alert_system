@@ -26,10 +26,10 @@ class ConfigLoader:
     @lru_cache(maxsize=32)
     def load(self, config_name: str) -> Dict[Any, Any]:
         """YAML 파일 로드 및 캐싱
-        
+
         Args:
             config_name: 'base', 'preprocess/cleaning' 등
-            
+
         Returns:
             파싱된 설정 딕셔너리
         """

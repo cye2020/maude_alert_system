@@ -1,0 +1,235 @@
+# config/sidebar.yaml
+# ==================== enabled 플래그 사용법 ====================
+# 모든 섹션과 위젯에 enabled: true/false 설정 가능
+# - enabled: false → 해당 컴포넌트가 렌더링되지 않음
+# - enabled: true 또는 생략 → 기본적으로 활성화
+# 예시:
+#   common:
+#     header:
+#       enabled: false  # 헤더 전체 비활성화
+#     date_selector:
+#       enabled: false  # 날짜 선택기 비활성화
+#     filters:
+#       - type: "multiselect"
+#         enabled: false  # 특정 필터만 비활성화
+# ==================== 설정 시작 ====================
+
+common:
+  header:
+    enabled: true  # 헤더 활성화 (false로 설정 시 로고 및 프로젝트 정보 전체 숨김)
+    logo: "dashboard/assets/logo.png"
+  
+  project_info:
+    enabled: false
+    version: "v1.0.0"
+    update_date: "2025-12-24"
+    environment: "Development"
+
+  date_selector:
+    label: "📅 분석 기간"
+    enabled: false  # 공통 날짜 선택기 비활성화
+
+  # 공통 필터 (모든 탭에서 사용)
+  # 계층 구조: 제조사 → 제품군 → 기기 (cascade)
+  # 독립 필터: 결함 유형, 클러스터
+  filters:
+    - type: "multiselect"
+      key: "manufacturers"
+      label: "🏭 제조사"
+      help: "특정 제조사만 분석하려면 선택하세요. 선택하지 않으면 모든 제조사가 포함됩니다."
+      args:
+        options: []  # 동적 로드
+        default: []
+
+    - type: "multiselect"
+      key: "products"
+      label: "📦 제품군"
+      help: "특정 제품군만 분석하려면 선택하세요. 제조사를 선택하면 해당 제조사의 제품만 표시됩니다."
+      args:
+        options: []  # manufacturers에 의존 (cascade)
+        default: []
+
+    - type: "multiselect"
+      key: "devices"
+      label: "📱 기기"
+      help: "특정 기기만 분석하려면 선택하세요. 제조사/제품군을 선택하면 해당하는 기기만 표시됩니다."
+      enabled: false
+      args:
+        options: []  # manufacturers + products에 의존 (cascade)
+        default: []
+
+    - type: "multiselect"
+      key: "defect_types"
+      label: "🔧 결함 유형"
+      help: "특정 결함 유형만 분석하려면 선택하세요. 선택하지 않으면 모든 결함 유형이 포함됩니다."
+      enabled: false
+      args:
+        options: []  # 동적 로드 (독립 필터)
+        default: []
+
+    - type: "multiselect"
+      key: "clusters"
+      label: "🏷️ 클러스터"
+      help: "특정 클러스터만 분석하려면 선택하세요. 선택하지 않으면 모든 클러스터가 포함됩니다."
+      enabled: false
+      args:
+        options: []  # 동적 로드 (독립 필터)
+        default: []
+
+dashboards:
+  overview:
+    filters:
+      - type: "month_range_picker"
+        key: "date_range"
+        label: "📅 분석 기간"
+        args:
+          default_start: "2023-01"
+          default_end: "2025-12"
+
+  eda:
+    filters:
+      # === 기간 설정 ===
+      - type: "month_range_picker"
+        key: "date_range"
+        label: "📅 분석 기간"
+        help: "분석할 기간을 선택합니다. 이 기간 내의 데이터만 집계됩니다."
+        args:
+          default_start: "2024-11"
+          default_end: "2025-01"
+
+      # === 분석 파라미터 ===
+      - type: "number_input"
+        key: "top_n"
+        label: "📊 상위 항목 개수"
+        help: "차트와 테이블에 표시할 상위 항목의 개수를 설정합니다. (예: 상위 10개 제조사)"
+        args:
+          min_value: 5
+          max_value: 50
+          value: 10
+          step: 5
+        caption: "모든 차트/테이블에 적용"
+
+      - type: "number_input"
+        key: "min_cases"
+        label: "📉 최소 보고 건수 (CFR)"
+        help: "치명률(CFR) 분석에 포함할 최소 보고 건수입니다. 적은 건수는 통계적으로 불안정하므로 제외됩니다."
+        args:
+          min_value: 5
+          max_value: 100
+          value: 10
+          step: 5
+        caption: "CFR 분석 대상 최소 {value}건"
+
+
+  cluster:
+    filters:
+      - type: "month_range_picker"
+        key: "date_range"
+        label: "📅 분석 기간"
+        args:
+          default_start: "2023-01"
+          default_end: "2025-12"
+        caption: "{value[0]} ~ {value[1]}"
+
+  spike:
+    filters:
+      # === 기본 설정 ===
+      - type: "date_selector"
+        key: "as_of_month"
+        label: "📅 분석 기준 월"
+        # help: "급증 탐지를 수행할 기준 월입니다. 이 월을 기준으로 과거 데이터와 비교합니다."
+        args:
+          default_month: "2025-11"
+        caption: "기준: {value}"
+
+      - type: "selectbox"
+        key: "window"
+        label: "📊 윈도우 크기"
+        help: "과거 데이터의 비교 기간입니다. 1개월이면 1개월 전과 비교, 3개월이면 3개월 평균과 비교합니다."
+        args:
+          options:
+            - label: "1개월"
+              value: 1
+            - label: "3개월"
+              value: 3
+          index: 0
+
+      # === 스파이크 탐지 임계값 ===
+      - type: "number_input"
+        key: "min_c_recent"
+        label: "📈 최소 케이스 수"
+        help: "급증 탐지 대상에 포함할 최소 보고 건수입니다. 너무 적은 건수는 우연에 의한 변동일 수 있습니다."
+        args:
+          min_value: 5
+          max_value: 100
+          value: 20
+          step: 5
+        caption: "최근 기간 {value}건 이상"
+
+      - type: "number_input"
+        key: "z_threshold"
+        label: "📉 Z-score 임계값"
+        help: "급증 판정 기준입니다.  \n2.0은 약 95% 신뢰수준,  \n3.0은 99.7% 신뢰수준을 의미합니다.  \n높을수록 엄격합니다."
+        args:
+          min_value: 1.0
+          max_value: 5.0
+          value: 2.0
+          step: 0.5
+          format: "%.1f"
+        caption: "Z ≥ {value}σ"
+
+      # === 고급 설정 (enabled로 제어) ===
+      - type: "number_input"
+        key: "eps"
+        label: "🔢 Epsilon"
+        enabled: false
+        args:
+          min_value: 0.01
+          max_value: 1.0
+          value: 0.1
+          step: 0.05
+          format: "%.2f"
+        caption: "로그 변환용 상수"
+
+      - type: "selectbox"
+        key: "alpha"
+        label: "⚡ 유의수준"
+        enabled: false
+        args:
+          options: [0.05, 0.01, 0.001]
+          index: 0
+          format_func: "{value:.3f}"
+        caption: "α = {value} (Poisson 검정)"
+
+      - type: "selectbox"
+        key: "correction"
+        label: "🔧 다중검정 보정"
+        help: |
+          다중 가설 검정 시 1종 오류를 보정하는 방법:
+          - **FDR (Benjamini-Hochberg)**: 거짓 발견률 제어, 가장 균형잡힌 선택
+          - **Bonferroni**: 가장 보수적, 오탐을 최소화하지만 실제 급증을 놓칠 수 있음
+          - **Sidak**: Bonferroni보다 약간 덜 보수적
+        args:
+          options:
+            - label: "FDR (Benjamini-Hochberg)"
+              value: "fdr_bh"
+            - label: "Bonferroni"
+              value: "bonferroni"
+            - label: "Sidak"
+              value: "sidak"
+          index: 0
+
+      - type: "number_input"
+        key: "min_methods"
+        label: "🎯 앙상블 최소 방법 수"
+        help: |
+          급증으로 판정하기 위한 최소 검정 방법 수:
+          - **3개**: 가장 보수적 (모든 방법이 동의해야 급증)
+          - **2개**: 균형잡힌 선택 (권장)
+          - **1개**: 가장 민감함 (많은 급증 탐지)
+        args:
+          min_value: 1
+          max_value: 3
+          value: 2
+          step: 1
+        caption: "{value}개 이상 (Ratio/Z-score/Poisson)"

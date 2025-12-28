@@ -247,27 +247,39 @@ class BaselineAggregator:
         df = df.join(stats_df, on="window", how="left")
         
         return df.with_columns([
-            # is_spike (ratio 기반)
+            # is_spike (ratio 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("score_ratio") >= (pl.col("_mean") + z_threshold * pl.col("_std"))) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike"),
-            
-            # is_spike_z (z-score 기반)
+
+            # is_spike_z (z-score 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("z_log") >= z_threshold) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_z"),
-            
-            # is_spike_p (Poisson 기반)
+
+            # is_spike_p (Poisson 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &  # 증가 조건 추가
                 (pl.col("p_adjusted") <= alpha) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_p")
         ]).drop(["_mean", "_std"])
     
     def _add_ensemble_results(self, df: pl.DataFrame) -> pl.DataFrame:
-        """앙상블 결과(pattern)를 추가합니다."""
+        """앙상블 결과(pattern)를 추가합니다.
+
+        - 3개 방법 모두 탐지 (증가만 가능) = severe
+        - 2개 방법 탐지 (증가만 가능) = alert
+        - 1개 방법 탐지 (증가만 가능) = attention
+        - 0개 방법 탐지 (증가/감소 모두 포함) = general
+
+        Note: is_spike, is_spike_z, is_spike_p는 모두 증가 조건을 포함하므로,
+              감소 키워드는 자동으로 3개 플래그가 모두 False가 되어 general로 분류됨
+        """
         return df.with_columns(
             pl.when(
                 pl.col("is_spike").cast(pl.Int8) +
@@ -284,7 +296,7 @@ class BaselineAggregator:
                 pl.col("is_spike_z").cast(pl.Int8) +
                 pl.col("is_spike_p").cast(pl.Int8) == 1
             ).then(pl.lit("attention"))
-            .otherwise(pl.lit("general"))
+            .otherwise(pl.lit("general"))  # 나머지 모두 일반 (증가/감소/동일)
             .alias("pattern")
         )
     
