@@ -7,13 +7,13 @@ from pathlib import Path
 from tqdm import tqdm
 
 from src.preprocess.config import get_config
-from src.preprocess.preprocess import (
+from src.preprocess.udi import (
     extract_di_from_public,
     fuzzy_match_dict,
-    collect_unique_safe
 )
+
+from src.utils.polars.batch import collect_unique_safe
 from src.utils.chunk import process_lazyframe_in_chunks
-from src.utils import uuid5_from_str
 
 cfg = get_config()
 

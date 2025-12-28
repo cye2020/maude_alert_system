@@ -177,6 +177,14 @@ manager = SidebarManager(current_tab)
 filters = manager.render_sidebar(dynamic_options=common_dynamic_options)
 
 # ==================== 필터 변경 감지 및 캐시 무효화 ====================
+# TODO: 캐싱 전략 개선 필요
+# 현재는 필터 변경 시 모든 캐시를 클리어하지만 (st.cache_data.clear()),
+# 이는 너무 aggressive한 방식입니다.
+# 개선 방안:
+# 1. 필터별로 독립적인 캐시 키 사용 (cache_key에 필터 값 포함)
+# 2. 특정 함수의 캐시만 선택적으로 무효화
+# 3. 필터 변경 시 영향받는 데이터만 재계산
+#
 # 필터 값을 문자열로 변환하여 이전 값과 비교
 import json
 current_filter_state = json.dumps({
@@ -189,7 +197,7 @@ if "prev_filter_state" not in st.session_state:
     st.session_state.prev_filter_state = current_filter_state
 elif st.session_state.prev_filter_state != current_filter_state:
     # 필터가 변경되었으면 캐시 클리어 및 페이지 재실행
-    st.cache_data.clear()
+    st.cache_data.clear()  # TODO: 전체 클리어 대신 필터 관련 캐시만 선택적으로 무효화
     st.session_state.prev_filter_state = current_filter_state
     st.rerun()
 
