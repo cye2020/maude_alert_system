@@ -1,0 +1,99 @@
+# config/dashboard/defaults.yaml
+# 대시보드 기본값 및 설정
+
+# 데이터 컬럼명
+columns:
+  manufacturer: 'manufacturer_name'
+  product_code: 'product_code'
+  date_received: 'date_received'
+  date_occurred: 'date_occurred'
+  defect_type: 'defect_type'
+  problem_components: 'problem_components'
+  event_type: 'event_type'
+  patient_harm: 'patient_harm'
+  defect_confirmed: 'defect_confirmed'
+  udi_di: 'udi_di'
+  cluster: 'cluster'
+
+# 이벤트 타입 상수
+event_types:
+  death: 'Death'
+  injury: 'Injury'
+  serious_injury: 'Serious Injury'
+  malfunction: 'Malfunction'
+
+# 환자 피해 등급
+patient_harm_levels:
+  serious:
+    - 'Serious Injury'
+    - 'Death'
+  minor:
+    - 'Minor Injury'
+  none:
+    - 'No Apparent Injury'
+
+# 기본값
+defaults:
+  # 분석 설정
+  top_n: 10
+  min_cases: 10
+  window_size: 1
+  date_format: "%Y-%m"
+  analysis_period_years: 3  # 분석 기간 (년)
+
+  # UI 설정
+  chart_height: 600
+  max_items_display: 100
+
+  # 필터 제외 값
+  exclude_defect_types:
+    - 'Other'
+    - 'Unknown'
+
+  # 결측값 표시
+  missing_value_label: '(정보 없음)'
+
+  # CFR 분석
+  cfr_defaults:
+    top_n: 20
+    min_cases: 10
+
+  # 부품 분석
+  component_defaults:
+    top_n: 10
+
+# 차트 스타일
+chart_styles:
+  colors:
+    primary: '#1f77b4'
+    danger: '#d62728'
+    warning: '#ff7f0e'
+    success: '#2ca02c'
+
+  # Plotly 설정
+  plotly:
+    margin:
+      l: 50
+      r: 20
+      t: 40
+      b: 80
+    hovermode: 'x unified'
+
+# ==================== HTML 차트 스타일 (ui_standards.yaml에서 참조) ====================
+# Note: 상세한 HTML 스타일은 ui_standards.yaml에 정의됨
+html_chart_enabled: true
+
+# ==================== 필터 요약 배지 설정 ====================
+filter_summary:
+  enabled: true
+  show_badge: true
+  format:
+    date_separator: " ~ "
+    count_format: "{count}개 {entity}"
+    item_separator: " · "
+
+# ==================== 공통 메시지 ====================
+messages:
+  no_data: "선택한 조건에 해당하는 데이터가 없습니다."
+  loading: "데이터 로딩 중..."
+  error_loading: "데이터를 로드할 수 없습니다."

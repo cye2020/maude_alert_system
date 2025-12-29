@@ -225,6 +225,7 @@ temp*
 
 .vscode
 
+
 .DS_Store
 *.out
 
@@ -237,6 +238,7 @@ data/temp/
 output/
 logs/
 airflow/logs/
+models/
 
 # Local configs
 config/*.local.yaml

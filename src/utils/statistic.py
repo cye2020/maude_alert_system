@@ -450,6 +450,7 @@ class Chi2Test(StatisticalTest):
         iv_col: str, dv_col: str, 
         alpha: Optional[float] = None
     ):
+        alpha = alpha if alpha else self.alpha
         df = data[[iv_col, dv_col]]
         
         # 교차표
@@ -471,7 +472,6 @@ class Chi2Test(StatisticalTest):
         # - 1에 가까울수록: 강한 연관성
         # ==============================================
         v, interpretation = self.cramers_v(chi2_stat, n, r, c)
-        v = np.sqrt(chi2_stat / (n * min(r-1, c-1)))
         
         effect_size = v
         effect_interpretation = interpretation
