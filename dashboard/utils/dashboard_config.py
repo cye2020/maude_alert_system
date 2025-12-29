@@ -1,22 +1,42 @@
 from pathlib import Path
 from typing import Dict, Any, Optional, Union
+import streamlit as st
 from config.config_loader import load_config
 
 class DashboardConfig:
     """대시보드 설정 통합 관리 클래스
     """
-    
+
     def __init__(self):
         # 기본 설정들 (캐싱됨)
         self._base = load_config("base")
         self._storage = load_config("storage")
         self._pipeline = load_config("pipeline")
-        self._aws = load_config("secrets/aws")
+
+        # S3 사용 여부 (여러 메서드에서 사용)
+        self._use_s3 = self._storage.get('streamlit', {}).get('data_sources', {}).get('use_s3', False)
+
+        self._aws = self._load_aws_config()
 
         # 대시보드 설정들 (캐싱됨)
         self._sidebar = load_config("dashboard/sidebar")
         self._defaults = load_config("dashboard/defaults")
         self._ui_standards = load_config("dashboard/ui_standards")
+
+    def _load_aws_config(self) -> Dict[Any, Any]:
+        """AWS 설정 로드
+
+        use_s3가 true면 secrets.toml에서, false면 config 파일에서 로드
+
+        Returns:
+            AWS 설정 딕셔너리
+        """
+        try:
+            aws = load_config("secrets/aws")
+        except FileNotFoundError:
+            aws = st.secrets['aws']
+        
+        return aws
     
     # ==================== 기본 설정 ====================
     
@@ -71,8 +91,6 @@ class DashboardConfig:
         Returns:
             S3 경로(str) 또는 로컬 경로(Path)
         """
-        use_s3 = self._storage.get('streamlit', {}).get('data_sources', {}).get('use_s3', False)
-
         # Silver 계층이고 silver_stage가 지정된 경우
         if stage == 'silver' and silver_stage and isinstance(self._base['datasets'][dataset].get('silver'), dict):
             filename = self._base['datasets'][dataset]['silver'][silver_stage]
@@ -80,7 +98,7 @@ class DashboardConfig:
             # 기존 방식 (bronze, gold, 또는 udi의 silver)
             filename = self._base['datasets'][dataset][f'{stage}_file']
 
-        if use_s3:
+        if self._use_s3:
             # S3: bucket과 stage를 결합하여 URL 생성 (Path 사용 안 함!)
             bucket = self._storage['s3']['bucket']
             stage_path = self._storage['s3']['paths'][stage]
@@ -115,8 +133,7 @@ class DashboardConfig:
         Returns:
             use_s3가 True면 credentials 반환, False면 None
         """
-        use_s3 = self._storage.get('streamlit', {}).get('data_sources', {}).get('use_s3', False)
-        if not use_s3:
+        if not self._use_s3:
             return None
 
         return {
