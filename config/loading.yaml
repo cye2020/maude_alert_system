@@ -1,0 +1,22 @@
+base_config: base.yaml
+
+maude:
+  input_path: data/raw/maude.parquet
+  output_path: data/bronze/maude.parquet
+  partition_by: ["year"]
+  use_statistics: true
+  rechunk: false
+  schema: data/schemas/maude_schema.json
+
+udi:
+  input_path: data/raw/udi.parquet
+  output_path: data/bronze/udi.parquet
+  partition_by: []
+  use_statistics: true
+  rechunk: false
+  schema: data/schemas/udi_schema.json
+
+validation:
+  fail_on_missing_columns: true
+  fail_on_type_mismatch: true
+  sample_rows: 1000

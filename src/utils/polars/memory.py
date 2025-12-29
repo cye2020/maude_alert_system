@@ -120,6 +120,7 @@ def get_unique(lf: pl.LazyFrame, cols: List[str]) -> set:
     ------
     - unpivot으로 모든 컬럼을 하나의 컬럼으로 합친 후 unique 추출
     - streaming 엔진 사용으로 메모리 효율성 향상
+    - null 값도 set에 포함됨 (None으로 표시)
     - 결과가 메모리에 완전히 로드되므로 고유값이 매우 많으면 주의 필요
     """
     unique_set = set(
