@@ -96,6 +96,10 @@ class DashboardConfig:
             Path 객체
         """
         return self.get_path('silver', dataset, silver_stage='stage3_clustering')
+
+    def use_snowflake(self) -> bool:
+        """Snowflake 사용 여부 반환"""
+        return self._storage.get('streamlit', {}).get('data_sources', {}).get('use_snowflake', False)
     
     def get_temp_dir(self) -> Path:
         """임시 디렉토리 경로"""

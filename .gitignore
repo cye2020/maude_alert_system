@@ -246,6 +246,9 @@ config/*.override.yaml
 .env.local
 .env.*
 
+# Secrets (credentials)
+secrets/
+
 # Notebook checkpoints (nested)
 notebooks/**/.ipynb_checkpoints/
 

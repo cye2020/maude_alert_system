@@ -1,5 +1,4 @@
 # config/config_loader.py (범용 로더 - 저수준)
-# config/config_loader.py (범용 로더 - 저수준)
 import yaml
 import os
 from pathlib import Path
@@ -14,16 +13,12 @@ from copy import deepcopy
 class ConfigLoader:
     """범용 YAML 설정 로더 (싱글톤) - base config 상속 지원"""
     
-    """범용 YAML 설정 로더 (싱글톤) - base config 상속 지원"""
-    
     def __init__(self) -> None:
         self.project_root = self._find_project_root()
         self.config_dir = self.project_root / 'config'
         self._base_cache = {}  # base config 캐시
-        self._base_cache = {}  # base config 캐시
-    
+        
     def _find_project_root(self) -> Path:
-        """프로젝트 루트 자동 탐색"""
         """프로젝트 루트 자동 탐색"""
         current = Path(__file__).resolve()
         for parent in current.parents:

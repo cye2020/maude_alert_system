@@ -25,6 +25,7 @@ scikit_posthocs==0.11.4
 scipy==1.15.3
 seaborn==0.13.2
 sentence-transformers==5.2.0
+snowflake-connector-python==3.12.3
 statsmodels==0.14.6
 streamlit==1.52.2
 tiktoken==0.12.0

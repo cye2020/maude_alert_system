@@ -32,41 +32,44 @@ s3:
 
 # Snowflake 설정
 snowflake:
-  enabled: true
-  
-  # # 연결 정보
-  # connection:
-  #   account: "${SNOWFLAKE_ACCOUNT}"
-  #   user: "${SNOWFLAKE_USER}"
-  #   password: "${SNOWFLAKE_PASSWORD}"
-  #   warehouse: "COMPUTE_WH"
-  #   database: "MAUDE_DB"
-  #   schema: "PUBLIC"
-  #   role: "ACCOUNTADMIN"
-  
-  # 테이블 매핑
+  # 연결 설정
+  connection:
+    timeout: 3600  # seconds (1시간)
+    login_timeout: 60
+    network_timeout: 600  # 10분
+    client_session_keep_alive: true
+
+  # 업로드 설정
+  upload:
+    auto_compress: true
+    parallel: 4
+    overwrite: true
+
+  # COPY INTO 설정
+  copy_into:
+    file_format:
+      type: "PARQUET"
+      compression: "AUTO"
+
+    on_error: "ABORT_STATEMENT"  # ABORT_STATEMENT, CONTINUE, SKIP_FILE
+    purge: false  # 로드 후 스테이지에서 파일 삭제 여부
+    force: false  # 이미 로드된 파일 재로드 여부
+
+  # 테이블 설정
   tables:
-    bronze:
-      maude: "BRONZE.MAUDE_RAW"
-      udi: "BRONZE.UDI_RAW"
-      
-    silver:
-      maude: "SILVER.MAUDE_CLEANED"
-      udi: "SILVER.UDI_CLEANED"
-      
-    gold:
-      maude: "GOLD.MAUDE_FINAL"
-      udi: "GOLD.UDI_MATCHED"
-      analytics: "GOLD.ANALYTICS_VIEW"
-  
-  # 로딩 옵션
-  loading:
-    copy_options:
-      - "ON_ERROR = CONTINUE"
-      - "FILE_FORMAT = (TYPE = PARQUET)"
-    
-    auto_create_table: true
-    replace_if_exists: false
+    maude_clustered:
+      name: "MAUDE_CLUSTERED"
+      source_file: "maude_clustered.parquet"
+      create_if_not_exists: true
+      schema:
+        # 자동으로 parquet 스키마에서 추론
+        # 필요시 수동 정의 가능
+        auto_infer: true
+
+# 경로 설정
+paths:
+  local:
+    data_file: "./data/silver/maude_clustered.parquet"
 
 # Streamlit 대시보드
 streamlit:
