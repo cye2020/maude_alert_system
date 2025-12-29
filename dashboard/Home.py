@@ -8,7 +8,7 @@ from datetime import datetime
 
 # 2. 서드파티 라이브러리
 import streamlit as st
-import pandas as pd
+import tiktoken
 import polars as pl
 
 # 3. 프로젝트 내부 탭 모듈
