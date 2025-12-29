@@ -8,7 +8,7 @@ from typing import Optional
 
 from dashboard.utils.analysis import perform_spike_detection, get_spike_time_series
 from dashboard.utils.constants import ColumnNames
-from dashboard.utils.ui_components import render_filter_summary_badge, render_spike_filter_summary, render_bookmark_manager
+from dashboard.utils.ui_components import render_filter_summary_badge, render_spike_filter_summary  # render_bookmark_manager 북마크 기능 비활성화
 
 
 def show(filters=None, lf: pl.LazyFrame = None):
@@ -57,16 +57,16 @@ def show(filters=None, lf: pl.LazyFrame = None):
     defect_types = filters.get("defect_types", [])
     clusters = filters.get("clusters", [])
 
-    # ==================== 북마크 관리 ====================
-    render_bookmark_manager(
-        tab_name="spike",
-        current_filters=filters,
-        filter_keys=[
-            "as_of_month", "window", "min_c_recent", "z_threshold",
-            "eps", "alpha", "correction", "min_methods",
-            "manufacturers", "products", "devices", "defect_types", "clusters"
-        ]
-    )
+    # ==================== 북마크 관리 (비활성화) ====================
+    # render_bookmark_manager(
+    #     tab_name="spike",
+    #     current_filters=filters,
+    #     filter_keys=[
+    #         "as_of_month", "window", "min_c_recent", "z_threshold",
+    #         "eps", "alpha", "correction", "min_methods",
+    #         "manufacturers", "products", "devices", "defect_types", "clusters"
+    #     ]
+    # )
 
     # ==================== 필터 요약 배지 (Spike 전용) ====================
     render_filter_summary_badge(

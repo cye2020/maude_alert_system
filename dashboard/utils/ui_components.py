@@ -645,6 +645,26 @@ def render_download_button(
 
 # ==================== 북마크 관리 ====================
 
+def apply_pending_bookmark(tab_name: str) -> dict:
+    """사이드바 렌더링 전에 pending 북마크를 반환
+
+    Args:
+        tab_name: 탭 이름 (예: "eda", "spike")
+
+    Returns:
+        pending 북마크 데이터 (없으면 빈 dict)
+
+    Note:
+        Home.py에서 사이드바 렌더링 전에 호출하여 dynamic_options로 전달
+    """
+    pending_key = f"{tab_name}_pending_bookmark"
+    if pending_key in st.session_state:
+        bookmark_data = st.session_state[pending_key]
+        del st.session_state[pending_key]
+        return bookmark_data
+    return {}
+
+
 def render_bookmark_manager(
     tab_name: str,
     current_filters: dict,
@@ -740,7 +760,11 @@ def render_bookmark_manager(
 
                 with col_load:
                     if st.button("📂", key=f"{tab_name}_load_{name}", help="불러오기"):
-                        load_bookmark_to_session(tab_name, st.session_state[bookmark_key][name])
+                        # 위젯이 렌더링되기 전에 값을 설정하기 위해 먼저 session_state에 저장
+                        bookmark_to_load = st.session_state[bookmark_key][name]
+
+                        # 임시 플래그 설정 (다음 rerun 시 적용하기 위함)
+                        st.session_state[f"{tab_name}_pending_bookmark"] = bookmark_to_load
                         st.success(f"'{name}' 불러오기 완료!")
                         st.rerun()
 
@@ -748,19 +772,6 @@ def render_bookmark_manager(
                     if st.button("🗑️", key=f"{tab_name}_delete_{name}", help="삭제"):
                         del st.session_state[bookmark_key][name]
                         st.rerun()
-
-
-def load_bookmark_to_session(tab_name: str, bookmark_data: dict):
-    """북마크 데이터를 session_state에 로드
-
-    Args:
-        tab_name: 탭 이름
-        bookmark_data: 북마크 데이터 딕셔너리
-    """
-    # 각 필터 값을 session_state에 저장
-    for key, value in bookmark_data.items():
-        session_key = f"{tab_name}_bookmark_{key}"
-        st.session_state[session_key] = value
 
 
 # ==================== 섹션 헤더 ====================

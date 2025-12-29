@@ -26,7 +26,7 @@ from dashboard.utils.ui_components import (
     render_filter_summary_badge,
     convert_date_range_to_months,
     create_harm_pie_chart,
-    render_bookmark_manager
+    # render_bookmark_manager  # 북마크 기능 비활성화
 )
 
 # 기존 북마크 함수들은 ui_components.py의 render_bookmark_manager로 통합됨
@@ -61,12 +61,12 @@ def show(filters=None, lf: pl.LazyFrame = None):
     # 날짜 범위 → 년-월 리스트 변환 (공통 함수 사용)
     selected_dates = convert_date_range_to_months(date_range)
 
-    # ==================== 북마크 관리 (공통 함수 사용) ====================
-    render_bookmark_manager(
-        tab_name="eda",
-        current_filters=filters,
-        filter_keys=["date_range", "manufacturers", "products", "devices", "clusters", "defect_types", "top_n", "min_cases"]
-    )
+    # ==================== 북마크 관리 (비활성화) ====================
+    # render_bookmark_manager(
+    #     tab_name="eda",
+    #     current_filters=filters,
+    #     filter_keys=["date_range", "manufacturers", "products", "devices", "clusters", "defect_types", "top_n", "min_cases"]
+    # )
 
     # ==================== 필터 요약 배지 (공통 함수 사용) ====================
     render_filter_summary_badge(
@@ -1022,7 +1022,7 @@ def render_cfr_analysis(
     # 설명 추가
     with st.expander("ℹ️ 치명률(CFR) 분석이란?", expanded=False):
         st.markdown("""
-        **치명률(Case Fatality Rate, CFR)**은 전체 부작용 보고 건수 중 중대한 피해(사망, 중증 부상)가 발생한 비율을 나타냅니다.
+        치명률(Case Fatality Rate, CFR)은 전체 부작용 보고 건수 중 중대한 피해(사망, 중증 부상)가 발생한 비율을 나타냅니다.
 
         **측정 방식**:
         - CFR (%) = (중대 피해 건수 / 총 보고 건수) × 100
