@@ -11,13 +11,13 @@ import streamlit as st
 import polars as pl
 
 # 3. 프로젝트 내부 탭 모듈
-import overview_tab as o_tab
-import eda_tab as e_tab
-import cluster_tab as c_tab
-import spike_tab as s_tab
+import dashboard.overview_tab as o_tab
+import dashboard.eda_tab as e_tab
+import dashboard.cluster_tab as c_tab
+import dashboard.spike_tab as s_tab
 
 # 4. 프로젝트 유틸 / 설정
-from utils.constants import DisplayNames
+from dashboard.utils.constants import DisplayNames
 from dashboard.utils.custom_css import apply_custom_css
 
 # 커스텀 CSS 적용
@@ -86,8 +86,8 @@ current_tab = tab_options[selected_tab_display]
 # ==================== 사이드바 ====================
 # 선택된 탭에 맞는 사이드바 렌더링
 from dashboard.utils.sidebar_manager import SidebarManager
-from utils.constants import ColumnNames
-from utils.data_utils import get_year_month_expr
+from dashboard.utils.constants import ColumnNames
+from dashboard.utils.data_utils import get_year_month_expr
 
 # year_month 표현식 생성 (공통)
 year_month_expr = get_year_month_expr(maude_lf, ColumnNames.DATE_RECEIVED)
@@ -145,7 +145,7 @@ common_dynamic_options = {
 # 탭별 추가 동적 옵션 (필요 시)
 if current_tab == "cluster":
     # Cluster 탭: selected_cluster 옵션 추가
-    from utils.analysis_cluster import get_available_clusters as get_clusters_with_dates
+    from dashboard.utils.analysis_cluster import get_available_clusters as get_clusters_with_dates
 
     tab_available_clusters = get_clusters_with_dates(
         _lf=maude_lf,
