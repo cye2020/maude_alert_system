@@ -32,7 +32,7 @@ class DashboardConfig:
             AWS 설정 딕셔너리
         """
         try:
-            aws = load_config("secrets/aws")
+            aws = load_config("secrets/aws")['aws']
         except FileNotFoundError:
             aws = st.secrets['aws']
         
@@ -137,9 +137,9 @@ class DashboardConfig:
             return None
 
         return {
-            "aws_access_key_id": self._aws['aws']['access_key_id'],
-            "aws_secret_access_key": self._aws['aws']['secret_access_key'],
-            "aws_region": self._aws['aws']['region'],
+            "aws_access_key_id": self._aws['access_key_id'],
+            "aws_secret_access_key": self._aws['secret_access_key'],
+            "aws_region": self._aws['region'],
         }
 
     # ==================== 디버그/개발 ====================
