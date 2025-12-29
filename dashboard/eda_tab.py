@@ -105,8 +105,8 @@ def show(filters=None, lf: pl.LazyFrame = None):
             min_cases
         )
 
-        # ==================== 월별 보고서 수 ====================
-        render_monthly_reports_chart(
+        # ==================== 누적 보고서 수 ====================
+        render_total_reports_chart(
             lf,
             date_col,
             selected_dates,
@@ -303,7 +303,7 @@ def render_smart_insights(
 
 
 
-def render_monthly_reports_chart(
+def render_total_reports_chart(
     lf,
     date_col,
     selected_dates,
@@ -315,16 +315,16 @@ def render_monthly_reports_chart(
     top_n,
     year_month_expr
 ):
-    """월별 보고서 수 차트 렌더링 (하이브리드 필터: 시계열이므로 모든 필터 적용)"""
+    """누적 보고서 수 차트 렌더링 (하이브리드 필터: 시계열이므로 모든 필터 적용)"""
     import plotly.graph_objects as go
     import plotly.express as px
 
-    st.subheader("📊 월별 보고서 수")
+    st.subheader("📊 누적 보고서 수")
 
     # 설명 추가
-    with st.expander("ℹ️ 월별 보고서 수란?", expanded=False):
+    with st.expander("ℹ️ 누적 보고서 수란?", expanded=False):
         st.markdown("""
-        **월별 보고서 수**는 제조사-제품군별로 시간에 따른 부작용 보고 건수를 추적합니다.
+        **누적 보고서 수**는 제조사-제품군별로 시간에 따른 부작용 보고 건수를 추적합니다.
 
         **해석 방법**:
         - **막대 차트**: 선택한 기간 동안의 누적 보고 건수를 비교
@@ -358,7 +358,7 @@ def render_monthly_reports_chart(
             display_df.columns = ["순위", "제조사-제품군", "보고 건수"]
 
             # 월별 데이터
-            monthly_df = get_monthly_counts(
+            total_df = get_monthly_counts(
                 lf,
                 date_col=date_col,
                 selected_dates=selected_dates if selected_dates else None,
@@ -367,11 +367,11 @@ def render_monthly_reports_chart(
                 _year_month_expr=year_month_expr
             )
 
-            if len(monthly_df) > 0:
-                monthly_pandas = monthly_df.to_pandas()
+            if len(total_df) > 0:
+                total_pandas = total_df.to_pandas()
                 top_combinations = display_df.head(top_n)["제조사-제품군"].tolist()
-                chart_data = monthly_pandas[
-                    monthly_pandas["manufacturer_product"].isin(top_combinations)
+                chart_data = total_pandas[
+                    total_pandas["manufacturer_product"].isin(top_combinations)
                 ].copy()
 
                 # 차트 타입 선택
@@ -379,7 +379,7 @@ def render_monthly_reports_chart(
                     "차트 타입",
                     ["막대 차트", "선 그래프", "영역 차트"],
                     horizontal=True,
-                    key="monthly_chart_type"
+                    key="total_chart_type"
                 )
 
                 if selected_dates and len(selected_dates) == 1:
@@ -542,9 +542,9 @@ def render_monthly_reports_chart(
                 st.download_button(
                     label="📥 CSV 다운로드",
                     data=csv_data,
-                    file_name=f"monthly_reports_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
+                    file_name=f"total_reports_{pd.Timestamp.now():%Y%m%d_%H%M%S}.csv",
                     mime="text/csv",
-                    key="download_monthly_reports"
+                    key="download_total_reports"
                 )
 
             st.dataframe(display_df, width='stretch', hide_index=True)
@@ -1369,7 +1369,7 @@ def render_cluster_and_event_analysis(
     # 설명 추가
     with st.expander(f"ℹ️ {Terms.KOREAN.DEFECT_TYPE}별 상위 문제 부품 및 환자 피해 분포란?", expanded=False):
         st.markdown("""
-        **이 섹션**은 결함 유형(defect type)별로 어떤 문제 부품이 많이 보고되었는지, 그리고 전체적으로 환자 피해가 어떻게 분포되어 있는지 보여줍니다.
+        **이 섹션**은 결함 유형(결함 유형)별로 어떤 문제 부품이 많이 보고되었는지, 그리고 전체적으로 환자 피해가 어떻게 분포되어 있는지 보여줍니다.
 
         **환자 피해 분포 (파이 차트)**:
         - 선택한 조건에서 발생한 환자 피해를 사망, 중증 부상, 경증 부상, 부상 없음으로 분류합니다
@@ -1383,13 +1383,13 @@ def render_cluster_and_event_analysis(
         **인사이트**:
         - 사망/중증 부상 비율이 높다면 해당 조건의 제품들은 고위험군으로 분류됩니다
         - 특정 부품이 압도적으로 높은 비율을 차지한다면 해당 부품의 품질 개선이 시급합니다
-        - defect type과 문제 부품을 함께 분석하면 근본 원인을 더 명확히 파악할 수 있습니다
+        - 결함 유형과 문제 부품을 함께 분석하면 근본 원인을 더 명확히 파악할 수 있습니다
         """)
 
     try:
-        # 사용 가능한 defect type 가져오기 (defect_types는 분석 대상이므로 필터 제외)
+        # 사용 가능한 결함 유형 가져오기 (defect_types는 분석 대상이므로 필터 제외)
         # TODO: devices/clusters 지원 추가 필요
-        with st.spinner("defect type 목록 로딩 중..."):
+        with st.spinner("결함 유형 목록 로딩 중..."):
             available_clusters = get_available_clusters(
                 lf,
                 cluster_col=ColumnNames.DEFECT_TYPE,
@@ -1405,7 +1405,7 @@ def render_cluster_and_event_analysis(
             # 상단에 결함 유형 선택 필터 배치
             st.markdown("### 결함 유형 선택")
 
-            # 이전에 선택한 defect type 가져오기
+            # 이전에 선택한 결함 유형 가져오기
             prev_selected_cluster = st.session_state.get('prev_selected_cluster', None)
             default_index = 0
             if prev_selected_cluster and prev_selected_cluster in available_clusters:
@@ -1415,7 +1415,7 @@ def render_cluster_and_event_analysis(
                 "카테고리 선택",
                 options=available_clusters,
                 index=default_index,
-                help="분석할 defect type를 선택하세요",
+                help="분석할 결함 유형를 선택하세요",
                 key='cluster_selectbox'
             )
             st.session_state.prev_selected_cluster = selected_cluster
@@ -1447,7 +1447,7 @@ def render_cluster_and_event_analysis(
                             _year_month_expr=year_month_expr
                         )
 
-                    # 선택된 defect type의 데이터만 필터링
+                    # 선택된 결함 유형의 데이터만 필터링
                     cluster_data = cluster_result.filter(
                         pl.col(ColumnNames.DEFECT_TYPE) == selected_cluster
                     )
@@ -1596,7 +1596,7 @@ def render_cluster_and_event_analysis(
                         # HTML 렌더링 (components.html 사용)
                         components.html(html_content, height=container_height + 20, scrolling=True)
                     else:
-                        st.info(f"'{selected_cluster}' defect type에 대한 문제 부품 데이터가 없습니다.")
+                        st.info(f"'{selected_cluster}' 결함 유형에 대한 문제 부품 데이터가 없습니다.")
 
             # 좌측: 환자 피해 분포 파이 차트
             with event_col:

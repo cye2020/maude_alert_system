@@ -166,7 +166,7 @@ class DisplayNames:
     DATA_TABLE = _section_titles.get('data_table', '상세 데이터')
     TIME_SERIES = _section_titles.get('time_series', '시계열 분석')
     MONTHLY_TREND = _section_titles.get('monthly_trend', '월별 추이')
-    MONTHLY_REPORTS = _section_titles.get('monthly_reports', '월별 보고서 수')
+    MONTHLY_REPORTS = _section_titles.get('total_reports', '누적 보고서 수')
     HARM_DISTRIBUTION = _section_titles.get('harm_distribution', '환자 피해 분포')
     DEFECT_ANALYSIS = _section_titles.get('defect_analysis', '결함 분석')
     COMPONENT_ANALYSIS = _section_titles.get('component_analysis', '문제 부품 분석')

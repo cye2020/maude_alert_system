@@ -95,7 +95,7 @@ korean_terms:
     date_occurred: '사건 발생일'
     date_range: '기간'
     period: '기간'
-    monthly: '월별'
+    total: '월별'
     yearly: '연도별'
     time_series: '시계열'
     trend: '추이'

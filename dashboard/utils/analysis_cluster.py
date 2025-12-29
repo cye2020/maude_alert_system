@@ -77,12 +77,12 @@ def cluster_keyword_unpack(
     top_n: int = Defaults.TOP_N,
     _year_month_expr: Optional[pl.Expr] = None
 ) -> pl.DataFrame:
-    """defect type 별로 col_name마다 있는 리스트를 열어서 키워드 종류를 추출하고 count
+    """결함 유형 별로 col_name마다 있는 리스트를 열어서 키워드 종류를 추출하고 count
 
     Args:
         _lf: LazyFrame
         col_name: 리스트가 들어있는 열 이름 (예: 'problem_components')
-        cluster_col: defect type 열 이름
+        cluster_col: 결함 유형 열 이름
         date_col: 날짜 컬럼명
         selected_dates: 선택된 년-월 리스트
         selected_manufacturers: 선택된 제조사 리스트
@@ -91,7 +91,7 @@ def cluster_keyword_unpack(
         _year_month_expr: 년-월 컬럼 생성 표현식
 
     Returns:
-        defect type별 키워드, count, ratio를 포함한 DataFrame
+        결함 유형별 키워드, count, ratio를 포함한 DataFrame
     """
     # 기본 필터 적용
     lf_temp = apply_basic_filters(
@@ -133,7 +133,7 @@ def cluster_keyword_unpack(
                   .filter(pl.col(col_name) != "")  # 빈 문자열 제거
                  )
 
-    # 3. defect type별로 그룹화하여 카운트 (벡터화)
+    # 3. 결함 유형별로 그룹화하여 카운트 (벡터화)
     keyword_counts = (exploded_lf
                       .with_columns(
                           pl.col(col_name).str.to_lowercase().str.strip_chars()  # 소문자 + 공백 제거
@@ -142,7 +142,7 @@ def cluster_keyword_unpack(
                       .agg(pl.len().alias('count'))
                      )
 
-    # 4. defect type별 전체 키워드 수 계산
+    # 4. 결함 유형별 전체 키워드 수 계산
     cluster_totals = (keyword_counts
                       .group_by(cluster_col)
                       .agg(pl.col('count').sum().alias('total_count'))
@@ -158,7 +158,7 @@ def cluster_keyword_unpack(
                  .sort([cluster_col, 'count'], descending=[False, True])
                 )
 
-    # 6. defect type별 상위 N개만 선택
+    # 6. 결함 유형별 상위 N개만 선택
     result_df = (
         result_lf
         .with_columns(

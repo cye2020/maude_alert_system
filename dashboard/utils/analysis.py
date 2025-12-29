@@ -519,8 +519,8 @@ def calculate_big_numbers(
             'severe_harm_rate_delta': 이전 동일 기간 대비 변동 (%p),
             'defect_confirmed_rate': 제조사 결함 확정률 (%),
             'defect_confirmed_rate_delta': 이전 동일 기간 대비 변동 (%p),
-            'most_critical_defect_type': 가장 치명적인 defect type,
-            'most_critical_defect_rate': 해당 defect type의 치명률 (%)
+            'most_critical_defect_type': 가장 치명적인 결함 유형,
+            'most_critical_defect_rate': 해당 결함 유형의 치명률 (%)
         }
 
     Example:
@@ -587,7 +587,7 @@ def calculate_big_numbers(
         (pl.col(ColumnNames.DATE_RECEIVED) <= prev_end)
     )
 
-    # 현재 기간: 가장 치명적인 defect type 찾기 (치명률 기준)
+    # 현재 기간: 가장 치명적인 결함 유형 찾기 (치명률 기준)
     current_defect_stats = latest_data.filter(
         ~pl.col(ColumnNames.DEFECT_TYPE).is_in(Defaults.EXCLUDE_DEFECT_TYPES)
     ).group_by(ColumnNames.DEFECT_TYPE).agg([
@@ -605,7 +605,7 @@ def calculate_big_numbers(
         most_critical_defect_type = "N/A"
         most_critical_defect_rate = 0.0
 
-    # 이전 기간: 가장 치명적인 defect type 찾기
+    # 이전 기간: 가장 치명적인 결함 유형 찾기
     prev_defect_stats = prev_data.filter(
         ~pl.col(ColumnNames.DEFECT_TYPE).is_in(Defaults.EXCLUDE_DEFECT_TYPES)
     ).group_by(ColumnNames.DEFECT_TYPE).agg([

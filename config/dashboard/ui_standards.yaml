@@ -67,7 +67,7 @@ section_titles:
   # 분석별
   time_series: "시계열 분석"
   monthly_trend: "월별 추이"
-  monthly_reports: "월별 보고서 수"
+  total_reports: "누적 보고서 수"
   harm_distribution: "환자 피해 분포"
   defect_analysis: "결함 분석"
   component_analysis: "문제 부품 분석"

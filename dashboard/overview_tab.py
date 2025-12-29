@@ -338,7 +338,7 @@ def show(filters=None, lf: pl.LazyFrame = None):
         plot_sparkline(big_numbers['total_reports_sparkline'], key="sparkline_total")
 
     with col2:
-        # delta에 이전 기간의 가장 치명적인 defect type 표시
+        # delta에 이전 기간의 가장 치명적인 결함 유형 표시
         prev_defect_info = f"이전: {big_numbers['prev_most_critical_defect_type']} ({big_numbers['prev_most_critical_defect_rate']:.2f}%)"
         st.metric(
             label="🔥 가장 치명적인 Defect Type",
