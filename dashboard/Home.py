@@ -51,10 +51,6 @@ def load_maude_data(cache_key: str) -> pl.DataFrame:
     """
     config = get_config()
     data_path = config.get_silver_stage3_path(dataset='maude')
-    
-    print('='*50)
-    print(data_path)
-    print('='*50)
 
     # S3 사용 여부에 따라 storage_options 설정
     storage_options = config.get_s3_storage_options()
