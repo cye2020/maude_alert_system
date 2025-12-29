@@ -56,7 +56,7 @@ preprocessing:
 
 # LLM 모델 설정
 model:
-  name: "nvidia/Qwen3-235B-A22B-NVFP4"
+  name: "nvidia/Qwen3-14B-NVFP4"
   
   # vLLM 엔진 설정
   vllm:

@@ -51,12 +51,23 @@ def load_maude_data(cache_key: str) -> pl.DataFrame:
     """
     config = get_config()
     data_path = config.get_silver_stage3_path(dataset='maude')
+    
+    print('='*50)
+    print(data_path)
+    print('='*50)
 
-    if not data_path.exists():
-        st.error(f"데이터 파일을 찾을 수 없습니다: {data_path}")
-        st.stop()
+    # S3 사용 여부에 따라 storage_options 설정
+    storage_options = config.get_s3_storage_options()
 
-    return pl.scan_parquet(data_path)
+    if storage_options:
+        # S3 경로: 존재 체크 없이 바로 로드
+        return pl.scan_parquet(str(data_path), storage_options=storage_options)
+    else:
+        # 로컬 경로: 존재 체크 후 로드
+        if not data_path.exists():
+            st.error(f"데이터 파일을 찾을 수 없습니다: {data_path}")
+            st.stop()
+        return pl.scan_parquet(data_path)
 
 # 세션 상태 초기화
 if 'TODAY' not in st.session_state:

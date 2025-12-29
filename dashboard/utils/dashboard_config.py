@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 from config.config_loader import load_config
 
 class DashboardConfig:
@@ -11,6 +11,7 @@ class DashboardConfig:
         self._base = load_config("base")
         self._storage = load_config("storage")
         self._pipeline = load_config("pipeline")
+        self._aws = load_config("secrets/aws")
 
         # 대시보드 설정들 (캐싱됨)
         self._sidebar = load_config("dashboard/sidebar")
@@ -59,7 +60,7 @@ class DashboardConfig:
     
     # ==================== 경로 관련 ====================
     
-    def get_path(self, stage: str, dataset: str = 'maude', silver_stage: Optional[str] = None) -> Path:
+    def get_path(self, stage: str, dataset: str = 'maude', silver_stage: Optional[str] = None) -> Union[Path, str]:
         """데이터 경로 반환
 
         Args:
@@ -68,14 +69,9 @@ class DashboardConfig:
             silver_stage: Silver 계층의 경우 'stage1_basic_cleaning', 'stage2_text_processing', 'stage3_clustering' 중 선택
 
         Returns:
-            Path 객체
+            S3 경로(str) 또는 로컬 경로(Path)
         """
-        use_s3 = self._base['paths']['use_s3']
-
-        if use_s3:
-            base = self._storage['s3']['paths'][stage]
-        else:
-            base = self._base['paths']['local'][stage]
+        use_s3 = self._storage.get('streamlit', {}).get('data_sources', {}).get('use_s3', False)
 
         # Silver 계층이고 silver_stage가 지정된 경우
         if stage == 'silver' and silver_stage and isinstance(self._base['datasets'][dataset].get('silver'), dict):
@@ -84,16 +80,24 @@ class DashboardConfig:
             # 기존 방식 (bronze, gold, 또는 udi의 silver)
             filename = self._base['datasets'][dataset][f'{stage}_file']
 
-        return Path(base) / filename
+        if use_s3:
+            # S3: bucket과 stage를 결합하여 URL 생성 (Path 사용 안 함!)
+            bucket = self._storage['s3']['bucket']
+            stage_path = self._storage['s3']['paths'][stage]
+            return f"s3://{bucket}/{stage_path}/{filename}"
+        else:
+            # 로컬: Path 객체 반환
+            base = self._base['paths']['local'][stage]
+            return Path(base) / filename
 
-    def get_silver_stage3_path(self, dataset: str = 'maude') -> Path:
+    def get_silver_stage3_path(self, dataset: str = 'maude') -> Union[Path, str]:
         """Silver Stage3 (클러스터링) 데이터 경로 반환 - 편의 메서드
 
         Args:
             dataset: 'maude', 'udi'
 
         Returns:
-            Path 객체
+            S3 경로(str) 또는 로컬 경로(Path)
         """
         return self.get_path('silver', dataset, silver_stage='stage3_clustering')
 
@@ -104,7 +108,23 @@ class DashboardConfig:
     def get_temp_dir(self) -> Path:
         """임시 디렉토리 경로"""
         return Path(self._base['paths']['local']['temp'])
-    
+
+    def get_s3_storage_options(self) -> Optional[Dict[str, str]]:
+        """S3 연결용 storage_options 반환
+
+        Returns:
+            use_s3가 True면 credentials 반환, False면 None
+        """
+        use_s3 = self._storage.get('streamlit', {}).get('data_sources', {}).get('use_s3', False)
+        if not use_s3:
+            return None
+
+        return {
+            "aws_access_key_id": self._aws['aws']['access_key_id'],
+            "aws_secret_access_key": self._aws['aws']['secret_access_key'],
+            "aws_region": self._aws['aws']['region'],
+        }
+
     # ==================== 디버그/개발 ====================
     
     def print_config(self, config_name: Optional[str] = None):
