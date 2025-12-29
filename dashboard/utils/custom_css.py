@@ -41,5 +41,16 @@ def apply_custom_css():
     [data-testid="stMetricDelta"] {
         font-size: 14px;
     }
+
+    /* Segmented Control 폰트 크기 */
+    .stButtonGroup button[kind^="segmented_control"] p {
+        font-size: 20px !important;
+        font-weight: 500;
+    }
+
+    /* Segmented Control 버튼 전체 */
+    .stButtonGroup button[kind^="segmented_control"] {
+        font-size: 18px !important;
+    }
     </style>
     """, unsafe_allow_html=True)

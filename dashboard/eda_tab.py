@@ -26,6 +26,7 @@ from dashboard.utils.ui_components import (
     render_filter_summary_badge,
     convert_date_range_to_months,
     create_harm_pie_chart,
+    create_horizontal_bar_chart,
     # render_bookmark_manager  # 북마크 기능 비활성화
 )
 
@@ -352,6 +353,11 @@ def render_total_reports_chart(
         )
 
         if len(result_df) > 0:
+            # 비율 계산 추가 (막대 차트용)
+            result_df = result_df.with_columns([
+                (pl.col("total_count") / pl.col("total_count").sum() * 100).alias("ratio")
+            ])
+
             # 결과 테이블
             display_df = result_df.to_pandas().copy()
             display_df.insert(0, "순위", range(1, len(display_df) + 1))
@@ -386,67 +392,36 @@ def render_total_reports_chart(
                 if selected_dates and len(selected_dates) == 1:
                     # 단일 월 선택 시 막대 차트만 표시
                     st.info("단일 월 선택 시 막대 차트만 표시됩니다.")
-                    top_10_df = display_df.head(10).copy()
 
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        x=top_10_df["보고 건수"],
-                        y=top_10_df["제조사-제품군"],
-                        orientation='h',
-                        marker=dict(
-                            color=top_10_df["보고 건수"],
-                            colorscale='Blues',
-                            showscale=False
-                        ),
-                        text=top_10_df["보고 건수"],
-                        textposition='outside',
-                        hovertemplate='<b>%{y}</b><br>보고 건수: %{x:,}<extra></extra>'
-                    ))
-
-                    fig.update_layout(
+                    fig = create_horizontal_bar_chart(
+                        df=result_df,
+                        category_col="manufacturer_product",
+                        count_col="total_count",
+                        ratio_col="ratio",
+                        top_n=10,
                         xaxis_title="보고 건수",
                         yaxis_title="",
-                        height=400,
-                        margin=dict(l=20, r=20, t=20, b=40),
-                        yaxis=dict(autorange="reversed"),
-                        showlegend=False,
-                        plot_bgcolor='white',
-                        paper_bgcolor='white'
+                        colorscale='Blues'
                     )
 
-                    st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
+                    if fig:
+                        st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
 
                 elif chart_type == "막대 차트":
                     # 선택된 기간의 합계 막대 차트
-                    top_10_df = display_df.head(10).copy()
-
-                    fig = go.Figure()
-                    fig.add_trace(go.Bar(
-                        x=top_10_df["보고 건수"],
-                        y=top_10_df["제조사-제품군"],
-                        orientation='h',
-                        marker=dict(
-                            color=top_10_df["보고 건수"],
-                            colorscale='Blues',
-                            showscale=False
-                        ),
-                        text=top_10_df["보고 건수"],
-                        textposition='outside',
-                        hovertemplate='<b>%{y}</b><br>보고 건수: %{x:,}<extra></extra>'
-                    ))
-
-                    fig.update_layout(
+                    fig = create_horizontal_bar_chart(
+                        df=result_df,
+                        category_col="manufacturer_product",
+                        count_col="total_count",
+                        ratio_col="ratio",
+                        top_n=10,
                         xaxis_title="보고 건수",
                         yaxis_title="",
-                        height=400,
-                        margin=dict(l=20, r=20, t=20, b=40),
-                        yaxis=dict(autorange="reversed"),
-                        showlegend=False,
-                        plot_bgcolor='white',
-                        paper_bgcolor='white'
+                        colorscale='Blues'
                     )
 
-                    st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
+                    if fig:
+                        st.plotly_chart(fig, width='stretch', config={'displayModeBar': False})
 
                 elif chart_type == "선 그래프":
                     # 상위 5개만 선택해서 가독성 확보
@@ -1050,7 +1025,6 @@ def render_cfr_analysis(
     sidebar_top_n
 ):
     """기기별 치명률(CFR) 분석 렌더링 (하이브리드 필터: 모든 필터 적용)"""
-    import plotly.graph_objects as go
     import plotly.express as px
 
     st.subheader("💀 기기별 치명률(CFR) 분석")
@@ -1159,41 +1133,20 @@ def render_cfr_analysis(
             # 좌측: CFR Top 10 막대 차트
             with viz_col1:
                 st.markdown(f"#### 상위 10개 {col_manufacturer_product} {term.korean.metrics.cfr}")
-                top_10_df = display_df.head(10).copy()
 
-                fig_bar = go.Figure()
-                fig_bar.add_trace(go.Bar(
-                    x=top_10_df[col_cfr],
-                    y=top_10_df[col_manufacturer_product],
-                    orientation='h',
-                    marker=dict(
-                        color=top_10_df[col_cfr],
-                        colorscale='Reds',
-                        showscale=False,
-                        line=dict(color='rgba(0,0,0,0.2)', width=1)
-                    ),
-                    text=top_10_df[col_cfr].apply(lambda x: f"{x:.2f}%"),
-                    textposition='outside',
-                    hovertemplate=f'<b>%{{y}}</b><br>{term.korean.metrics.cfr}: %{{x:.2f}}%<br>순위: %{{customdata}}<extra></extra>',
-                    customdata=top_10_df["순위"]
-                ))
-
-                fig_bar.update_layout(
+                fig_bar = create_horizontal_bar_chart(
+                    df=cfr_result,
+                    category_col="manufacturer_product",
+                    count_col="cfr",
+                    ratio_col="cfr",  # CFR 자체가 이미 백분율
+                    top_n=10,
                     xaxis_title=f"{term.korean.metrics.cfr} (%)",
                     yaxis_title="",
-                    height=400,
-                    margin=dict(l=20, r=20, t=20, b=40),
-                    yaxis=dict(autorange="reversed"),
-                    showlegend=False,
-                    plot_bgcolor='white',
-                    paper_bgcolor='white',
-                    xaxis=dict(
-                        gridcolor='lightgray',
-                        gridwidth=0.5
-                    )
+                    colorscale='Reds'
                 )
 
-                st.plotly_chart(fig_bar, width='stretch', config={'displayModeBar': False})
+                if fig_bar:
+                    st.plotly_chart(fig_bar, width='stretch', config={'displayModeBar': False})
 
             # 우측: 치명률 vs 총 건수 산점도
             with viz_col2:

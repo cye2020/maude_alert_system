@@ -97,7 +97,8 @@ selected_tab_display = st.segmented_control(
     default=DisplayNames.FULL_TITLE_OVERVIEW,
     label_visibility="collapsed",
     selection_mode="single",
-    key="selected_tab_key"
+    key="selected_tab_key",
+    width=800,
 )
 
 # None인 경우 기본값 사용 (선택 해제 시 이전 값 유지를 위해 rerun)
