@@ -203,13 +203,13 @@ def render_smart_insights(
 
     with st.spinner(term.messages.get('analyzing', '분석 중...')):
         # ==================== 1. 상위 보고 제품 ====================
-        # 제품 분포: products 제외, 나머지 필터 적용
+        # 모든 필터 적용
         top_product_df = get_filtered_products(
             lf,
             date_col=date_col,
             selected_dates=selected_dates,
             selected_manufacturers=manufacturers if manufacturers else None,
-            selected_products=None,  # 제품 분포를 보기 위해 제외
+            selected_products=products if products else None,
             top_n=1,
             _year_month_expr=year_month_expr
         )
@@ -316,12 +316,15 @@ def render_total_reports_chart(
     year_month_expr
 ):
     """누적 보고서 수 차트 렌더링 (하이브리드 필터: 시계열이므로 모든 필터 적용)"""
+    """누적 보고서 수 차트 렌더링 (하이브리드 필터: 시계열이므로 모든 필터 적용)"""
     import plotly.graph_objects as go
     import plotly.express as px
 
     st.subheader("📊 누적 보고서 수")
+    st.subheader("📊 누적 보고서 수")
 
     # 설명 추가
+    with st.expander("ℹ️ 누적 보고서 수란?", expanded=False):
     with st.expander("ℹ️ 누적 보고서 수란?", expanded=False):
         st.markdown("""
         **누적 보고서 수**는 제조사-제품군별로 시간에 따른 부작용 보고 건수를 추적합니다.
@@ -338,14 +341,14 @@ def render_total_reports_chart(
         """)
 
     with st.spinner("데이터 분석 중..."):
-        # 시계열 차트: products 제외하여 제품 비교 가능
+        # 모든 필터 적용
         # TODO: devices/clusters/defect_types 지원 추가 필요
         result_df = get_filtered_products(
             lf,
             date_col=date_col,
             selected_dates=selected_dates if selected_dates else None,
             selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
-            selected_products=None,  # 제품 분포를 보기 위해 제외
+            selected_products=selected_products if selected_products else None,
             top_n=top_n,
             _year_month_expr=year_month_expr
         )
@@ -363,7 +366,7 @@ def render_total_reports_chart(
                 date_col=date_col,
                 selected_dates=selected_dates if selected_dates else None,
                 selected_manufacturers=selected_manufacturers if selected_manufacturers else None,
-                selected_products=None,  # 제품 분포를 보기 위해 제외
+                selected_products=selected_products if selected_products else None,
                 _year_month_expr=year_month_expr
             )
 
@@ -843,7 +846,7 @@ def render_defect_analysis(
 
                 if len(mfr_data) > 0:
                     chart_data = pd.DataFrame({
-                        "결함 유형": mfr_data[ColumnNames.DEFECT_TYPE],
+                        "결함 유형": mfr_data[ColumnNames.DEFECT_TYPE].astype(str),
                         "건수": mfr_data["count"],
                         "비율(%)": mfr_data["percentage"]
                     }).sort_values("건수", ascending=False)

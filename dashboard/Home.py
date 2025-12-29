@@ -9,7 +9,7 @@ from dateutil.relativedelta import relativedelta
 from millify import millify
 import polars as pl
 import overview_tab as o_tab
-import dashboard.eda_tab as e_tab
+import eda_tab as e_tab
 import cluster_tab as c_tab
 import spike_tab as s_tab
 from utils.dashboard_config import get_config
