@@ -4,6 +4,7 @@ from dateutil.relativedelta import relativedelta
 from typing import Optional, Literal, Union
 import numpy as np
 from scipy import stats
+from scipy.special import gammaln
 
 
 class BaselineAggregator:
@@ -11,6 +12,7 @@ class BaselineAggregator:
     키워드별 베이스라인 집계 및 스파이크 탐지를 위한 클래스
     
     최근 구간과 기준 구간을 비교하여 키워드별 보고서 수의 변화를 분석합니다.
+    과대산포(overdispersion) 진단 및 조건부 모형 선택을 지원합니다.
     """
     
     # 클래스 상수
@@ -20,6 +22,12 @@ class BaselineAggregator:
         "z": ("is_spike_z", "z_log"),
         "poisson": ("is_spike_p", "score_pois")
     }
+    # 다중검정 보정 임계값 (키워드 수)
+    CORRECTION_THRESHOLD = 50  # 이상이면 다중검정 보정 적용
+    
+    # 과대산포 임계값
+    DISPERSION_THRESHOLD_QUASI = 1.5  # 이상이면 Quasi-Poisson
+    DISPERSION_THRESHOLD_NB = 3.0     # 이상이면 음이항
     
     def __init__(self, lf: pl.LazyFrame):
         """
@@ -32,6 +40,7 @@ class BaselineAggregator:
         self._keyword_monthly: Optional[pl.DataFrame] = None
         self._monthly_total: Optional[pl.DataFrame] = None
         self._as_of_month: Optional[str] = None
+        self._dispersion_phi: Optional[float] = None  # 과대산포 계수 저장
         
     def _prepare_monthly_data(self) -> None:
         """월별 집계 데이터를 준비합니다."""
@@ -163,17 +172,146 @@ class BaselineAggregator:
         return df.with_columns([
             # 일반 z-score
             ((pl.col("recent_mean") - pl.col("base_mean")) / (pl.col("base_std") + eps)).round(4).alias("z_score"),
-            # log 변환 z-score
-            (((pl.col("C_recent") + 1).log() - pl.col("log_base_mean")) / (pl.col("log_base_std") + eps)).round(4).alias("z_log")
+            # log 변환 z-score (월평균 기준)
+            (((pl.col("recent_mean") + 1).log() - pl.col("log_base_mean")) / (pl.col("log_base_std") + eps)).round(4).alias("z_log")
         ])
+    
+    def _calculate_dispersion(self, observed: np.ndarray, expected: np.ndarray) -> float:
+        """
+        과대산포 계수(dispersion parameter) φ를 계산합니다.
+        
+        φ = (1 / (n-1)) * Σ((y - μ)² / μ)
+        
+        Parameters
+        ----------
+        observed : np.ndarray
+            관측값 (C_recent)
+        expected : np.ndarray
+            기대값 (lambda_pois)
+            
+        Returns
+        -------
+        float
+            과대산포 계수 φ (1이면 Poisson 적합, >1이면 과대산포)
+        
+        References
+        ----------
+        Cameron, A.C. & Trivedi, P.K. (2013). Regression Analysis of Count Data.
+        """
+        # 기대값이 0인 경우 제외
+        mask = expected > 0.001
+        y = observed[mask]
+        mu = expected[mask]
+        
+        if len(y) < 2:
+            return 1.0
+        
+        # Pearson chi-squared 기반 분산계수
+        pearson_chi2 = np.sum((y - mu) ** 2 / mu)
+        phi = pearson_chi2 / (len(y) - 1)
+        
+        return phi
+    
+    def _calculate_poisson_pvalue(self, k: np.ndarray, lambda_: np.ndarray) -> np.ndarray:
+        """표준 Poisson p-value: P(X >= k | λ)"""
+        p = np.where(
+            k > 0,
+            1 - stats.poisson.cdf(k - 1, lambda_),
+            1.0
+        )
+        return np.maximum(p, 1e-300)
+    
+    def _calculate_quasi_poisson_pvalue(
+        self, 
+        k: np.ndarray, 
+        lambda_: np.ndarray, 
+        phi: float
+    ) -> np.ndarray:
+        """
+        Quasi-Poisson p-value를 계산합니다.
+        
+        Quasi-Poisson은 분산을 φμ로 가정하여 표준오차를 √φ배 증가시킵니다.
+        정규근사를 사용하여 p-value를 계산합니다.
+        
+        References
+        ----------
+        Wedderburn, R.W.M. (1974). Quasi-likelihood functions. Biometrika.
+        """
+        # 정규근사: z = (k - λ) / sqrt(φλ)
+        se = np.sqrt(phi * lambda_)
+        z = (k - lambda_) / np.maximum(se, 0.001)
+        
+        # 단측검정 (상승만): P(Z >= z)
+        p = 1 - stats.norm.cdf(z)
+        return np.maximum(p, 1e-300)
+    
+    def _calculate_negative_binomial_pvalue(
+        self, 
+        k: np.ndarray, 
+        lambda_: np.ndarray,
+        phi: float
+    ) -> np.ndarray:
+        """
+        음이항 분포 p-value를 계산합니다.
+        
+        음이항 분포의 분산: Var = μ + μ²/θ = μ + αμ²
+        여기서 θ = μ/(φ-1)로 추정 (method of moments)
+        
+        References
+        ----------
+        Hilbe, J.M. (2011). Negative Binomial Regression. Cambridge.
+        Ver Hoef & Boveng (2007). Ecology, 88(11).
+        """
+        # Method of moments로 θ 추정
+        # Var = μ + μ²/θ = φμ (Quasi-Poisson과 연결)
+        # → θ = μ²/(Var - μ) = μ²/(φμ - μ) = μ/(φ-1)
+        
+        # 음이항 모수 추정 (scipy의 nbinom은 r, p 모수 사용)
+        # r = θ, p = θ/(θ+μ)
+        
+        p_values = np.zeros(len(k))
+        
+        for i in range(len(k)):
+            mu = lambda_[i]
+            if mu < 0.001 or phi <= 1:
+                # Poisson으로 fallback
+                p_values[i] = 1 - stats.poisson.cdf(k[i] - 1, mu) if k[i] > 0 else 1.0
+            else:
+                theta = mu / (phi - 1)
+                theta = max(theta, 0.1)  # 안정성을 위한 하한
+                
+                # scipy.stats.nbinom: r=theta, p=theta/(theta+mu)
+                r = theta
+                p = theta / (theta + mu)
+                
+                # P(X >= k) = 1 - P(X <= k-1)
+                if k[i] > 0:
+                    p_values[i] = 1 - stats.nbinom.cdf(k[i] - 1, r, p)
+                else:
+                    p_values[i] = 1.0
+        
+        return np.maximum(p_values, 1e-300)
     
     def _calculate_poisson_metrics(
         self, 
         df: pl.DataFrame, 
         alpha: float,
-        correction_method: Optional[str]
+        correction_method: Optional[str],
+        auto_adjust: bool = True,
+        verbose: bool = False
     ) -> pl.DataFrame:
-        """Poisson 기반 지표를 계산합니다."""
+        """
+        Poisson 기반 지표를 계산합니다.
+        
+        과대산포가 감지되면 자동으로 Quasi-Poisson 또는 음이항으로 전환합니다.
+        
+        Parameters
+        ----------
+        auto_adjust : bool, default=True
+            True면 과대산포 시 자동으로 모형 조정
+        verbose : bool, default=False
+            True면 선택된 모형 정보 출력
+        """
         # Lambda 계산
         df = df.with_columns(
             pl.when(pl.col("N_base") > 0)
@@ -183,16 +321,30 @@ class BaselineAggregator:
             .alias("lambda_pois")
         )
         
-        # p-value 계산 (numpy/scipy)
         c_recent = df["C_recent"].to_numpy()
         lambda_pois = df["lambda_pois"].to_numpy()
         
-        p_pois = np.where(
-            c_recent > 0,
-            1 - stats.poisson.cdf(c_recent - 1, lambda_pois),
-            1.0
-        )
-        p_pois = np.maximum(p_pois, 1e-300)
+        # 과대산포 진단
+        phi = self._calculate_dispersion(c_recent, lambda_pois)
+        self._dispersion_phi = phi
+        
+        # 모형 선택 및 p-value 계산
+        if not auto_adjust or phi < self.DISPERSION_THRESHOLD_QUASI:
+            # 표준 Poisson
+            model_used = "poisson"
+            p_pois = self._calculate_poisson_pvalue(c_recent, lambda_pois)
+        elif phi < self.DISPERSION_THRESHOLD_NB:
+            # Quasi-Poisson
+            model_used = "quasi_poisson"
+            p_pois = self._calculate_quasi_poisson_pvalue(c_recent, lambda_pois, phi)
+        else:
+            # 음이항
+            model_used = "negative_binomial"
+            p_pois = self._calculate_negative_binomial_pvalue(c_recent, lambda_pois, phi)
+        
+        if verbose:
+            print(f"  과대산포 계수 φ = {phi:.2f}")
+            print(f"  선택된 모형: {model_used}")
         
         # 다중검정 보정
         p_adjusted = self._apply_correction(p_pois, correction_method)
@@ -200,12 +352,30 @@ class BaselineAggregator:
         return df.with_columns([
             pl.Series("p_pois", p_pois).round(6),
             pl.Series("p_adjusted", p_adjusted).round(6),
-            pl.Series("score_pois", -np.log10(p_pois)).round(4)
+            pl.Series("score_pois", -np.log10(p_pois)).round(4),
+            pl.lit(phi).round(2).alias("dispersion_phi"),
+            pl.lit(model_used).alias("count_model")
         ])
     
-    def _apply_correction(self, p_values: np.ndarray, method: Optional[str]) -> np.ndarray:
-        """다중검정 보정을 적용합니다."""
+    def _apply_correction(
+        self, 
+        p_values: np.ndarray, 
+        method: Optional[str],
+        auto_skip: bool = True
+    ) -> np.ndarray:
+        """
+        다중검정 보정을 적용합니다.
+        
+        Parameters
+        ----------
+        auto_skip : bool, default=True
+            True면 키워드 수가 적을 때 (< CORRECTION_THRESHOLD) 보정 생략
+        """
         n = len(p_values)
+        
+        # 조건부 보정: 키워드 수가 적으면 보정 생략
+        if auto_skip and n < self.CORRECTION_THRESHOLD:
+            return p_values
         
         if method is None:
             return p_values
@@ -247,20 +417,23 @@ class BaselineAggregator:
         df = df.join(stats_df, on="window", how="left")
         
         return df.with_columns([
-            # is_spike (ratio 기반)
+            # is_spike (ratio 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &
                 (pl.col("score_ratio") >= (pl.col("_mean") + z_threshold * pl.col("_std"))) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike"),
-            
-            # is_spike_z (z-score 기반)
+
+            # is_spike_z (z-score 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &
                 (pl.col("z_log") >= z_threshold) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_z"),
-            
-            # is_spike_p (Poisson 기반)
+
+            # is_spike_p (Poisson/Quasi/NB 기반) - 증가만 탐지
             (
+                (pl.col("C_recent") > pl.col("C_base")) &
                 (pl.col("p_adjusted") <= alpha) &
                 (pl.col("C_recent") >= min_c_recent)
             ).alias("is_spike_p")
@@ -296,7 +469,8 @@ class BaselineAggregator:
             "recent_mean", "base_mean", "base_std",
             "ratio", "score_log", "score_sqrt", "score_ratio",
             "log_base_mean", "log_base_std", "z_score", "z_log",
-            "lambda_pois", "p_pois", "p_adjusted", "score_pois",
+            "lambda_pois", "dispersion_phi", "count_model",
+            "p_pois", "p_adjusted", "score_pois",
             "pattern",
             "is_spike", "is_spike_z", "is_spike_p"
         ]
@@ -312,6 +486,7 @@ class BaselineAggregator:
         eps: float = 0.1,
         alpha: float = 0.05,
         correction_method: Optional[Literal["bonferroni", "sidak", "fdr_bh"]] = "fdr_bh",
+        auto_adjust_overdispersion: bool = True,
         verbose: bool = True
     ) -> pl.LazyFrame:
         """
@@ -331,6 +506,8 @@ class BaselineAggregator:
             Poisson 유의수준
         correction_method : str or None, default="fdr_bh"
             다중검정 보정법
+        auto_adjust_overdispersion : bool, default=True
+            True면 과대산포 감지 시 자동으로 Quasi-Poisson 또는 음이항으로 전환
         verbose : bool, default=True
             진행 상황 출력
             
@@ -338,6 +515,18 @@ class BaselineAggregator:
         -------
         pl.LazyFrame
             베이스라인 집계 테이블
+            
+        Notes
+        -----
+        과대산포 자동 조정 (auto_adjust_overdispersion=True):
+        - φ < 1.5: 표준 Poisson
+        - 1.5 ≤ φ < 3.0: Quasi-Poisson (표준오차 √φ배 보정)
+        - φ ≥ 3.0: 음이항 분포 (Negative Binomial)
+        
+        References
+        ----------
+        - Cameron & Trivedi (2013). Regression Analysis of Count Data.
+        - Ver Hoef & Boveng (2007). Ecology, 88(11), 2766-2772.
         """
         # 1. 데이터 준비
         if verbose:
@@ -378,7 +567,11 @@ class BaselineAggregator:
         
         combined = self._calculate_ratio_metrics(combined)
         combined = self._calculate_zscore_metrics(combined, eps)
-        combined = self._calculate_poisson_metrics(combined, alpha, correction_method)
+        combined = self._calculate_poisson_metrics(
+            combined, alpha, correction_method, 
+            auto_adjust=auto_adjust_overdispersion,
+            verbose=verbose
+        )
         
         # 6. 스파이크 판정
         combined = self._determine_spikes(combined, z_threshold, min_c_recent, alpha)
@@ -403,6 +596,42 @@ class BaselineAggregator:
             print(f"\n완료: 키워드 {n_keywords}개, 스파이크(2+) W1={spike_w1}, W3={spike_w3}")
         
         return combined.lazy()
+    
+    def get_dispersion_info(self) -> dict:
+        """
+        과대산포 진단 결과를 반환합니다.
+        
+        Returns
+        -------
+        dict
+            - phi: 과대산포 계수
+            - model_recommended: 권장 모형
+            - interpretation: 해석
+        """
+        if self._dispersion_phi is None:
+            return {"error": "create_baseline_table()을 먼저 실행하세요."}
+        
+        phi = self._dispersion_phi
+        
+        if phi < self.DISPERSION_THRESHOLD_QUASI:
+            model = "poisson"
+            interpretation = "과대산포 없음. Poisson 모형 적합."
+        elif phi < self.DISPERSION_THRESHOLD_NB:
+            model = "quasi_poisson"
+            interpretation = f"경미~중간 과대산포 (φ={phi:.2f}). Quasi-Poisson 권장."
+        else:
+            model = "negative_binomial"
+            interpretation = f"심한 과대산포 (φ={phi:.2f}). 음이항 분포 권장."
+        
+        return {
+            "phi": phi,
+            "model_recommended": model,
+            "interpretation": interpretation,
+            "thresholds": {
+                "quasi_poisson": self.DISPERSION_THRESHOLD_QUASI,
+                "negative_binomial": self.DISPERSION_THRESHOLD_NB
+            }
+        }
     
     def detect_spikes(
         self,
@@ -437,4 +666,24 @@ class BaselineAggregator:
                 ) >= min_methods
             )
             .sort("score_pois", descending=True)
+        )
+    
+    def get_spike_summary(
+        self,
+        baseline_lf: pl.LazyFrame,
+        window: Union[int, Literal[1, 3]] = 1
+    ) -> pl.DataFrame:
+        """스파이크 요약 통계를 반환합니다."""
+        return (
+            baseline_lf
+            .filter(pl.col("window") == window)
+            .group_by("pattern")
+            .agg(pl.len().alias("count"))
+            .collect()
+            .sort(
+                pl.col("pattern").replace_strict(
+                    {"severe": 0, "alert": 1, "attention": 2, "general": 3},
+                    default=4
+                )
+            )
         )
