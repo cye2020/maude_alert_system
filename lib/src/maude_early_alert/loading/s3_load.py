@@ -98,9 +98,9 @@ class S3Loader:
         """
         s3_key_generator 이름 정하기
         """
-        prifix = ''
+        prefix = ''
         if logical_date:
-		        prefix = logical_date + '/'
+            prefix = logical_date + '/'
         s3_key = prefix + url.replace(self.BASE_URL, '')
         return s3_key
 
