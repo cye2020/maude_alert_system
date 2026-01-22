@@ -170,11 +170,6 @@ class ConfigLoader:
             if value is None:
                 raise ValueError(f"Environment variable not found: {env_var}")
             return value
-            env_var = config[2:-1]
-            value = os.getenv(env_var)
-            if value is None:
-                raise ValueError(f"Environment variable not found: {env_var}")
-            return value
         return config
     
     def get_path(self, config_name: str, *path_keys: str) -> Path:

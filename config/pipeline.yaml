@@ -4,27 +4,27 @@
 
 # 파이프라인 단계 정의
 stages:
-  bronze:
+  - name: bronze
     enabled: true
     description: "원본 데이터 다운로드 및 저장"
-    
-  silver:
+
+  - name: silver
     enabled: true
     description: "초기 전처리 및 클린징"
     steps:
-      - "column_drop_1st"
-      - "data_cleaning"
-      - "deduplication"
-      
-  gold:
+      - column_drop_1st
+      - data_cleaning
+      - deduplication
+
+  - name: gold
     enabled: true
     description: "최종 전처리 및 매칭"
     steps:
-      - "udi_matching"
-      - "quality_filtering"
-      - "transformation"
-      - "column_drop_2nd"
-
+      - udi_matching
+      - quality_filtering
+      - transformation
+      - column_drop_2nd
+      
 # 체크포인트
 checkpoints:
   enabled: true
