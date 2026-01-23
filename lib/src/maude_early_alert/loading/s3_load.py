@@ -95,9 +95,12 @@ class S3Loader:
         return files
 
     def s3_key_generate(self, url: str, logical_date: str = None) -> str:
-        prefix = ''  
+        """
+        s3_key_generator 이름 정하기
+        """
+        prefix = ''
         if logical_date:
-            prefix = logical_date + '/' 
+            prefix = logical_date + '/'
         s3_key = prefix + url.replace(self.BASE_URL, '')
         return s3_key
 
