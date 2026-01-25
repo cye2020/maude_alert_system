@@ -78,6 +78,87 @@ class SnowflakeLoader:
             return cursor.fetchone()[0]
         finally:
             cursor.close()
+    def copy_into(
+        self, 
+        table_name : str,  #원본 테이블명 (EVENT, UDI)
+        stage_path : str,  #S3 스테이지 경로
+        file_format : str = 'JSON' #파일 형식
+    ) -> dict:
+
+        """
+        S3에서 Snowflake로 데이터 복사
+        
+        Args:
+            table_name: 원본 테이블명 (EVENT, UDI)
+            stage_path: S3 스테이지 경로
+            file_format: 파일 형식 (JSON, CSV, AVRO, ORC, PARQUET, XML)
+            
+        Returns:
+            dict: {
+                'rows_loaded': 적재된 행 수,
+                'rows_parsed': 파싱된 행 수
+            }
+        """
+        stg_table_name = get_staging_table_name(table_name)
+        table_schema = self.get_table_schema(stg_table_name)
+
+        #컬럼 정의
+        column_names = [col_name for col_name, col_type in table_schema]
+        select_items = []
+
+        #JSON 파싱 문법
+        if file_format == 'JSON':
+            # $1:col_name 구문은 올바른 Snowflake JSON 파싱 문법
+            for col_name, col_type in table_schema:
+                # JSON 키는 대소문자를 구분하므로 정확한 키명 사용
+                select_items.append(f"$1:{col_name}::{col_type} AS {col_name}")
+        else:
+            # CSV 등 위치 기반 형식
+            for i, (col_name, col_type) in enumerate(table_schema):
+                select_items.append(f"$1:{i+1}::{col_type} AS {col_name}")
+
+        # 쿼리 생성
+        copy_query = f"""
+        COPY INTO {self.database}.{self.schema}.{stg_table_name} (
+            {', '.join(column_names)}
+        )
+        FROM (
+            SELECT {',\n'.join(select_items)}
+            FROM {stage_path}
+        )
+        FILE_FORMAT = (TYPE = '{file_format}')
+        ON_ERROR = 'CONTINUE'
+        """
+        cursor = self.client.cursor()
+        
+        try:
+            print(f"S3 -> Snowflake 데이터 복사 시작")
+            print(f"{stage_path} -> {stg_table_name}")
+            
+            cursor.execute(copy_query)
+            result = cursor.fetchone()
+
+            if result:
+                rows_loaded = result[3] if len(result) > 3 else 0
+                print(f"{rows_loaded}건 적재")
+                
+                return {
+                    'rows_loaded': rows_loaded,
+                    'rows_parsed': result[2] if len(result) > 2 else 0
+                }
+            else:
+                return {'rows_loaded': 0, 'rows_parsed': 0}
+                
+        except Exception as e:
+            print(f"데이터 복사 실패: {e}")
+            print(f"쿼리: {copy_query}")
+            raise
+
+        finally:
+            cursor.close()
+
+    def load_merge(self):
+        pass
     
     def get_table_schema(self, table_name:str) -> List[Tuple[str, str]]:
         """
