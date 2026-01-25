@@ -34,9 +34,8 @@ class SnowflakeLoader:
         table_schema = self.get_table_schema(table_name)
         column_defs = ", ".join([f"{col} {data_type}" for col, data_type in table_schema])
         
-        cursor = self.client.cursor()
-        
         try:
+            cursor = self.client.cursor()
             cursor.execute(f"""
                 CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (
                     {column_defs}
@@ -50,8 +49,35 @@ class SnowflakeLoader:
     def copy_into(self):
         pass
     
-    def load_merge(self):
-        pass
+    def load_merge(self, table_name: str, stg_table_name: str, primary_key: str, columns: str):
+        # UPDATE SET 절 (primary_key 제외)
+        update_columns = [col for col in columns if col != primary_key]
+        update_set = ", ".join([f"t.{col} = s.{col}" for col in update_columns])
+        
+        # INSERT 절
+        insert_columns = ", ".join(columns)
+        insert_values = ", ".join([f"s.{col}" for col in columns])
+        
+        query = f"""
+            MERGE INTO {table_name} t
+            USING {stg_table_name} s
+            ON t.{primary_key} = s.{primary_key}
+            WHEN MATCHED THEN
+            UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+            INSERT ({insert_columns}) VALUES ({insert_values})
+        """
+        
+        try:
+            cursor = self.client.cursor()
+            
+            with self.transaction(cursor):
+                cursor.execute(query)
+            
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            return cursor.fetchone()[0]
+        finally:
+            cursor.close()
     
     def get_table_schema(self, table_name:str) -> List[Tuple[str, str]]:
         """
@@ -85,8 +111,8 @@ class SnowflakeLoader:
         return rows
     
     @contextmanager
-    def snowflake_transaction(self):
-        """Snowflake 트랜잭션 컨텍스트
+    def transaction(self):
+        """트랜잭션 컨텍스트
         
         Args:
             cursor: Snowflake cursor 객체
