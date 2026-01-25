@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 from contextlib import contextmanager
 import snowflake.connector
 from snowflake.connector import SnowflakeConnection
@@ -17,25 +17,39 @@ def get_staging_table_name(table_name: str) -> str:
     return '.'.join(parts)
 
 class SnowflakeLoader:
-    def __init__(self, database, schema, client: SnowflakeConnection = None):
+    def __init__(self, database, schema, conn: SnowflakeConnection = None):
         self.database = database
         self.schema = schema
-        self.client = client
+        self.conn = conn
     
-    def load_from_s3(self, table_name: str, stg_name: str):
+    def load_from_s3(
+        self, table_name: str, s3_stg_table_name: str, 
+        primary_key: Union[str, List[str]],
+        metadata: Dict[str, Any] = None,
+        business_primary_key: Union[str, List[str]] = None
+    ):
+        table_schema = self.get_table_schema(table_name)
+        
         # 1. 임시 테이블 생성
+        stg_table_name = self.create_temporary_staging_table(table_name, table_schema)
+        
         # 2. COPY INTO로 S3에서 임시 테이블에 적재
+        self.copy_into(stg_table_name, s3_stg_table_name, table_schema)
+        
         # 3. MERGE로 목적 테이블로 적재
-        pass
+        column_names = [col_name for col_name, _ in table_schema]
+        self.load_merge(table_name, stg_table_name, primary_key, column_names)
     
-    def create_temporary_staging_table(self, table_name: str):
+    def create_temporary_staging_table(self, table_name: str, table_schema: list = None):
         stg_table_name = get_staging_table_name(table_name)
         
-        table_schema = self.get_table_schema(table_name)
+        if not table_schema:
+            table_schema = self.get_table_schema(table_name)
+        
         column_defs = ", ".join([f"{col} {data_type}" for col, data_type in table_schema])
         
         try:
-            cursor = self.client.cursor()
+            cursor = self.conn.cursor()
             cursor.execute(f"""
                 CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (
                     {column_defs}
@@ -46,43 +60,12 @@ class SnowflakeLoader:
         
         return stg_table_name
     
-    def copy_into(self):
-        pass
-    
-    def load_merge(self, table_name: str, stg_table_name: str, primary_key: str, columns: str):
-        # UPDATE SET 절 (primary_key 제외)
-        update_columns = [col for col in columns if col != primary_key]
-        update_set = ", ".join([f"t.{col} = s.{col}" for col in update_columns])
-        
-        # INSERT 절
-        insert_columns = ", ".join(columns)
-        insert_values = ", ".join([f"s.{col}" for col in columns])
-        
-        query = f"""
-            MERGE INTO {table_name} t
-            USING {stg_table_name} s
-            ON t.{primary_key} = s.{primary_key}
-            WHEN MATCHED THEN
-            UPDATE SET {update_set}
-            WHEN NOT MATCHED THEN
-            INSERT ({insert_columns}) VALUES ({insert_values})
-        """
-        
-        try:
-            cursor = self.client.cursor()
-            
-            with self.transaction(cursor):
-                cursor.execute(query)
-            
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            return cursor.fetchone()[0]
-        finally:
-            cursor.close()
     def copy_into(
-        self, 
-        table_name : str,  #원본 테이블명 (EVENT, UDI)
-        stage_path : str,  #S3 스테이지 경로
-        file_format : str = 'JSON' #파일 형식
+        self,
+        stg_table_name: str, # 임시 스테이지 테이블명
+        s3_stg_table_name : str,  # S3 스테이지 경로
+        table_schema: List[Tuple[str, str]] = None,
+        file_format : str = 'JSON' # 파일 형식
     ) -> dict:
 
         """
@@ -90,7 +73,7 @@ class SnowflakeLoader:
         
         Args:
             table_name: 원본 테이블명 (EVENT, UDI)
-            stage_path: S3 스테이지 경로
+            stage_path: S3 스테이지 경로 ()
             file_format: 파일 형식 (JSON, CSV, AVRO, ORC, PARQUET, XML)
             
         Returns:
@@ -99,11 +82,11 @@ class SnowflakeLoader:
                 'rows_parsed': 파싱된 행 수
             }
         """
-        stg_table_name = get_staging_table_name(table_name)
-        table_schema = self.get_table_schema(stg_table_name)
-
+        if not table_schema:
+            table_schema = self.get_table_schema(stg_table_name)
+        
         #컬럼 정의
-        column_names = [col_name for col_name, col_type in table_schema]
+        column_names = [col_name for col_name, _ in table_schema]
         select_items = []
 
         #JSON 파싱 문법
@@ -116,31 +99,31 @@ class SnowflakeLoader:
             # CSV 등 위치 기반 형식
             for i, (col_name, col_type) in enumerate(table_schema):
                 select_items.append(f"$1:{i+1}::{col_type} AS {col_name}")
-
+        
         # 쿼리 생성
         copy_query = f"""
-        COPY INTO {self.database}.{self.schema}.{stg_table_name} (
+        COPY INTO {stg_table_name} (
             {', '.join(column_names)}
         )
         FROM (
             SELECT {',\n'.join(select_items)}
-            FROM {stage_path}
+            FROM {s3_stg_table_name}
         )
         FILE_FORMAT = (TYPE = '{file_format}')
         ON_ERROR = 'CONTINUE'
         """
-        cursor = self.client.cursor()
         
         try:
-            print(f"S3 -> Snowflake 데이터 복사 시작")
-            print(f"{stage_path} -> {stg_table_name}")
+            cursor = self.conn.cursor()
+            
+            cursor.execute(f"USE DATABASE {self.database}")
+            cursor.execute(f"USE SCHEMA {self.schema}")
             
             cursor.execute(copy_query)
             result = cursor.fetchone()
 
             if result:
                 rows_loaded = result[3] if len(result) > 3 else 0
-                print(f"{rows_loaded}건 적재")
                 
                 return {
                     'rows_loaded': rows_loaded,
@@ -150,15 +133,50 @@ class SnowflakeLoader:
                 return {'rows_loaded': 0, 'rows_parsed': 0}
                 
         except Exception as e:
-            print(f"데이터 복사 실패: {e}")
-            print(f"쿼리: {copy_query}")
-            raise
+            msg = f"""
+            데이터 복사 실패: {e}
+            쿼리: {copy_query}
+            """
+            raise Exception(msg)
 
         finally:
             cursor.close()
 
-    def load_merge(self):
-        pass
+    def load_merge(self, table_name: str, stg_table_name: str, primary_key: Union[str, List[str]], column_names: List[str]):
+        # primary_key를 리스트로 정규화
+        pk_list = [primary_key] if isinstance(primary_key, str) else primary_key
+
+        # ON 절 (복수 키를 AND로 연결)
+        on_conditions = " AND ".join([f"t.{pk} = s.{pk}" for pk in pk_list])
+
+        # UPDATE SET 절 (primary_key 제외)
+        update_column_names = [col for col in column_names if col not in pk_list]
+        update_set = ", ".join([f"t.{col} = s.{col}" for col in update_column_names])
+
+        # INSERT 절
+        insert_column_names = ", ".join(column_names)
+        insert_values = ", ".join([f"s.{col}" for col in column_names])
+
+        query = f"""
+            MERGE INTO {table_name} t
+            USING {stg_table_name} s
+            ON {on_conditions}
+            WHEN MATCHED THEN
+            UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+            INSERT ({insert_column_names}) VALUES ({insert_values})
+        """
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            with self.transaction(cursor):
+                cursor.execute(query)
+            
+            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
+            return cursor.fetchone()[0]
+        finally:
+            cursor.close()
     
     def get_table_schema(self, table_name:str) -> List[Tuple[str, str]]:
         """
@@ -174,11 +192,11 @@ class SnowflakeLoader:
         SELECT
             column_name,
             data_type
-        FROM {self.database}.INFORMATION_SCHEMA.COLUMNS
+        FROM {self.database}.INFORMATION_SCHEMA.column_names
         WHERE table_schema = '{self.schema}'
             AND table_name = '{table_name}'
         """
-        cursor = self.client.cursor()
+        cursor = self.conn.cursor()
         
         try:
             cursor.execute(query)
@@ -205,7 +223,7 @@ class SnowflakeLoader:
             - 성공 시 COMMIT
             - 예외 발생 시 ROLLBACK 후 재발생
         """
-        cursor = self.client.cursor()
+        cursor = self.conn.cursor()
         cursor.execute("BEGIN")
         try:
             yield cursor
@@ -239,10 +257,10 @@ if __name__=='__main__':
         )
         
         snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], conn)
-        stg_table_name = snowflake_loader.create_temporary_staging_table('EVENT')
-        print(stg_table_name)
-        stg_table_schema = snowflake_loader.get_table_schema(stg_table_name)
-        print(stg_table_schema)
+        table_name = 'EVENT'
+        s3_stg_table_name = 'BRONZE_S3_STAGE'
+        primary_key = []
+        snowflake_loader.load_from_s3()
         
     except Exception as e:
         raise Exception(e)
