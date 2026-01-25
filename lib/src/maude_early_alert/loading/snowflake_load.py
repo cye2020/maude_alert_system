@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Tuple, Union
 from contextlib import contextmanager
 import snowflake.connector
 from snowflake.connector import SnowflakeConnection
+import pendulum
 
 def get_staging_table_name(table_name: str) -> str:
     """Staging 테이블명 생성
@@ -65,8 +66,10 @@ class SnowflakeLoader:
         stg_table_name: str, # 임시 스테이지 테이블명
         s3_stg_table_name : str,  # S3 스테이지 경로
         table_schema: List[Tuple[str, str]] = None,
-        file_format : str = 'JSON' # 파일 형식
-    ) -> dict:
+        file_format : str = 'JSON', # 파일 형식
+        metadata: Dict[str, Any] = None,
+        business_primary_key: Union[str, List[str]] = None
+    ) -> Dict[str, Any]:
 
         """
         S3에서 Snowflake로 데이터 복사
@@ -82,23 +85,54 @@ class SnowflakeLoader:
                 'rows_parsed': 파싱된 행 수
             }
         """
-        if not table_schema:
-            table_schema = self.get_table_schema(stg_table_name)
         
-        #컬럼 정의
-        column_names = [col_name for col_name, _ in table_schema]
+        # Business Primary Key List
+        bpk_list = None
+        if business_primary_key:
+            bpk_list = (
+                [business_primary_key]
+                if isinstance(business_primary_key, str)
+                else business_primary_key
+            )
+
+        column_names = []
         select_items = []
 
-        #JSON 파싱 문법
-        if file_format == 'JSON':
-            # $1:col_name 구문은 올바른 Snowflake JSON 파싱 문법
-            for col_name, col_type in table_schema:
-                # JSON 키는 대소문자를 구분하므로 정확한 키명 사용
-                select_items.append(f"$1:{col_name}::{col_type} AS {col_name}")
+        if metadata:
+            source_system = metadata.get('source_system', 's3')
+            ingest_time = metadata.get('ingest_time', pendulum.now())
+            batch_id = metadata.get('batch_id')
+
+            if isinstance(ingest_time, (pendulum.datetime, pendulum.DateTime)):
+                ingest_time = f"'{ingest_time.format('YYYY-MM-DD HH:mm:ss')}'" #to_iso8601_string()
+            else:
+                ingest_time = f"'{ingest_time}'"
+            
+               # column_names에 추가
+            column_names.extend(['source_system', 'ingest_time', 'batch_id'])
+            select_items.extend([
+                f"'{source_system}' AS source_system",
+                f"{ingest_time}::TIMESTAMP_TZ AS ingest_time",
+                f"'{batch_id}' AS batch_id"
+            ])
+
+        # Business Primary Key
+        if bpk_list:
+            column_names.extend([
+                f"$1:{key}::STRING AS {key}" for key in bpk_list
+            ])
+            object_delete_keys = ",".join([f"$1:{key}" for key in bpk_list])
         else:
-            # CSV 등 위치 기반 형식
-            for i, (col_name, col_type) in enumerate(table_schema):
-                select_items.append(f"$1:{i+1}::{col_type} AS {col_name}")
+                object_delete_keys = None
+
+        # 나머지 고정 컬럼
+        # 고정 컬럼
+        column_names.extend(['source_file', 'record_hash', 'raw_data'])
+        select_items.extend([
+        "METADATA$FILENAME AS source_file",
+        f"HASH(OBJECT_DELETE($1, {object_delete_keys})) AS record_hash" if bpk_list else "HASH($1) AS record_hash",
+        "$1 AS raw_data"
+        ])
         
         # 쿼리 생성
         copy_query = f"""
@@ -140,7 +174,8 @@ class SnowflakeLoader:
             raise Exception(msg)
 
         finally:
-            cursor.close()
+            if cursor:
+                cursor.close()  
 
     def load_merge(self, table_name: str, stg_table_name: str, primary_key: Union[str, List[str]], column_names: List[str]):
         # primary_key를 리스트로 정규화
