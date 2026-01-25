@@ -14,7 +14,7 @@ class S3Loader:
 
     BASE_URL = 'https://download.open.fda.gov/'
 
-    def __init__(self, bucket_name: str, client = None, aws_conn_id: str = 'aws_default'):
+    def __init__(self, bucket_name: str, client = None):
         self.url = 'https://api.fda.gov/download.json'
         self.bucket_name = bucket_name
         self.s3_client = client
@@ -104,8 +104,7 @@ class S3Loader:
         s3_key = prefix + url.replace(self.BASE_URL, '')
         return s3_key
 
-    def load(self, client, s3_key: str, file_url: str) -> bool:
-        # [TODO] 에러 핸들링
+    def load(self, s3_key: str, file_url: str) -> bool:
         try:
             response = requests.get(file_url, stream=True)
             response.raise_for_status()
@@ -128,3 +127,27 @@ class S3Loader:
         except Exception as e:
             print(f"업로드 오류 [{s3_key}] - {e}")
             return False
+
+
+if __name__=='__main__':
+    import boto3
+    bucket_name= 'amazon-s3-fda' 
+    client = boto3.client('s3')
+
+    s3_loader = S3Loader(bucket_name, client)
+    
+    import pendulum
+    category = 'event'
+    end = pendulum.now().year
+    start = 2020
+    
+    files = s3_loader.extract(category, start, end)
+    print(files)
+    
+    import structlog
+    logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+    for file in files:
+        s3_key = file['s3_key']
+        file_url = file['url']
+        is_successed = s3_loader.load(s3_key, file_url)
+        logger.info(f'Load Result', s3_key=s3_key, result=is_successed)
