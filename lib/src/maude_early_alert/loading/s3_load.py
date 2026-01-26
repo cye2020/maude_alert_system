@@ -1,24 +1,22 @@
 # 표준 라이브러리
-import re
 import gzip
 import json
 import math
 import zipfile
 import io
-from typing import Dict, List
 
 # 서드파티 라이브러리
 import requests
+import structlog
 
 
 class S3Loader:
     """
-    FDA Open API에서 device 데이터를 다운로드하여 S3에 업로드하는 클래스
-    
+    FDA 데이터를 다운로드하여 S3에 업로드하는 클래스
+
     주요 기능:
-    - FDA API에서 메타데이터 조회
-    - 파일 정보 추출 및 필터링
     - S3 키 생성
+    - 파일 다운로드 (ZIP → GZIP 변환)
     - S3 버킷에 파일 업로드
     """
 
@@ -28,122 +26,20 @@ class S3Loader:
     # Snowflake VARIANT 최대 크기 128MB, 안전 마진 적용
     MAX_VARIANT_BYTES = 100 * 1024 * 1024  # 100MB
 
-    def __init__(self, bucket_name: str, client=None):
+    def __init__(
+        self, bucket_name: str,
+        client, session: requests.Session = None
+    ):
         """
-        S3Loader 초기화
-        
         Args:
-            bucket_name (str): 업로드할 S3 버킷 이름
-            client: boto3 S3 클라이언트 객체 (선택사항)
+            bucket_name: 업로드할 S3 버킷 이름
+            client: boto3 S3 클라이언트 (필수)
+            session: requests.Session (테스트 시 모킹 가능, 미지정 시 기본 Session 사용)
         """
-        self.url = 'https://api.fda.gov/download.json'
         self.bucket_name = bucket_name
         self.s3_client = client
-        
-        # 메타데이터 캐싱용 변수
-        self.metadata = None
-
-    def fetch_metadata(self) -> Dict:
-        """
-        FDA API에서 메타데이터 가져오기
-        
-        Returns:
-            Dict: FDA API 응답 메타데이터 (캐싱됨)
-        
-        Raises:
-            requests.HTTPError: API 요청 실패 시
-        """
-        # 이미 조회한 메타데이터가 있으면 재사용
-        if self.metadata is None:
-            response = requests.get(self.url)
-            response.raise_for_status()  # HTTP 에러 발생 시 예외 발생
-            self.metadata = response.json()
-        return self.metadata
-
-    def extract(
-        self, category: str, 
-        start: int = None, end: int = None,
-        logical_date: str = None
-    ) -> List[Dict[str, str]]:
-        """
-        특정 카테고리의 파일 정보 추출
-        
-        Args:
-            category (str): 데이터 카테고리 ('udi' 또는 'event')
-            start (int, optional): 시작 연도 (event 카테고리에만 적용)
-            end (int, optional): 종료 연도 (event 카테고리에만 적용)
-        
-        Returns:
-            List[Dict[str, str]]: 파일 정보 리스트
-                - url: 다운로드 URL
-                - display_name: 표시 이름
-                - s3_key: S3 저장 경로
-        
-        Raises:
-            ValueError: 잘못된 카테고리인 경우
-        
-        Examples:
-            event URL 형식: 
-                https://download.open.fda.gov/device/event/{YEAR}q{QUARTER}/device-event-{PART}-of-{TOTAL}.json.zip
-            udi URL 형식:
-                https://download.open.fda.gov/device/device/udi/device-udi-{PART}-of-{TOTAL}.json.zip
-        """
-        # 카테고리 유효성 검증
-        if category not in ['udi', 'event']:
-            raise ValueError(f"Invalid category: {category}")
-
-        # API에서 메타데이터 조회
-        metadata = self.fetch_metadata()
-
-        # device 데이터 추출
-        device_data = metadata['results']['device']
-
-        # 해당 카테고리에 partitions 데이터가 있는지 확인
-        if category not in device_data or 'partitions' not in device_data[category]:
-            return []
-
-        files = []
-
-        # 각 파티션(파일) 정보 처리
-        for partition in device_data[category]['partitions']:
-            # 파일 다운로드 URL 가져오기
-            url = partition.get('file', '')
-
-            # URL에 올바른 카테고리 경로가 포함되어 있는지 검증
-            if f'device/{category}/' not in url:
-                continue
-        
-            # ================================================
-            # event 카테고리: 연도 기반 필터링
-            # ================================================
-            if category == 'event':
-                # URL에서 연도 추출 (예: /2020q1/ -> 2020)
-                match = re.search(r'/(\d{4})q\d+/', url)
-                year = int(match.group(1)) if match else None
-                
-                # 연도를 추출하지 못한 경우 건너뛰기
-                if year is None:
-                    continue
-                
-                # 시작 연도 필터링
-                if start and year < start:
-                    continue
-                
-                # 종료 연도 필터링
-                if end and year > end:
-                    continue
-            
-            # S3 저장 경로 생성
-            s3_key = self.s3_key_generate(url, logical_date)
-
-            # 파일 정보 추가
-            files.append({
-                'url': url, 
-                'display_name': partition.get('display_name'),
-                's3_key': s3_key
-            })
-            
-        return files
+        self.session = session or requests.Session()
+        self.logger = structlog.get_logger(__name__)
 
     def s3_key_generate(self, url: str, logical_date: str = None) -> str:
         """
@@ -207,7 +103,7 @@ class S3Loader:
         """
         try:
             # 청크 단위로 ZIP 다운로드 (메모리 효율적)
-            response = requests.get(file_url, stream=True)
+            response = self.session.get(file_url, stream=True)
             response.raise_for_status()
 
             zip_buffer = io.BytesIO()
@@ -245,37 +141,39 @@ class S3Loader:
             return True
 
         except requests.RequestException as e:
-            print(f"다운로드 실패: [{file_url}] - {e}")
+            self.logger.error('다운로드 실패', file_url=file_url, error=str(e))
             return False
 
         except zipfile.BadZipFile as e:
-            print(f"ZIP 파일 오류: [{file_url}] - {e}")
+            self.logger.error('ZIP 파일 오류', file_url=file_url, error=str(e))
             return False
 
         except Exception as e:
-            print(f"업로드 오류 [{s3_key}] - {e}")
+            self.logger.error('업로드 오류', s3_key=s3_key, error=str(e))
             return False
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     import boto3
-    bucket_name= 'amazon-s3-fda' 
-    client = boto3.client('s3')
-
-    s3_loader = S3Loader(bucket_name, client)
-    
     import pendulum
-    category = 'event'
-    end = pendulum.now().year
-    start = 2020
-    
-    files = s3_loader.extract(category, start, end, pendulum.now().strftime('%Y%m'))
-    print(files)
-    
     import structlog
+
+    from maude_early_alert.loading.fda_extract import FDAExtractor
+
     logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+    # FDA 파일 목록 추출
+    extractor = FDAExtractor()
+    files = extractor.extract('event', start=2020, end=pendulum.now().year)
+    print(files)
+
+    # S3 업로드
+    bucket_name = 'amazon-s3-fda'
+    client = boto3.client('s3')
+    s3_loader = S3Loader(bucket_name, client)
+    logical_date = pendulum.now().strftime('%Y%m')
+
     for file in files:
-        s3_key = file['s3_key']
-        file_url = file['url']
-        is_successed = s3_loader.load(s3_key, file_url)
-        logger.info(f'Load Result', s3_key=s3_key, result=is_successed)
+        s3_key = s3_loader.s3_key_generate(file['url'], logical_date)
+        result = s3_loader.load(s3_key, file['url'])
+        logger.info('Load Result', s3_key=s3_key, result=result)

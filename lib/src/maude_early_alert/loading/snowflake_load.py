@@ -63,46 +63,37 @@ class SnowflakeLoader(SnowflakeBase):
         # S3 스테이지 전체 경로 구성
         s3_stage_path = f"{s3_stg_table_name}/{s3_folder}" if s3_folder else s3_stg_table_name
 
-        self.logger.info( 'S3 데이터 적재 시작',
-                  table_name=table_name, s3_stage=s3_stage_path)
+        self.logger.info('S3 데이터 적재 시작',
+                        table_name=table_name, s3_stage=s3_stage_path)
 
-        try:
-            table_schema = self.get_table_schema(cursor, table_name)
+        table_schema = self.get_table_schema(cursor, table_name)
 
-            # 1. 스테이징 테이블 생성
-            stg_table_name = self.create_temporary_staging_table(cursor, table_name, table_schema)
+        # 1. 스테이징 테이블 생성
+        stg_table_name = self.create_temporary_staging_table(cursor, table_name, table_schema)
 
-            # 2. S3에서 Raw JSON을 임시 테이블에 COPY INTO
-            raw_table_name, copy_result = self.copy_raw_to_temp(cursor, s3_stage_path)
+        # 2. S3에서 Raw JSON을 임시 테이블에 COPY INTO
+        raw_table_name, copy_result = self.copy_raw_to_temp(cursor, s3_stage_path)
 
-            # 3. FLATTEN으로 results 배열을 풀어서 스테이징 테이블에 INSERT
-            insert_result = self.flatten_and_insert(
-                cursor, raw_table_name, stg_table_name,
-                metadata=metadata, business_primary_key=business_primary_key
-            )
+        # 3. FLATTEN으로 results 배열을 풀어서 스테이징 테이블에 INSERT
+        insert_result = self.flatten_and_insert(
+            cursor, raw_table_name, stg_table_name,
+            metadata=metadata, business_primary_key=business_primary_key
+        )
 
-            # 4. MERGE로 목적 테이블로 적재
-            column_names = [col_name for col_name, _ in table_schema]
-            merge_count = self.load_merge(cursor, table_name, stg_table_name, primary_key, column_names)
+        # 4. MERGE로 목적 테이블로 적재
+        column_names = [col_name for col_name, _ in table_schema]
+        merge_count = self.load_merge(cursor, table_name, stg_table_name, primary_key, column_names)
 
-            self.logger.info( 'S3 데이터 적재 완료',
-                      table_name=table_name,
-                      rows_inserted=insert_result.get('rows_inserted', 0),
-                      total_rows=merge_count)
+        self.logger.info('S3 데이터 적재 완료',
+                        table_name=table_name,
+                        rows_inserted=insert_result.get('rows_inserted', 0),
+                        total_rows=merge_count)
 
-            return {
-                'files_loaded': copy_result.get('files_loaded', 0),
-                'rows_inserted': insert_result.get('rows_inserted', 0),
-                'total_rows': merge_count
-            }
-
-        except (ProgrammingError, DatabaseError):
-            # 하위 메서드에서 이미 로깅 완료 — 재로깅 없이 전파
-            raise
-        except Exception as e:
-            self.logger.error( '예상치 못한 오류 발생',
-                      table_name=table_name, error=str(e))
-            raise
+        return {
+            'files_loaded': copy_result.get('files_loaded', 0),
+            'rows_inserted': insert_result.get('rows_inserted', 0),
+            'total_rows': merge_count
+        }
 
     def create_temporary_staging_table(
         self, cursor: SnowflakeCursor,
