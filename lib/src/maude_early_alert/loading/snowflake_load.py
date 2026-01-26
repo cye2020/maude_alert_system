@@ -1,21 +1,11 @@
-from typing import Any, Dict, List, Literal, Tuple, Union
-from contextlib import contextmanager
-import logging
-import snowflake.connector
+from typing import Any, Dict, List, Tuple, Union
+import datetime
 from snowflake.connector.cursor import SnowflakeCursor
 from snowflake.connector.errors import DatabaseError, ProgrammingError
-import pendulum
-import structlog
 
-LogLevel = Literal['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', None]
+from .snowflake_base import SnowflakeBase
+from ..utils.helpers import ensure_list, format_sql_literal
 
-LOG_LEVEL_MAP = {
-    'DEBUG': logging.DEBUG,
-    'INFO': logging.INFO,
-    'WARNING': logging.WARNING,
-    'ERROR': logging.ERROR,
-    'CRITICAL': logging.CRITICAL,
-}
 
 def get_staging_table_name(table_name: str) -> str:
     """Staging 테이블명 생성
@@ -30,47 +20,14 @@ def get_staging_table_name(table_name: str) -> str:
     parts[-1] = f"STG_{parts[-1].upper()}"
     return '.'.join(parts)
 
-class SnowflakeLoader:
-    def __init__(
-        self, database: str, schema: str,
-        log_level: LogLevel = 'INFO'
-    ):
-        self.database = database
-        self.schema = schema
-        self._setup_logger(log_level)
 
-    def _setup_logger(self, log_level: LogLevel) -> None:
-        """로거 설정
+class SnowflakeLoader(SnowflakeBase):
+    """S3에서 Snowflake로 데이터를 적재하는 클래스
 
-        Args:
-            log_level: 로그 레벨 ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', None)
-                       None이면 로그 비활성화
-        """
-        self.logger = structlog.get_logger(__name__)
+    SnowflakeBase의 인프라(로깅, 컨텍스트, 스키마 조회, 트랜잭션)를 상속받아
+    COPY INTO, FLATTEN INSERT, MERGE 등 데이터 적재 비즈니스 로직을 수행합니다.
+    """
 
-        if log_level is None:
-            # 로그 비활성화
-            self._log_enabled = False
-        else:
-            self._log_enabled = True
-            self._log_level = LOG_LEVEL_MAP.get(log_level, logging.INFO)
-
-    def _log(self, level: str, message: str, **kwargs) -> None:
-        """조건부 로그 출력
-
-        Args:
-            level: 로그 레벨 ('debug', 'info', 'warning', 'error', 'critical')
-            message: 로그 메시지
-            **kwargs: 추가 컨텍스트
-        """
-        if not self._log_enabled:
-            return
-
-        level_value = LOG_LEVEL_MAP.get(level.upper(), logging.INFO)
-        if level_value >= self._log_level:
-            log_method = getattr(self.logger, level.lower(), self.logger.info)
-            log_method(message, **kwargs)
-    
     def load_from_s3(
         self, cursor: SnowflakeCursor,
         table_name: str, s3_stg_table_name: str,
@@ -100,13 +57,13 @@ class SnowflakeLoader:
         # S3 폴더 경로 결정: 명시적 지정 > metadata의 ingest_time > 없음
         if s3_folder is None and metadata and 'ingest_time' in metadata:
             ingest_time = metadata['ingest_time']
-            if isinstance(ingest_time, pendulum.DateTime):
-                s3_folder = ingest_time.format('YYYYMM')
+            if isinstance(ingest_time, datetime.datetime):
+                s3_folder = ingest_time.strftime('%Y%m')
 
         # S3 스테이지 전체 경로 구성
         s3_stage_path = f"{s3_stg_table_name}/{s3_folder}" if s3_folder else s3_stg_table_name
 
-        self._log('info', 'S3 데이터 적재 시작',
+        self.logger.info( 'S3 데이터 적재 시작',
                   table_name=table_name, s3_stage=s3_stage_path)
 
         try:
@@ -128,7 +85,7 @@ class SnowflakeLoader:
             column_names = [col_name for col_name, _ in table_schema]
             merge_count = self.load_merge(cursor, table_name, stg_table_name, primary_key, column_names)
 
-            self._log('info', 'S3 데이터 적재 완료',
+            self.logger.info( 'S3 데이터 적재 완료',
                       table_name=table_name,
                       rows_inserted=insert_result.get('rows_inserted', 0),
                       total_rows=merge_count)
@@ -139,21 +96,14 @@ class SnowflakeLoader:
                 'total_rows': merge_count
             }
 
-        except ProgrammingError as e:
-            self._log('error', 'SQL 구문 오류',
-                      table_name=table_name, error=str(e))
-            raise
-        except DatabaseError as e:
-            self._log('error', '데이터베이스 작업 실패',
-                      table_name=table_name, error=str(e))
+        except (ProgrammingError, DatabaseError):
+            # 하위 메서드에서 이미 로깅 완료 — 재로깅 없이 전파
             raise
         except Exception as e:
-            self._log('error', '예상치 못한 오류 발생',
+            self.logger.error( '예상치 못한 오류 발생',
                       table_name=table_name, error=str(e))
             raise
-        finally:
-            cursor.close()
-    
+
     def create_temporary_staging_table(
         self, cursor: SnowflakeCursor,
         table_name: str, table_schema: list = None
@@ -172,7 +122,7 @@ class SnowflakeLoader:
             ProgrammingError: 테이블 생성 실패 시
         """
         stg_table_name = get_staging_table_name(table_name)
-        self._log('debug', '임시 스테이징 테이블 생성 시작', stg_table_name=stg_table_name)
+        self.logger.debug( '임시 스테이징 테이블 생성 시작', stg_table_name=stg_table_name)
 
         try:
             if not table_schema:
@@ -186,49 +136,23 @@ class SnowflakeLoader:
                 )
             """)
 
-            self._log('debug', '임시 스테이징 테이블 생성 완료', stg_table_name=stg_table_name)
+            self.logger.debug( '임시 스테이징 테이블 생성 완료', stg_table_name=stg_table_name)
             return stg_table_name
 
         except ProgrammingError as e:
-            self._log('error', '임시 테이블 생성 실패',
+            self.logger.error( '임시 테이블 생성 실패',
                       stg_table_name=stg_table_name, error=str(e))
             raise
-    
-    def _format_metadata_value(self, key: str, value: Any) -> str:
-        """메타데이터 값을 SQL SELECT 표현식으로 변환
-
-        Args:
-            key: 컬럼명
-            value: 메타데이터 값
-
-        Returns:
-            SQL SELECT 표현식 (예: "'value' AS column_name")
-        """
-        if value is None:
-            return f"NULL AS {key}"
-        elif isinstance(value, pendulum.DateTime):
-            formatted = value.format('YYYY-MM-DD HH:mm:ss')
-            return f"'{formatted}'::TIMESTAMP_TZ AS {key}"
-        elif isinstance(value, bool):
-            return f"{str(value).upper()} AS {key}"
-        elif isinstance(value, (int, float)):
-            return f"{value} AS {key}"
-        else:
-            # 문자열 및 기타 타입
-            escaped = str(value).replace("'", "''")
-            return f"'{escaped}' AS {key}"
 
     def copy_raw_to_temp(
         self, cursor: SnowflakeCursor,
-        s3_stg_table_name: str,
-        file_format: str = 'JSON'
+        s3_stg_table_name: str
     ) -> Tuple[str, Dict[str, Any]]:
         """S3에서 Raw JSON을 임시 테이블에 COPY INTO
 
         Args:
             cursor: Snowflake cursor 객체
             s3_stg_table_name: S3 스테이지 경로
-            file_format: 파일 형식 (JSON, CSV, AVRO, ORC, PARQUET, XML)
 
         Returns:
             Tuple[str, dict]: (임시 테이블명, {'files_loaded': 로드된 파일 수, 'rows_loaded': 로드된 행 수, 'errors_seen': 에러 수})
@@ -237,12 +161,11 @@ class SnowflakeLoader:
             ProgrammingError: COPY INTO 실패 시
         """
         raw_table_name = f"RAW_TEMP_{s3_stg_table_name.replace('/', '_')}"
-        self._log('debug', 'Raw COPY INTO 시작',
+        self.logger.debug( 'Raw COPY INTO 시작',
                   raw_table_name=raw_table_name, s3_stage=s3_stg_table_name)
 
         try:
-            cursor.execute(f"USE DATABASE {self.database}")
-            cursor.execute(f"USE SCHEMA {self.schema}")
+            self._set_context(cursor)
 
             # Raw 임시 테이블 생성
             cursor.execute(f"""
@@ -251,7 +174,7 @@ class SnowflakeLoader:
                     raw_json VARIANT
                 )
             """)
-            self._log('debug', 'Raw 임시 테이블 생성 완료', raw_table_name=raw_table_name)
+            self.logger.debug( 'Raw 임시 테이블 생성 완료', raw_table_name=raw_table_name)
 
             # COPY INTO 실행
             copy_query = f"""
@@ -260,10 +183,10 @@ class SnowflakeLoader:
                 SELECT METADATA$FILENAME, $1
                 FROM @{s3_stg_table_name}
             )
-            FILE_FORMAT = (TYPE = '{file_format}', STRIP_OUTER_ARRAY = FALSE)
+            FILE_FORMAT = (TYPE = 'JSON', STRIP_OUTER_ARRAY = FALSE)
             ON_ERROR = 'CONTINUE'
             """
-            self._log('debug', 'COPY INTO 쿼리 실행', query=copy_query)
+            self.logger.debug( 'COPY INTO 쿼리 실행', query=copy_query)
 
             cursor.execute(copy_query)
             results = cursor.fetchall()
@@ -274,13 +197,13 @@ class SnowflakeLoader:
             rows_loaded = sum(r[3] for r in results if r and len(r) > 3)
             errors_seen = sum(r[5] for r in results if r and len(r) > 5)
 
-            self._log('debug', 'Raw COPY INTO 완료',
+            self.logger.debug( 'Raw COPY INTO 완료',
                       raw_table_name=raw_table_name,
                       files_loaded=files_loaded, rows_loaded=rows_loaded,
                       errors_seen=errors_seen)
 
             if errors_seen > 0:
-                self._log('warning', 'Raw COPY INTO 중 에러 발생',
+                self.logger.warning( 'Raw COPY INTO 중 에러 발생',
                           raw_table_name=raw_table_name, errors_seen=errors_seen)
 
                 # COPY INTO 결과에서 에러 상세 추출
@@ -288,7 +211,7 @@ class SnowflakeLoader:
                 #        first_error, first_error_line, first_error_character, first_error_column_name
                 for r in results:
                     if r[5] > 0:
-                        self._log('warning', 'COPY INTO 에러 상세',
+                        self.logger.warning( 'COPY INTO 에러 상세',
                                   file=r[0], status=r[1],
                                   errors_seen=r[5], first_error=r[6],
                                   first_error_line=r[7])
@@ -300,7 +223,7 @@ class SnowflakeLoader:
             }
 
         except ProgrammingError as e:
-            self._log('error', 'Raw COPY INTO 실패',
+            self.logger.error( 'Raw COPY INTO 실패',
                       raw_table_name=raw_table_name, error=str(e))
             raise
 
@@ -328,18 +251,12 @@ class SnowflakeLoader:
         Raises:
             ProgrammingError: INSERT 실패 시
         """
-        self._log('debug', 'FLATTEN INSERT 시작',
+        self.logger.debug( 'FLATTEN INSERT 시작',
                   raw_table_name=raw_table_name, stg_table_name=stg_table_name)
 
         try:
             # Business Primary Key List
-            bpk_list = None
-            if business_primary_key:
-                bpk_list = (
-                    [business_primary_key]
-                    if isinstance(business_primary_key, str)
-                    else business_primary_key
-                )
+            bpk_list = ensure_list(business_primary_key) if business_primary_key else None
 
             column_names = []
             select_items = []
@@ -347,7 +264,7 @@ class SnowflakeLoader:
             if metadata:
                 for key, value in metadata.items():
                     column_names.append(key)
-                    select_items.append(self._format_metadata_value(key, value))
+                    select_items.append(format_sql_literal(key, value))
 
             # Business Primary Key (value는 FLATTEN된 배열의 각 요소)
             if bpk_list:
@@ -375,18 +292,18 @@ class SnowflakeLoader:
             FROM {raw_table_name},
             LATERAL FLATTEN(input => raw_json:{json_path})
             """
-            self._log('debug', 'INSERT 쿼리 실행', query=insert_query)
+            self.logger.debug( 'INSERT 쿼리 실행', query=insert_query)
 
             cursor.execute(insert_query)
             rows_inserted = cursor.rowcount
 
-            self._log('debug', 'FLATTEN INSERT 완료',
+            self.logger.debug( 'FLATTEN INSERT 완료',
                       stg_table_name=stg_table_name, rows_inserted=rows_inserted)
 
             return {'rows_inserted': rows_inserted}
 
         except ProgrammingError as e:
-            self._log('error', 'FLATTEN INSERT 실패',
+            self.logger.error( 'FLATTEN INSERT 실패',
                       stg_table_name=stg_table_name, error=str(e))
             raise
 
@@ -411,12 +328,12 @@ class SnowflakeLoader:
             ProgrammingError: MERGE 실패 시
             DatabaseError: 트랜잭션 실패 시
         """
-        self._log('debug', 'MERGE 시작',
+        self.logger.debug( 'MERGE 시작',
                   table_name=table_name, stg_table_name=stg_table_name)
 
         try:
             # primary_key를 리스트로 정규화
-            pk_list = [primary_key] if isinstance(primary_key, str) else primary_key
+            pk_list = ensure_list(primary_key)
 
             # ON 절 (복수 키를 AND로 연결)
             on_conditions = " AND ".join([f"t.{pk} = s.{pk}" for pk in pk_list])
@@ -445,137 +362,60 @@ class SnowflakeLoader:
             cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
             total_count = cursor.fetchone()[0]
 
-            self._log('debug', 'MERGE 완료',
+            self.logger.debug( 'MERGE 완료',
                       table_name=table_name, total_rows=total_count)
 
             return total_count
 
         except ProgrammingError as e:
-            self._log('error', 'MERGE 실패',
+            self.logger.error( 'MERGE 실패',
                       table_name=table_name, error=str(e))
             raise
         except DatabaseError as e:
-            self._log('error', 'MERGE 트랜잭션 실패',
+            self.logger.error( 'MERGE 트랜잭션 실패',
                       table_name=table_name, error=str(e))
             raise
 
-    
-    def get_table_schema(
-        self, cursor: SnowflakeCursor,
-        table_name: str
-    ) -> List[Tuple[str, str]]:
-        """Snowflake 테이블 스키마 조회
-
-        Args:
-            cursor: Snowflake cursor 객체
-            table_name: 테이블 이름
-
-        Returns:
-            List[Tuple[str, str]]: (컬럼명, 데이터타입) 튜플 리스트
-
-        Raises:
-            ValueError: 스키마 조회 실패 시
-            ProgrammingError: SQL 실행 실패 시
-        """
-        self._log('debug', '테이블 스키마 조회 시작', table_name=table_name)
-
-        try:
-            query = f"""
-            SELECT
-                column_name,
-                data_type
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE table_schema = '{self.schema}'
-                AND table_name = '{table_name}'
-            """
-
-            # INFORMATION_SCHEMA 접근 전 세션 스키마를 명시적으로 설정
-            cursor.execute(f"USE DATABASE {self.database}")
-            cursor.execute(f"USE SCHEMA {self.schema}")
-            cursor.execute(query)
-            rows = cursor.fetchall()
-
-            if not rows:
-                error_msg = f"테이블 {self.database}.{self.schema}.{table_name} 스키마 조회 실패"
-                self._log('error', error_msg, table_name=table_name)
-                raise ValueError(error_msg)
-
-            self._log('debug', '테이블 스키마 조회 완료',
-                      table_name=table_name, column_count=len(rows))
-            return rows
-
-        except ProgrammingError as e:
-            self._log('error', '스키마 조회 SQL 실행 실패',
-                      table_name=table_name, error=str(e))
-            raise
-    
-    @contextmanager
-    def transaction(self, cursor: SnowflakeCursor):
-        """트랜잭션 컨텍스트
-
-        Args:
-            cursor: Snowflake cursor 객체
-
-        Yields:
-            cursor 객체
-
-        Note:
-            - 성공 시 COMMIT
-            - 예외 발생 시 ROLLBACK 후 재발생
-        """
-        self._log('debug', '트랜잭션 시작')
-        cursor.execute("BEGIN")
-        try:
-            yield cursor
-            cursor.execute("COMMIT")
-            self._log('debug', '트랜잭션 커밋 완료')
-        except Exception as e:
-            cursor.execute("ROLLBACK")
-            self._log('warning', '트랜잭션 롤백', error=str(e))
-            raise
 
 if __name__=='__main__':
+    import pendulum
     import snowflake.connector
     import sys
     from pathlib import Path
-    
+
     src = Path(__file__).parent.parent.parent
     if str(src) in sys.path:
         sys.path.remove(str(src))
     sys.path.insert(0, str(src))
     from maude_early_alert.utils.secrets import get_secret
-    
+
     secret = get_secret('snowflake/bronze/credentials')
-    try:
-        conn = snowflake.connector.connect(
-            user=secret['user'],
-            password=secret['password'],
-            account=secret['account'],
-            warehouse=secret['warehouse'], # Optional
-            database=secret['database'],   # Optional
-            schema=secret['schema']       # Optional
-        )
-        
-        snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], log_level='DEBUG')
-        table_name = 'EVENT'
-        s3_stg_table_name = 'BRONZE_S3_STAGE'
-        metadata = {
-            'source_system': 's3',
-            'ingest_time': pendulum.now(),
-            'batch_id': 'batch_001'
-        }
-        business_primary_key = 'mdr_report_key'
-        primary_key = ['source_system', 'source_file' , 'mdr_report_key']
-        
-        snowflake_loader.load_from_s3(
-            cursor = conn.cursor(),
-            table_name = table_name,
-            s3_stg_table_name = s3_stg_table_name,
-            primary_key = primary_key,
-            business_primary_key = business_primary_key,
-            metadata = metadata,
-            s3_folder=pendulum.now().strftime('%Y%m')
-        )
-        
-    except Exception as e:
-        raise Exception(e)
+    conn = snowflake.connector.connect(
+        user=secret['user'],
+        password=secret['password'],
+        account=secret['account'],
+        warehouse=secret['warehouse'],
+        database=secret['database'],
+        schema=secret['schema']
+    )
+
+    snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], log_level='DEBUG')
+    table_name = 'EVENT'
+    s3_stg_table_name = 'BRONZE_S3_STAGE'
+    metadata = {
+        'source_system': 's3',
+        'ingest_time': pendulum.now(),
+        'batch_id': 'batch_001'
+    }
+    business_primary_key = 'mdr_report_key'
+    primary_key = ['source_system', 'source_file', 'mdr_report_key']
+
+    snowflake_loader.load_from_s3(
+        cursor=conn.cursor(),
+        table_name=table_name,
+        s3_stg_table_name=s3_stg_table_name,
+        primary_key=primary_key,
+        business_primary_key=business_primary_key,
+        metadata=metadata,
+        s3_folder=pendulum.now().format('YYYYMM')
+    )
