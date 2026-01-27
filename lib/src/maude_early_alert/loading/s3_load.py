@@ -2,10 +2,11 @@
 # 표준 라이브러리
 # ======================
 import gzip
+import io
 import json
+import logging
 import math
 import zipfile
-import io
 
 # ======================
 # 서드파티 라이브러리
@@ -24,17 +25,21 @@ class S3Loader:
 
     def __init__(
         self, bucket_name: str,
-        client, session: requests.Session = None
+        client, session: requests.Session = None,
+        log_level: str = 'INFO'
     ):
         """Args:
             bucket_name: S3 버킷 이름
             client: boto3 S3 클라이언트
             session: HTTP 세션 (미지정 시 기본 Session 사용)
+            log_level: 로그 레벨 (falsy 값 전달 시 로그 비활성화)
         """
         self.bucket_name = bucket_name
         self.s3_client = client
         self.session = session or requests.Session()
         self.logger = structlog.get_logger(__name__)
+        level = getattr(logging, log_level, logging.CRITICAL + 1) if log_level else logging.CRITICAL + 1
+        logging.getLogger(__name__).setLevel(level)
 
     def s3_key_generate(self, url: str, logical_date: str = None) -> str:
         """다운로드 URL에서 S3 키 생성

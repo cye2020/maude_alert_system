@@ -1,32 +1,62 @@
 # config/preprocess/filtering.yaml
 
-scoping:
-  verbose: true
-  
-  maude:
-    # 그룹 단위로 조건 정의
-    groups:
-      # 그룹 1: 처음에 스코핑
-      - name: "high_risk_device"
-        patterns:
-          - [['*device_class$'], 'eq', '3']
-        combine: 'AND'
-      
-      # 그룹 2: 필수 필드 체크 (모두 만족해야 함)
-      - name: "critical_fields"
-        patterns:
-        cols:
-          - [['mdr_text_0_text'], 'is_not_null', null]
-        combine: 'OR'
-    
-    # 그룹 간 결합 방식
-    combine_groups: 'AND'  # (그룹1) AND (그룹2) AND (그룹3)
+maude:
+  source: RAW_MAUDE
+  alias: s
 
-  udi:
-    groups:
-      - name: "scoping"
-        patterns:
-          - [['*device_class$'], 'eq', '3']
-        combine: 'AND'
-    
-    combine_groups: 'AND'
+  filters:
+    DEDUP:
+      description: "mdr_report_key, record_hash 기준 중복행 제거"
+      enabled: true
+      qualify:
+        - "ROW_NUMBER() OVER (PARTITION BY s.mdr_report_key, s.record_hash ORDER BY s.mdr_report_key) = 1"
+
+    SCOPING:
+      description: "스코핑: 고위험 기기, 텍스트 존재, 날짜 논리 일관성"
+      enabled: true
+      where:
+        - "s.device_class = '3'"
+        - "ARRAY_SIZE(s.mdr_text_text) > 0"
+        - "s.adverse_event_flag = (s.event_type IN ('Death', 'Injury'))"
+
+    LOW_QUALITY:
+      description: "저품질 행 필터링: 제조사·기기버전·UDI 신뢰도"
+      enabled: true
+      where:
+        - "s.manufacturer_final IS NOT NULL"
+        - "s.device_version_id NOT LIKE 'UNK%'"
+        - "s.udi_confidence IN ('HIGH', 'MEDIUM')"
+
+    REPORT_DEDUP_STEP1:
+      description: "보고서 중복 제거 Step1: 기준 컬럼 NULL이 아닌 행만 선별"
+      enabled: true
+      where:
+        - "s.report_number IS NOT NULL"
+        - "s.date_of_event IS NOT NULL"
+        - "s.manufacturer IS NOT NULL"
+        - "s.device_version_id IS NOT NULL"
+        - "s.lot_number IS NOT NULL"
+        - "s.udi_public IS NOT NULL"
+
+    REPORT_DEDUP_STEP2:
+      description: "보고서 중복 제거 Step2: 기준 컬럼의 중복 행 식별"
+      enabled: true
+      qualify:
+        - "ROW_NUMBER() OVER (PARTITION BY s.report_number, s.date_of_event, s.manufacturer, s.device_version_id, s.lot_number, s.udi_public ORDER BY s.mdr_report_key) > 1"
+
+    REPORT_DEDUP_STEP3:
+      description: "보고서 중복 제거 Step3: 식별된 중복 행 제외"
+      enabled: true
+      where:
+        - "NOT EXISTS (SELECT 1 FROM dup_to_drop d WHERE d.mdr_report_key = s.mdr_report_key)"
+
+udi:
+  source: RAW_UDI
+  alias: s
+
+  filters:
+    HIGH_RISK_DEVICE:
+      description: "고위험 의료기기만 포함 (device_class = 3)"
+      enabled: true
+      where:
+        - "s.device_class = '3'"

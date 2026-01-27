@@ -1,6 +1,7 @@
 # ======================
 # 표준 라이브러리
 # ======================
+import logging
 import re
 from typing import Dict, List
 
@@ -29,13 +30,16 @@ class FDAExtractor:
             return False
         return True
 
-    def __init__(self, session: requests.Session = None):
+    def __init__(self, session: requests.Session = None, log_level: str = 'INFO'):
         """Args:
             session: HTTP 세션 (미지정 시 기본 Session 사용)
+            log_level: 로그 레벨 (falsy 값 전달 시 로그 비활성화)
         """
         self.url = 'https://api.fda.gov/download.json'
         self.session = session or requests.Session()
         self.logger = structlog.get_logger(__name__)
+        level = getattr(logging, log_level, logging.CRITICAL + 1) if log_level else logging.CRITICAL + 1
+        logging.getLogger(__name__).setLevel(level)
         self.metadata = None
 
     def fetch_metadata(self) -> Dict:
