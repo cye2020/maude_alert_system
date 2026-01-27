@@ -1,19 +1,18 @@
+# ======================
 # 표준 라이브러리
+# ======================
 import re
 from typing import Dict, List
 
+# ======================
 # 서드파티 라이브러리
+# ======================
 import requests
 import structlog
 
 
 class FDAExtractor:
-    """FDA Open API에서 device 메타데이터를 조회하고 파일 목록을 추출
-
-    주요 기능:
-    - FDA API에서 메타데이터 조회
-    - 파일 정보 추출 및 필터링
-    """
+    """FDA Open API에서 device 메타데이터를 조회하고 파일 목록을 추출"""
 
     SUPPORTED_CATEGORIES = ('udi', 'event')
 
@@ -31,9 +30,8 @@ class FDAExtractor:
         return True
 
     def __init__(self, session: requests.Session = None):
-        """
-        Args:
-            session: requests.Session (테스트 시 모킹 가능, 미지정 시 기본 Session 사용)
+        """Args:
+            session: HTTP 세션 (미지정 시 기본 Session 사용)
         """
         self.url = 'https://api.fda.gov/download.json'
         self.session = session or requests.Session()
@@ -41,11 +39,7 @@ class FDAExtractor:
         self.metadata = None
 
     def fetch_metadata(self) -> Dict:
-        """
-        FDA API에서 메타데이터 가져오기
-
-        Returns:
-            Dict: FDA API 응답 메타데이터 (캐싱됨)
+        """FDA API 메타데이터 조회 (캐싱됨)
 
         Raises:
             requests.HTTPError: API 요청 실패 시
@@ -60,27 +54,15 @@ class FDAExtractor:
         self, category: str,
         start: int = None, end: int = None
     ) -> List[Dict[str, str]]:
-        """
-        특정 카테고리의 파일 정보 추출
+        """카테고리별 파일 정보(url, display_name) 추출
 
         Args:
-            category (str): 데이터 카테고리 ('udi' 또는 'event')
-            start (int, optional): 시작 연도 (event 카테고리에만 적용)
-            end (int, optional): 종료 연도 (event 카테고리에만 적용)
-
-        Returns:
-            List[Dict[str, str]]: 파일 정보 리스트
-                - url: 다운로드 URL
-                - display_name: 표시 이름
+            category: 데이터 카테고리 ('udi' 또는 'event')
+            start: 시작 연도 (event만 적용)
+            end: 종료 연도 (event만 적용)
 
         Raises:
-            ValueError: 잘못된 카테고리인 경우
-
-        Examples:
-            event URL 형식:
-                https://download.open.fda.gov/device/event/{YEAR}q{QUARTER}/device-event-{PART}-of-{TOTAL}.json.zip
-            udi URL 형식:
-                https://download.open.fda.gov/device/device/udi/device-udi-{PART}-of-{TOTAL}.json.zip
+            ValueError: 지원하지 않는 카테고리
         """
         if category not in self.SUPPORTED_CATEGORIES:
             raise ValueError(f"Invalid category: {category}")

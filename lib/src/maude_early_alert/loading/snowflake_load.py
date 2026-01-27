@@ -1,32 +1,34 @@
-from typing import Any, Dict, List, Tuple, Union
+# ======================
+# 표준 라이브러리
+# ======================
 import datetime
-from snowflake.connector.cursor import SnowflakeCursor
-from snowflake.connector.errors import DatabaseError, ProgrammingError
+from typing import Any, Dict, List, Tuple, Union
 
-from .snowflake_base import SnowflakeBase
-from ..utils.helpers import ensure_list, format_sql_literal
+# ======================
+# 서드파티 라이브러리
+# ======================
+from snowflake.connector.cursor import SnowflakeCursor
+
+# ======================
+# 내부 라이브러리
+# ======================
+from maude_early_alert.loading.snowflake_base import SnowflakeBase
+from maude_early_alert.utils.helpers import (
+    ensure_list,
+    format_sql_literal,
+    validate_identifier,
+)
 
 
 def get_staging_table_name(table_name: str) -> str:
-    """Staging 테이블명 생성
-
-    Args:
-        table_name: 원본 테이블명
-
-    Returns:
-        Staging 테이블명
-    """
+    """원본 테이블명에서 STG_ 접두사가 붙은 스테이징 테이블명 생성"""
     parts = table_name.split('.')
     parts[-1] = f"STG_{parts[-1].upper()}"
     return '.'.join(parts)
 
 
 class SnowflakeLoader(SnowflakeBase):
-    """S3에서 Snowflake로 데이터를 적재하는 클래스
-
-    SnowflakeBase의 인프라(로깅, 컨텍스트, 스키마 조회, 트랜잭션)를 상속받아
-    COPY INTO, FLATTEN INSERT, MERGE 등 데이터 적재 비즈니스 로직을 수행합니다.
-    """
+    """S3에서 Snowflake로 데이터 적재 (COPY INTO → FLATTEN INSERT → MERGE)"""
 
     def load_from_s3(
         self, cursor: SnowflakeCursor,
@@ -39,28 +41,28 @@ class SnowflakeLoader(SnowflakeBase):
         """S3에서 Snowflake 테이블로 데이터 적재
 
         Args:
-            cursor: Snowflake cursor 객체
+            cursor: Snowflake cursor
             table_name: 목적 테이블명
             s3_stg_table_name: S3 스테이지명
-            primary_key: 기본 키 (단일 또는 복수)
-            metadata: 메타데이터 딕셔너리
+            primary_key: MERGE 기본 키
+            metadata: 메타데이터 (ingest_time 등)
             business_primary_key: 비즈니스 기본 키
-            s3_folder: S3 스테이지 내 폴더 경로 (None이면 metadata의 ingest_time에서 %Y%m 형식으로 자동 생성)
-
-        Returns:
-            dict: 적재 결과 정보
-
-        Raises:
-            DatabaseError: 데이터베이스 작업 실패 시
-            ProgrammingError: SQL 구문 오류 시
+            s3_folder: S3 폴더 경로 (None이면 ingest_time에서 자동 생성)
         """
+        validate_identifier(table_name)
+        validate_identifier(s3_stg_table_name)
+        for pk in ensure_list(primary_key):
+            validate_identifier(pk)
+        if business_primary_key:
+            for bpk in ensure_list(business_primary_key):
+                validate_identifier(bpk)
+
         # S3 폴더 경로 결정: 명시적 지정 > metadata의 ingest_time > 없음
         if s3_folder is None and metadata and 'ingest_time' in metadata:
             ingest_time = metadata['ingest_time']
             if isinstance(ingest_time, datetime.datetime):
                 s3_folder = ingest_time.strftime('%Y%m')
 
-        # S3 스테이지 전체 경로 구성
         s3_stage_path = f"{s3_stg_table_name}/{s3_folder}" if s3_folder else s3_stg_table_name
 
         self.logger.info('S3 데이터 적재 시작',
@@ -99,23 +101,17 @@ class SnowflakeLoader(SnowflakeBase):
         self, cursor: SnowflakeCursor,
         table_name: str, table_schema: list = None
     ) -> str:
-        """임시 스테이징 테이블 생성
+        """원본 테이블 구조로 임시 스테이징 테이블 생성
 
         Args:
-            cursor: Snowflake cursor 객체
+            cursor: Snowflake cursor
             table_name: 원본 테이블명
-            table_schema: 테이블 스키마 (없으면 조회)
-
-        Returns:
-            str: 생성된 스테이징 테이블명
-
-        Raises:
-            ProgrammingError: 테이블 생성 실패 시
+            table_schema: 스키마 (미지정 시 자동 조회)
         """
         stg_table_name = get_staging_table_name(table_name)
         self.logger.debug( '임시 스테이징 테이블 생성 시작', stg_table_name=stg_table_name)
 
-        try:
+        with self._error_logging('임시 테이블 생성', stg_table_name=stg_table_name):
             if not table_schema:
                 table_schema = self.get_table_schema(cursor, table_name)
 
@@ -130,11 +126,6 @@ class SnowflakeLoader(SnowflakeBase):
             self.logger.debug( '임시 스테이징 테이블 생성 완료', stg_table_name=stg_table_name)
             return stg_table_name
 
-        except ProgrammingError as e:
-            self.logger.error( '임시 테이블 생성 실패',
-                      stg_table_name=stg_table_name, error=str(e))
-            raise
-
     def copy_raw_to_temp(
         self, cursor: SnowflakeCursor,
         s3_stg_table_name: str
@@ -142,23 +133,16 @@ class SnowflakeLoader(SnowflakeBase):
         """S3에서 Raw JSON을 임시 테이블에 COPY INTO
 
         Args:
-            cursor: Snowflake cursor 객체
+            cursor: Snowflake cursor
             s3_stg_table_name: S3 스테이지 경로
-
-        Returns:
-            Tuple[str, dict]: (임시 테이블명, {'files_loaded': 로드된 파일 수, 'rows_loaded': 로드된 행 수, 'errors_seen': 에러 수})
-
-        Raises:
-            ProgrammingError: COPY INTO 실패 시
         """
         raw_table_name = f"RAW_TEMP_{s3_stg_table_name.replace('/', '_')}"
         self.logger.debug( 'Raw COPY INTO 시작',
                   raw_table_name=raw_table_name, s3_stage=s3_stg_table_name)
 
-        try:
+        with self._error_logging('Raw COPY INTO', raw_table_name=raw_table_name):
             self._set_context(cursor)
 
-            # Raw 임시 테이블 생성
             cursor.execute(f"""
                 CREATE OR REPLACE TEMPORARY TABLE {raw_table_name} (
                     src_file VARCHAR,
@@ -167,7 +151,6 @@ class SnowflakeLoader(SnowflakeBase):
             """)
             self.logger.debug( 'Raw 임시 테이블 생성 완료', raw_table_name=raw_table_name)
 
-            # COPY INTO 실행
             copy_query = f"""
             COPY INTO {raw_table_name} (src_file, raw_json)
             FROM (
@@ -182,8 +165,7 @@ class SnowflakeLoader(SnowflakeBase):
             cursor.execute(copy_query)
             results = cursor.fetchall()
 
-            # COPY INTO 결과: (file, status, rows_parsed, rows_loaded, error_limit, errors_seen, ...)
-            # 파일별로 한 행씩 반환되므로 전체 합산
+            # COPY INTO 결과 합산: (file, status, rows_parsed, rows_loaded, error_limit, errors_seen, ...)
             files_loaded = sum(1 for r in results if r[1] == 'LOADED')
             rows_loaded = sum(r[3] for r in results if r and len(r) > 3)
             errors_seen = sum(r[5] for r in results if r and len(r) > 5)
@@ -197,9 +179,6 @@ class SnowflakeLoader(SnowflakeBase):
                 self.logger.warning( 'Raw COPY INTO 중 에러 발생',
                           raw_table_name=raw_table_name, errors_seen=errors_seen)
 
-                # COPY INTO 결과에서 에러 상세 추출
-                # 컬럼: file, status, rows_parsed, rows_loaded, error_limit, errors_seen,
-                #        first_error, first_error_line, first_error_character, first_error_column_name
                 for r in results:
                     if r[5] > 0:
                         self.logger.warning( 'COPY INTO 에러 상세',
@@ -213,11 +192,6 @@ class SnowflakeLoader(SnowflakeBase):
                 'errors_seen': errors_seen
             }
 
-        except ProgrammingError as e:
-            self.logger.error( 'Raw COPY INTO 실패',
-                      raw_table_name=raw_table_name, error=str(e))
-            raise
-
     def flatten_and_insert(
         self, cursor: SnowflakeCursor,
         raw_table_name: str,
@@ -226,27 +200,20 @@ class SnowflakeLoader(SnowflakeBase):
         business_primary_key: Union[str, List[str]] = None,
         json_path: str = 'results'
     ) -> Dict[str, Any]:
-        """Raw 테이블에서 FLATTEN하여 스테이징 테이블에 INSERT
+        """Raw 테이블의 JSON 배열을 FLATTEN하여 스테이징 테이블에 INSERT
 
         Args:
-            cursor: Snowflake cursor 객체
-            raw_table_name: Raw JSON이 담긴 임시 테이블명
+            cursor: Snowflake cursor
+            raw_table_name: Raw JSON 임시 테이블명
             stg_table_name: 스테이징 테이블명
-            metadata: 메타데이터 딕셔너리
+            metadata: 메타데이터 (컬럼으로 추가됨)
             business_primary_key: 비즈니스 기본 키
-            json_path: FLATTEN할 JSON 경로 (기본: 'results')
-
-        Returns:
-            dict: {'rows_inserted': 삽입된 행 수}
-
-        Raises:
-            ProgrammingError: INSERT 실패 시
+            json_path: FLATTEN 대상 JSON 경로
         """
         self.logger.debug( 'FLATTEN INSERT 시작',
                   raw_table_name=raw_table_name, stg_table_name=stg_table_name)
 
-        try:
-            # Business Primary Key List
+        with self._error_logging('FLATTEN INSERT', stg_table_name=stg_table_name):
             bpk_list = ensure_list(business_primary_key) if business_primary_key else None
 
             column_names = []
@@ -257,7 +224,6 @@ class SnowflakeLoader(SnowflakeBase):
                     column_names.append(key)
                     select_items.append(format_sql_literal(key, value))
 
-            # Business Primary Key (value는 FLATTEN된 배열의 각 요소)
             if bpk_list:
                 column_names.extend(bpk_list)
                 select_items.extend([
@@ -267,7 +233,6 @@ class SnowflakeLoader(SnowflakeBase):
             else:
                 object_delete_keys = None
 
-            # 고정 컬럼
             column_names.extend(['source_file', 'record_hash', 'raw_data'])
             select_items.extend([
                 "src_file AS source_file",
@@ -276,7 +241,6 @@ class SnowflakeLoader(SnowflakeBase):
             ])
             select_clause = ',\n'.join(select_items)
 
-            # INSERT 쿼리 실행
             insert_query = f"""
             INSERT INTO {stg_table_name} ({', '.join(column_names)})
             SELECT {select_clause}
@@ -293,47 +257,30 @@ class SnowflakeLoader(SnowflakeBase):
 
             return {'rows_inserted': rows_inserted}
 
-        except ProgrammingError as e:
-            self.logger.error( 'FLATTEN INSERT 실패',
-                      stg_table_name=stg_table_name, error=str(e))
-            raise
-
     def load_merge(
         self, cursor: SnowflakeCursor,
         table_name: str, stg_table_name: str,
         primary_key: Union[str, List[str]], column_names: List[str]
     ) -> int:
-        """MERGE를 통해 스테이징 테이블에서 목적 테이블로 데이터 적재
+        """스테이징 → 목적 테이블 MERGE (UPSERT)
 
         Args:
-            cursor: Snowflake cursor 객체
+            cursor: Snowflake cursor
             table_name: 목적 테이블명
             stg_table_name: 스테이징 테이블명
-            primary_key: 기본 키 (단일 또는 복수)
-            column_names: 컬럼명 리스트
-
-        Returns:
-            int: 최종 테이블 행 수
-
-        Raises:
-            ProgrammingError: MERGE 실패 시
-            DatabaseError: 트랜잭션 실패 시
+            primary_key: MERGE 조건 키
+            column_names: 대상 컬럼 리스트
         """
         self.logger.debug( 'MERGE 시작',
                   table_name=table_name, stg_table_name=stg_table_name)
 
-        try:
-            # primary_key를 리스트로 정규화
+        with self._error_logging('MERGE', table_name=table_name):
             pk_list = ensure_list(primary_key)
-
-            # ON 절 (복수 키를 AND로 연결)
             on_conditions = " AND ".join([f"t.{pk} = s.{pk}" for pk in pk_list])
 
-            # UPDATE SET 절 (primary_key 제외)
             update_column_names = [col for col in column_names if col not in pk_list]
             update_set = ", ".join([f"t.{col} = s.{col}" for col in update_column_names])
 
-            # INSERT 절
             insert_column_names = ", ".join(column_names)
             insert_values = ", ".join([f"s.{col}" for col in column_names])
 
@@ -357,15 +304,6 @@ class SnowflakeLoader(SnowflakeBase):
                       table_name=table_name, total_rows=total_count)
 
             return total_count
-
-        except ProgrammingError as e:
-            self.logger.error( 'MERGE 실패',
-                      table_name=table_name, error=str(e))
-            raise
-        except DatabaseError as e:
-            self.logger.error( 'MERGE 트랜잭션 실패',
-                      table_name=table_name, error=str(e))
-            raise
 
 
 if __name__=='__main__':
