@@ -141,7 +141,6 @@ if __name__ == '__main__':
     # FDA 파일 목록 추출
     extractor = FDAExtractor()
     files = extractor.extract('event', start=2020, end=pendulum.now().year)
-    print(files)
 
     # S3 업로드
     bucket_name = 'amazon-s3-fda'

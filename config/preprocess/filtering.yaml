@@ -4,12 +4,14 @@ maude:
   source: RAW_MAUDE
   alias: s
 
-  filters:
+filters:
     DEDUP:
       description: "mdr_report_key, record_hash 기준 중복행 제거"
       enabled: true
       qualify:
-        - "ROW_NUMBER() OVER (PARTITION BY s.mdr_report_key, s.record_hash ORDER BY s.mdr_report_key) = 1"
+        - >
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY e.mdr_report_key ORDER BY e.ingest_time DESC) = 1
+          AND LEAD(e.record_hash) OVER (PARTITION BY e.mdr_report_key ORDER BY e.ingest_time DESC) IS DISTINCT FROM e.record_hash
 
     SCOPING:
       description: "스코핑: 고위험 기기, 텍스트 존재, 날짜 논리 일관성"

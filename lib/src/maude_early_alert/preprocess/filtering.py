@@ -43,7 +43,8 @@ def generate_filter_sql(
 if __name__=='__main__':
     source = 'EVENT'
     alias = 'e'
-    where = "e.device_class = '3'"
-    sql = generate_filter_sql(source, alias, where)
+    where = "DATE(e.ingest_time, 'YYYYMM') = 202602"
+    qualify = "ROW_NUMBER() OVER (PARTITION BY s.mdr_report_key, s.record_hash ORDER BY s.mdr_report_key) = 1"
+    sql = generate_filter_sql(source, alias, where=where)
     print(sql)
     
