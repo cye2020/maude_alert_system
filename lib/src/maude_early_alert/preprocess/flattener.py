@@ -1,7 +1,8 @@
 """Snowflake Flatten SQL 생성"""
 
+from ast import Dict
 from pathlib import Path
-from typing import List
+from typing import List, Dict
 import sys
 
 
@@ -18,8 +19,9 @@ def generate_flatten_sql(
     table_name: str,
     raw_column: str = "raw_data",
     scalar_keys: List[str] = None,
-    patient_keys: List[str] = None,
+    patient_keys: Dict[str, str] = None,
     device_keys: List[str] = None,
+    device_openfda_keys: Dict[str, str] = None,
     mdr_text_keys: List[str] = None,
     device_outer: bool = True,
 ) -> str:
@@ -31,6 +33,7 @@ def generate_flatten_sql(
         scalar_keys: 최상위 스칼라 키들
         patient_keys: patient[0]에서 추출할 키들
         device_keys: device 배열에서 추출할 키들 (LATERAL FLATTEN)
+        device_openfda_keys: deivce_openfda_key 배열에서 추출할 키들
         mdr_text_keys: mdr_text 배열에서 추출할 키들 (TRANSFORM)
         device_outer: device FLATTEN 시 OUTER JOIN 사용 여부
     
@@ -92,7 +95,34 @@ def generate_flatten_sql(
             "    -- ================================================\n"
             + ",\n".join(device_cols)
         )
-        
+
+    # deivce 속 배열 openfda 배열 
+    if device_openfda_keys:
+        openfda_scalar_cols =[]
+        openfda_array_cols = []
+
+        for key in sorted(device_openfda_keys.keys()):
+            dtype = device_openfda_keys[key]
+
+            if dtype.upper() == "ARRAY":
+                # 배열 필트는 TRANSFORM 사용
+                openfda_array_cols.append(
+                    f"    TRANSFORM(d.value:openfda:{key} , x-> x::STRING) AS device_openfda_{sanitize(key)}"
+                )
+            else:
+                openfda_scalar_cols.append(
+                    f"    d.value:openfda:{key}::STRING AS device_openfda_{sanitize(key)}"
+                )
+        if openfda_scalar_cols or openfda_array_cols:
+            all_openfda_cols = openfda_scalar_cols + openfda_array_cols
+            sections.append(
+                "\n    -- ================================================\n"
+                "    -- Device OpenFDA (Nested Object)\n"
+                "    -- ================================================\n"
+                + ",\n".join(all_openfda_cols)
+            )
+
+    if device_keys or device_openfda_keys:
         outer = "TRUE" if device_outer else "FALSE"
         from_clause = (
             f"FROM {table_name}\n"
@@ -212,6 +242,7 @@ def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data")
     # 스키마 조회
     top = SnowflakeLoader.top_keys_with_type(cursor, table_name, raw_column)
     device = SnowflakeLoader.device_keys_with_type(cursor, table_name, raw_column)
+    device_openfda = SnowflakeLoader.device_openfda_keys_with_type(cursor, table_name, raw_column)
     patient = SnowflakeLoader.patient_keys_with_type(cursor, table_name, raw_column)
     mdr_text = SnowflakeLoader.mdr_text_keys_with_type(cursor, table_name, raw_column)
     
@@ -226,8 +257,9 @@ def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data")
         table_name=table_name,
         raw_column=raw_column,
         scalar_keys=scalar_keys,
-        patient_keys=list(patient.keys()),
+        patient_keys=patient,
         device_keys=list(device.keys()),
+        device_openfda_keys=device_openfda,
         mdr_text_keys=list(mdr_text.keys())
     )
 

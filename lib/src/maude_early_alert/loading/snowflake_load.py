@@ -335,6 +335,19 @@ class SnowflakeLoader(SnowflakeBase):
         FROM {table_fq} e,
             LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
             LATERAL FLATTEN(input => d.value) f
+        WHERE TYPEOF(f.value) NOT IN ('ARRAY', 'OBJECT')
+        GROUP BY 1,2
+        ORDER BY 1
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)
+
+    def device_openfda_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        sql = f"""
+        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
+        FROM {table_fq} e,
+            LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
+            LATERAL FLATTEN(input => d.value:openfda, OUTER => TRUE) f
+        WHERE f.key IS NOT NULL
         GROUP BY 1,2
         ORDER BY 1
         """
@@ -345,6 +358,7 @@ class SnowflakeLoader(SnowflakeBase):
         SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
         FROM {table_fq} e,
             LATERAL FLATTEN(input => e.{raw_column}:patient[0], OUTER => TRUE) f
+        WHERE TYPEOF(f.value) NOT IN ('ARRAY', 'OBJECT')
         GROUP BY 1,2
         ORDER BY 1
         """
