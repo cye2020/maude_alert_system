@@ -47,4 +47,3 @@ if __name__=='__main__':
     qualify = "ROW_NUMBER() OVER (PARTITION BY s.mdr_report_key, s.record_hash ORDER BY s.mdr_report_key) = 1"
     sql = generate_filter_sql(source, alias, where=where)
     print(sql)
-    
