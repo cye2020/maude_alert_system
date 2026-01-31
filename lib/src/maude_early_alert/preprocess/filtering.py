@@ -45,5 +45,11 @@ if __name__=='__main__':
     alias = 'e'
     where = "DATE(e.ingest_time, 'YYYYMM') = 202602"
     qualify = "ROW_NUMBER() OVER (PARTITION BY s.mdr_report_key, s.record_hash ORDER BY s.mdr_report_key) = 1"
+    
+    where = [
+        "device_openfda_device_class = '3'",
+        "ARRAY_SIZE(mdr_text_texts) > 0",
+        "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
+    ]
     sql = generate_filter_sql(source, alias, where=where)
     print(sql)

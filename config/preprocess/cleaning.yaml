@@ -3,25 +3,13 @@
 # ============================================
 
 # NA/Unknown 패턴
-na_patterns:
-  patterns:
-    - "^None$"
-    - "^UNK"
-    - "^UNKNOWN$"
-    - "NOT APPLICABLE"
-    - "NOT REPORTED"
-    - "NOT AVAILABLE"
-    - "^N/A$"
-    - "^NA$"
-    - "^NI$"
-    - "^NULL$"
-    - "^$"
-    - "\\s+$"
-    - "^-+$"
-    - "^\\.$"
-  
-  case_sensitive: false
-  apply_to_all_text_columns: true
+patterns:
+  udi_di:
+    remove_countries: false
+    remove:
+      - 'a'
+    delete:
+      - 'b'
 
 # 텍스트 정규화
 text_normalization:

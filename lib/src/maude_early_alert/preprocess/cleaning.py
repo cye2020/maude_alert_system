@@ -141,19 +141,20 @@ class SQLCleanBuilder:
 
 if __name__=='__main__':
     sql = (SQLCleanBuilder("EVENT")
-        .column("mdr_text")
+        .column("mdr_text_texts")
             .remove_patterns(["[0-9]+"])              # 숫자 제거
             .remove_patterns(["[^a-zA-Z가-힣\\s]"])    # 특수문자 제거
             .remove_country_names()                   # 국가명 제거
             .clean_default()                          # 최종 정제
-        .and_column("email")
-            .remove_patterns(["\\s+"])                # 공백 제거
-            .delete_patterns(NULL_FLAVOR)      # 스팸 체크
-        .and_column("phone")
-            .remove_patterns(["[^0-9-]"])             # 숫자와 하이픈만 남김
-            .remove_patterns(["--+"])                 # 연속 하이픈 제거
-        .and_column("address")
-            .clean_default()
+            .delete_patterns(NULL_FLAVOR)
+        # .and_column("email")
+        #     .remove_patterns(["\\s+"])                # 공백 제거
+        #     .delete_patterns(NULL_FLAVOR)      # 스팸 체크
+        # .and_column("phone")
+        #     .remove_patterns(["[^0-9-]"])             # 숫자와 하이픈만 남김
+        #     .remove_patterns(["--+"])                 # 연속 하이픈 제거
+        # .and_column("address")
+        #     .clean_default()
         .build())
 
     print(sql)

@@ -14,12 +14,11 @@ filters:
           AND LEAD(e.record_hash) OVER (PARTITION BY e.mdr_report_key ORDER BY e.ingest_time DESC) IS DISTINCT FROM e.record_hash
 
     SCOPING:
-      description: "스코핑: 고위험 기기, 텍스트 존재, 날짜 논리 일관성"
+      description: "스코핑: 고위험 기기, 텍스트 존재"
       enabled: true
       where:
-        - "s.device_class = '3'"
-        - "ARRAY_SIZE(s.mdr_text_text) > 0"
-        - "s.adverse_event_flag = (s.event_type IN ('Death', 'Injury'))"
+        - "device_openfda_device_class = '3'"
+        - "ARRAY_SIZE(mdr_text_texts) > 0"
 
     LOW_QUALITY:
       description: "저품질 행 필터링: 제조사·기기버전·UDI 신뢰도"
@@ -51,6 +50,12 @@ filters:
       enabled: true
       where:
         - "NOT EXISTS (SELECT 1 FROM dup_to_drop d WHERE d.mdr_report_key = s.mdr_report_key)"
+
+    LOGICAL:
+      description: "논리적 일관성"
+      enabled: true
+      where:
+        - "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
 
 udi:
   source: RAW_UDI
