@@ -69,7 +69,7 @@ def generate_flatten_sql(
     if mdr_text_keys:
         mdr_cols = []
         for key in sorted(mdr_text_keys):
-            alias = "mdr_report_key" if key == "mdr_text_key" else f"mdr_text_{sanitize(key)}s"
+            alias = "mdr_text_keys" if key == "mdr_text_key" else f"mdr_text_{sanitize(key)}s"
             mdr_cols.append(
                 f"    TRANSFORM({raw_column}:mdr_text, x -> x:{key}::STRING) AS {alias}"
             )
