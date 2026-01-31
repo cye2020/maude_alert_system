@@ -305,6 +305,61 @@ class SnowflakeLoader(SnowflakeBase):
 
             return total_count
 
+    # key & type 값 불러오기
+
+    def _fetch_map(cursor, sql: str) -> Dict[str, str]:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        return {str(k): str(t) for k, t in rows if k is not None}
+
+    def _sanitize(name: str) -> str:
+        return (
+            name.replace(":", "_")
+                .replace("-", "_")
+                .replace(".", "_")
+                .replace(" ", "_")
+        )
+
+    def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        sql = f"""
+        SELECT DISTINCT f.key, TYPEOF(f.value)
+        FROM (SELECT * FROM {table_fq} LIMIT 1),
+            LATERAL FLATTEN(input => {raw_column}) AS f
+        ORDER BY f.key;
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)
+
+    def device_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        sql = f"""
+        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
+        FROM {table_fq} e,
+            LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
+            LATERAL FLATTEN(input => d.value) f
+        GROUP BY 1,2
+        ORDER BY 1
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)
+
+    def patient_keys_with_type(cursor, table_fq:str, raw_column:str = "raw_data"):
+        sql = f"""
+        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
+        FROM {table_fq} e,
+            LATERAL FLATTEN(input => e.{raw_column}:patient[0], OUTER => TRUE) f
+        GROUP BY 1,2
+        ORDER BY 1
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)
+
+    def mdr_text_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        sql = f"""
+        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
+        FROM {table_fq} e,
+            LATERAL FLATTEN(input => e.{raw_column}:mdr_text, OUTER => TRUE) m,
+            LATERAL FLATTEN(input => m.value) f
+        GROUP BY 1,2
+        ORDER BY 1
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)    
 
 if __name__=='__main__':
     import pendulum
@@ -346,5 +401,5 @@ if __name__=='__main__':
         primary_key=primary_key,
         business_primary_key=business_primary_key,
         metadata=metadata,
-        s3_folder=pendulum.now().format('YYYYMM')
+        s3_folder=pendulum.now().strftime('YYYYMM')
     )
