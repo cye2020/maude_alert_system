@@ -184,30 +184,7 @@ def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data")
     except ImportError as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    
-    # 자격증명 로드 (.env 파일에서)
-    env_path = Path(__file__).parent / ".env"
-    if not env_path.exists():
-        print(f"Error: .env 파일이 없습니다: {env_path}", file=sys.stderr)
-        sys.exit(1)
-    
-    # .env 파싱
-    secret = {}
-    required = ('account', 'user', 'password', 'database', 'schema', 'warehouse')
-    
-    content = env_path.read_text(encoding="utf-8")
-    for line in content.splitlines():
-        line = line.strip()
-        if line and not line.startswith('#') and '=' in line:
-            key, value = line.split('=', 1)
-            secret[key.strip().lower()] = value.strip().strip('"').strip("'")
-    
-    # 필수 키 확인
-    missing = [k for k in required if k not in secret]
-    if missing:
-        print(f"Error: .env 파일에 필수 키가 없습니다: {missing}", file=sys.stderr)
-        sys.exit(1)
-    
+        
     from maude_early_alert.utils.secrets import get_secret
     # Snowflake 연결
     try:
