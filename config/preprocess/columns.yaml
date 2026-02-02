@@ -7,36 +7,99 @@ column_drop_1st:
   
   # MAUDE 데이터
   maude:
-    mode: whitelist  # 'whitelist' 또는 'blacklist'
-    patterns: []  # 정규표현식 패턴 리스트
-    cols:  # Whitelist로 유지할 컬럼들
-      - mdr_report_key
-      - report_number
-      - adverse_event_flag
-      - product_problem_flag
-      - date_of_event
-      - date_received
-      - device_date_of_manufacturer
-      - event_type
-      - previous_use_code
-      - single_use_flag
-      - reprocessed_and_reused_flag
-      - product_problems
-      - device_0_manufacturer_d_name
-      - device_0_manufacturer_d_postal_code
-      - device_0_brand_name
-      - device_0_catalog_number
-      - device_0_model_number
-      - device_0_udi_di
-      - device_0_lot_number
-      - device_0_udi_public
-      - device_0_device_report_product_code
-      - device_0_openfda_device_name
-      - device_0_device_operator
-      - device_0_openfda_device_class
-      - patient_0_patient_age
-      - patient_0_sequence_number_outcome
-      # mdr_text 관련 (패턴 매칭)
+    cols:  # 유지할 컬럼들
+      - name: ADVERSE_EVENT_FLAG
+        type: BOOLEAN
+        alias: ADVERSE_EVENT_FLAG
+        final: true
+      - name: DATE_OF_EVENT
+        type: DATE
+        alias: DATE_OCCURRED
+        final: false
+      - name: DATE_RECEIVED
+        type: DATE
+        alias: DATE_RECEIVED
+        final: true
+      - name: DEVICE_DATE_OF_MANUFACTURER
+        type: DATE
+        alias: DATE_MANUFACTURED
+        final: false
+      - name: EVENT_TYPE
+        type: VARCHAR
+        alias: EVENT_TYPE
+        final: true
+      - name: MDR_REPORT_KEY
+        type: INT
+        alias: MDR_REPORT_KEY
+        final: true
+      - name: PREVIOUS_USE_CODE
+        type: BOOLEAN
+        alias: PREVIOUS_USE_FLAG
+        final: true
+      - name: PRODUCT_PROBLEM_FLAG
+        type: BOOLEAN
+        alias: PRODUCT_PROBLEM_FLAG
+        final: true
+      - name: PRODUCT_PROBLEMS
+        type: ARRAY
+        alias: PRODUCT_PROBLEMS
+        final: true
+      - name: REPORT_NUMBER
+        type: VARCHAR
+        alias: REPORT_NUMBER
+        final: false
+      - name: REPROCESSED_AND_REUSED_FLAG
+        type: BOOLEAN
+        alias: REPROCESSED_AND_REUSED_FLAG
+        final: true
+      - name: SINGLE_USE_FLAG
+        type: BOOLEAN
+        alias: SINGLE_USE_FLAG
+        final: true
+      - name: MDR_TEXT
+        type: VARCHAR
+        alias: MDR_TEXT
+        final: true
+      - name: DEVICE_BRAND_NAME
+        type: VARCHAR
+        alias: BRAND_NAME
+        final: true
+      - name: DEVICE_CATALOG_NUMBER
+        type: VARCHAR
+        alias: CATALOG_NUMBER
+        final: false
+      - name: DEVICE_DEVICE_REPORT_PRODUCT_CODE
+        type: VARCHAR
+        alias: PRODUCT_CODE
+        final: true
+      - name: DEVICE_LOT_NUMBER
+        type: VARCHAR
+        alias: LOT_NUMBER
+        final: false
+      - name: DEVICE_MANUFACTURER_D_NAME
+        type: VARCHAR
+        alias: MANUFACTURER_NAME
+        final: true
+      - name: DEVICE_MANUFACTURER_D_POSTAL_CODE
+        type: VARCHAR
+        alias: MANUFACTURER_POSTAL_CODE
+        final: false
+      - name: DEVICE_MODEL_NUMBER
+        type: VARCHAR
+        alias: MODEL_NUMBER
+        final: true
+      - name: DEVICE_OPENFDA_DEVICE_NAME
+        type: VARCHAR
+        alias: PRODUCT_NAME
+        final: true
+      - name: DEVICE_UDI_DI
+        type: VARCHAR
+        alias: UDI_DI
+        final: true
+      - name: DEVICE_UDI_PUBLIC
+        type: VARCHAR
+        alias: UDI_PUBLIC
+        final: false
   
   # UDI 데이터
   udi:
@@ -76,7 +139,6 @@ column_drop_2nd:
       - device_name
       - operator
       - patient_age
-      # outcome_* (동적으로 포함)
       - mdr_text
   
   udi:

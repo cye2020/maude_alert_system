@@ -2,14 +2,65 @@
 # 데이터 클린징 설정
 # ============================================
 
-# NA/Unknown 패턴
-patterns:
+# Null Flavor 패턴
+null_flavor:
+  delete:
+    # 단어 경계 매칭
+    - '\bUNKNOWN\b'
+    - '\bUNKOWN\b'
+    - '\bNULL\b'
+    - '\bNONE\b'
+    - '\bNIL\b'
+    - '\bN\.A\.?\b'
+    - '\bNOT\s+AVAILABLE\b'
+    - '\bNOT\s+SPECIFIED\b'
+    - '\bNOT\s+PROVIDED\b'
+    - '\bUNAVAILABLE\b'
+    - '\bUNSPECIFIED\b'
+    - '\bMISSING\b'
+    # 정확 매칭
+    - '^N/A$'
+    - '^NA$'
+    - '^NI$'
+    - '^UNK$'
+    - '^UKN$'
+    - '^NO[\s_]?DATA$'
+    - '^EMPTY$'
+    # HL7 Null Flavor
+    - '^NASK$'
+    - '^ASKU$'
+    - '^TRC$'
+    - '^QS$'
+    - '^MSK$'
+    - '^NAV$'
+    - '^INV$'
+    - '^OTH$'
+    - '^PINF$'
+    - '^NINF$'
+    - '^UNC$'
+    - '^DER$'
+
+# MAUDE 데이터의 정제 패턴
+maude:
+  # UDI_DI 컬럼의 정제 패턴
   udi_di:
+    remove_null_flavor: true
     remove_countries: false
     remove:
       - 'a'
     delete:
       - 'b'
+
+# UDI 데이터의 정제 패턴
+udi:
+  udi_di:
+    remove_null_flavor: true
+    remove_countries: false
+    remove:
+      - 'a'
+    delete:
+      - 'b'
+
 
 # 텍스트 정규화
 text_normalization:
