@@ -2,7 +2,7 @@
 
 from ast import Dict
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Union
 import sys
 
 
@@ -19,8 +19,8 @@ def generate_flatten_sql(
     table_name: str,
     raw_column: str = "raw_data",
     scalar_keys: List[str] = None,
-    patient_keys: Dict[str, str] = None,
-    device_keys: List[str] = None,
+    patient_keys: Union[List[str], Dict[str, str]] = None,
+    device_keys: Union[List[str], Dict[str, str]] = None,
     device_openfda_keys: Dict[str, str] = None,
     mdr_text_keys: List[str] = None,
     device_outer: bool = True,
@@ -31,8 +31,8 @@ def generate_flatten_sql(
         table_name: 테이블명 (예: MAUDE.BRONZE.EVENT)
         raw_column: JSON 컬럼명
         scalar_keys: 최상위 스칼라 키들
-        patient_keys: patient[0]에서 추출할 키들
-        device_keys: device 배열에서 추출할 키들 (LATERAL FLATTEN)
+        patient_keys: patient[0]에서 추출할 키들 (리스트 또는 key->TYPE 딕셔너리)
+        device_keys: device 배열에서 추출할 키들 (리스트 또는 key->TYPE 딕셔너리)
         device_openfda_keys: deivce_openfda_key 배열에서 추출할 키들
         mdr_text_keys: mdr_text 배열에서 추출할 키들 (TRANSFORM)
         device_outer: device FLATTEN 시 OUTER JOIN 사용 여부
@@ -55,12 +55,20 @@ def generate_flatten_sql(
             + ",\n".join(scalar_cols)
         )
     
-    # 2) patient[0] 키들
+    # 2) patient[0] 키들 (TYPE 구분: ARRAY → TRANSFORM, 그 외 → ::STRING)
     if patient_keys:
-        patient_cols = [
-            f"    {raw_column}:patient[0]:{key}::STRING AS patient_{sanitize(key)}"
-            for key in sorted(patient_keys)
-        ]
+        _keys = sorted(patient_keys.keys() if isinstance(patient_keys, dict) else patient_keys)
+        patient_cols = []
+        for key in _keys:
+            dtype = (patient_keys.get(key) or "VARCHAR").upper() if isinstance(patient_keys, dict) else "VARCHAR"
+            if dtype == "ARRAY":
+                patient_cols.append(
+                    f"    TRANSFORM({raw_column}:patient[0]:{key}, x -> x::STRING) AS patient_{sanitize(key)}"
+                )
+            else:
+                patient_cols.append(
+                    f"    {raw_column}:patient[0]:{key}::STRING AS patient_{sanitize(key)}"
+                )
         sections.append(
             "\n    -- ================================================\n"
             "    -- Patient Information (patient[0])\n"
@@ -83,12 +91,22 @@ def generate_flatten_sql(
             + ",\n".join(mdr_cols)
         )
     
-    # 4) device 배열 → LATERAL FLATTEN
+    # 4) device 배열 → LATERAL FLATTEN (TYPE 구분: ARRAY → TRANSFORM, 그 외 → ::STRING)
+    # openfda는 아래 device_openfda_keys에서 별도 처리하므로 제외
     if device_keys:
-        device_cols = [
-            f"    d.value:{key}::STRING AS device_{sanitize(key)}"
-            for key in sorted(device_keys)
-        ]
+        _keys = sorted(device_keys.keys() if isinstance(device_keys, dict) else device_keys)
+        _keys = [k for k in _keys if k != "openfda"]
+        device_cols = []
+        for key in _keys:
+            dtype = (device_keys.get(key) or "VARCHAR").upper() if isinstance(device_keys, dict) else "VARCHAR"
+            if dtype == "ARRAY":
+                device_cols.append(
+                    f"    TRANSFORM(d.value:{key}, x -> x::STRING) AS device_{sanitize(key)}"
+                )
+            else:
+                device_cols.append(
+                    f"    d.value:{key}::STRING AS device_{sanitize(key)}"
+                )
         sections.append(
             "\n    -- ================================================\n"
             "    -- Device Information (LATERAL FLATTEN)\n"
@@ -249,16 +267,18 @@ def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data")
     cursor.close()
     conn.close()
     
-    # 스칼라 키만 추출
-    scalar_keys = [k for k, t in top.items() if t.upper() not in ("ARRAY", "OBJECT")]
-    
-    # SQL 생성
+    # 최상위 키: device/patient/mdr_text만 제외 (나머지는 모두 포함, ARRAY/OBJECT도 ::STRING으로 출력)
+    # TYPE으로 제외하면 product_problems, remedial_action 등 top-level ARRAY 컬럼이 아예 누락됨
+    EXCLUDE_KEYS = {'device', 'patient', 'mdr_text'}
+    scalar_keys = [k for k in top.keys() if k not in EXCLUDE_KEYS]
+
+    # SQL 생성 (device/patient는 key->TYPE 딕셔너리 그대로 전달해 TYPE별 처리)
     return generate_flatten_sql(
         table_name=table_name,
         raw_column=raw_column,
         scalar_keys=scalar_keys,
         patient_keys=patient,
-        device_keys=list(device.keys()),
+        device_keys=device,
         device_openfda_keys=device_openfda,
         mdr_text_keys=list(mdr_text.keys())
     )

@@ -323,7 +323,7 @@ class SnowflakeLoader(SnowflakeBase):
     def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
         sql = f"""
         SELECT DISTINCT f.key, TYPEOF(f.value)
-        FROM (SELECT * FROM {table_fq} LIMIT 1),
+        FROM (SELECT * FROM {table_fq}),
             LATERAL FLATTEN(input => {raw_column}) AS f
         ORDER BY f.key;
         """
@@ -335,7 +335,6 @@ class SnowflakeLoader(SnowflakeBase):
         FROM {table_fq} e,
             LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
             LATERAL FLATTEN(input => d.value) f
-        WHERE TYPEOF(f.value) NOT IN ('ARRAY', 'OBJECT')
         GROUP BY 1,2
         ORDER BY 1
         """
@@ -358,7 +357,6 @@ class SnowflakeLoader(SnowflakeBase):
         SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
         FROM {table_fq} e,
             LATERAL FLATTEN(input => e.{raw_column}:patient[0], OUTER => TRUE) f
-        WHERE TYPEOF(f.value) NOT IN ('ARRAY', 'OBJECT')
         GROUP BY 1,2
         ORDER BY 1
         """
