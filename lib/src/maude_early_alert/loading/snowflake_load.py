@@ -376,13 +376,6 @@ class SnowflakeLoader(SnowflakeBase):
 if __name__=='__main__':
     import pendulum
     import snowflake.connector
-    import sys
-    from pathlib import Path
-
-    src = Path(__file__).parent.parent.parent
-    if str(src) in sys.path:
-        sys.path.remove(str(src))
-    sys.path.insert(0, str(src))
     from maude_early_alert.utils.secrets import get_secret
 
     secret = get_secret('snowflake/bronze/credentials')
@@ -396,15 +389,18 @@ if __name__=='__main__':
     )
 
     snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], log_level='DEBUG')
-    table_name = 'EVENT'
+    table_name = 'UDI'
     s3_stg_table_name = 'BRONZE_S3_STAGE'
     metadata = {
         'source_system': 's3',
         'ingest_time': pendulum.now(),
         'batch_id': 'batch_001'
     }
-    business_primary_key = 'mdr_report_key'
-    primary_key = ['source_system', 'source_file', 'mdr_report_key']
+    business_primary_key = 'public_device_record_key'
+    primary_key = ['source_system', 'source_file', 'public_device_record_key']
+    
+    ym = pendulum.now().strftime('%Y%m')
+    s3_folder = f'{ym}/device/udi'
 
     snowflake_loader.load_from_s3(
         cursor=conn.cursor(),
@@ -413,5 +409,5 @@ if __name__=='__main__':
         primary_key=primary_key,
         business_primary_key=business_primary_key,
         metadata=metadata,
-        s3_folder=pendulum.now().strftime('YYYYMM')
+        s3_folder=s3_folder
     )
