@@ -15,7 +15,7 @@ def sanitize(name: str) -> str:
     return name.replace(":", "_").replace("-", "_").replace(".", "_").replace(" ", "_")
 
 
-def generate_flatten_sql(
+def build_flatten_sql(
     table_name: str,
     raw_column: str = "raw_data",
     scalar_keys: List[str] = None,
@@ -167,7 +167,7 @@ SELECT
 # Snowflake 스키마 조회 (snowflake_load 활용)
 # ============================================================
 
-def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data") -> str:
+def fetch_schema_and_build_sql(table_name: str, raw_column: str = "raw_data") -> str:
     """Snowflake에서 스키마 조회 후 SQL 생성
     
     Args:
@@ -250,7 +250,7 @@ def fetch_schema_and_generate_sql(table_name: str, raw_column: str = "raw_data")
     scalar_keys = [k for k in top.keys() if k not in EXCLUDE_KEYS]
 
     # SQL 생성 (device/patient는 key->TYPE 딕셔너리 그대로 전달해 TYPE별 처리)
-    return generate_flatten_sql(
+    return build_flatten_sql(
         table_name=table_name,
         raw_column=raw_column,
         scalar_keys=scalar_keys,
@@ -269,5 +269,5 @@ if __name__ == "__main__":
     TABLE_NAME = "MAUDE.BRONZE.EVENT"
     RAW_COLUMN = "raw_data"
     
-    sql = fetch_schema_and_generate_sql(TABLE_NAME, RAW_COLUMN)
+    sql = fetch_schema_and_build_sql(TABLE_NAME, RAW_COLUMN)
     print(sql)

@@ -10,7 +10,7 @@ from typing import List
 from maude_early_alert.utils.helpers import validate_identifier, ensure_list
 
 
-def generate_filter_sql(
+def build_filter_sql(
     source: str, alias: str,
     where: List[str] = None, qualify: List[str] = None
 ) -> str:
@@ -51,5 +51,5 @@ if __name__=='__main__':
         "ARRAY_SIZE(mdr_text_texts) > 0",
         "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
     ]
-    sql = generate_filter_sql(source, alias, where=where)
+    sql = build_filter_sql(source, alias, where=where)
     print(sql)
