@@ -4,7 +4,8 @@
 
 # Null Flavor 패턴
 null_flavor:
-  delete:
+  op_type: 'delete'
+  patterns:
     # 단어 경계 매칭
     - '\bUNKNOWN\b'
     - '\bUNKOWN\b'
@@ -44,7 +45,6 @@ null_flavor:
 maude:
   # UDI_DI 컬럼의 정제 패턴
   udi_di:
-    remove_null_flavor: true
     remove_countries: false
     remove:
       - 'a'
@@ -54,7 +54,6 @@ maude:
 # UDI 데이터의 정제 패턴
 udi:
   udi_di:
-    remove_null_flavor: true
     remove_countries: false
     remove:
       - 'a'
