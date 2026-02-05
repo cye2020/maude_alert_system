@@ -46,20 +46,45 @@ maude:
   # UDI_DI 컬럼의 정제 패턴
   udi_di:
     remove_countries: false
-    remove:
-      - 'a'
-    delete:
-      - 'b'
+    clean_default: false
+    clean:
+      - op_type: 'remove'
+        patterns: 
+          - '^\\(\\d{2}\\)'
+          - '\\(\\d{2}\\).*'
+          - '^\\d*\\+'
+          - '[^a-zA-Z0-9]'
+      - {{ null_flavor }}
+      - op_type: 'delete'
+        patterns: 
+          - '^$'
+          - '^0+$'
+          - '^N$'
+          - '^X+$'
+          - '^.{2,3}$'
+          - '^.{31,}$'
 
 # UDI 데이터의 정제 패턴
 udi:
   udi_di:
     remove_countries: false
-    remove:
-      - 'a'
-    delete:
-      - 'b'
-
+    clean_default: false
+    clean:
+      - op_type: 'remove'
+        patterns: 
+          - '^\\(\\d{2}\\)'
+          - '\\(\\d{2}\\).*'
+          - '^\\d*\\+'
+          - '[^a-zA-Z0-9]'
+      - {{ null_flavor }}
+      - op_type: 'delete'
+        patterns: 
+          - '^$'
+          - '^0+$'
+          - '^N$'
+          - '^X+$'
+          - '^.{2,3}$'
+          - '^.{31,}$'
 
 # 텍스트 정규화
 text_normalization:

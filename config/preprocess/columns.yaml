@@ -1,153 +1,123 @@
 # preprocess/columns.yaml
 # 컬럼 선택/제거 설정
 
-# 1차 열 제거 (스코핑 전)
-column_drop_1st:
-  verbose: true
-  
-  # MAUDE 데이터
-  maude:
-    cols:  # 유지할 컬럼들
-      - name: ADVERSE_EVENT_FLAG
-        type: BOOLEAN
-        alias: ADVERSE_EVENT_FLAG
-        final: true
-      - name: DATE_OF_EVENT
-        type: DATE
-        alias: DATE_OCCURRED
-        final: false
-      - name: DATE_RECEIVED
-        type: DATE
-        alias: DATE_RECEIVED
-        final: true
-      - name: DEVICE_DATE_OF_MANUFACTURER
-        type: DATE
-        alias: DATE_MANUFACTURED
-        final: false
-      - name: EVENT_TYPE
-        type: VARCHAR
-        alias: EVENT_TYPE
-        final: true
-      - name: MDR_REPORT_KEY
-        type: INT
-        alias: MDR_REPORT_KEY
-        final: true
-      - name: PREVIOUS_USE_CODE
-        type: BOOLEAN
-        alias: PREVIOUS_USE_FLAG
-        final: true
-      - name: PRODUCT_PROBLEM_FLAG
-        type: BOOLEAN
-        alias: PRODUCT_PROBLEM_FLAG
-        final: true
-      - name: PRODUCT_PROBLEMS
-        type: ARRAY
-        alias: PRODUCT_PROBLEMS
-        final: true
-      - name: REPORT_NUMBER
-        type: VARCHAR
-        alias: REPORT_NUMBER
-        final: false
-      - name: REPROCESSED_AND_REUSED_FLAG
-        type: BOOLEAN
-        alias: REPROCESSED_AND_REUSED_FLAG
-        final: true
-      - name: SINGLE_USE_FLAG
-        type: BOOLEAN
-        alias: SINGLE_USE_FLAG
-        final: true
-      - name: MDR_TEXT
-        type: VARCHAR
-        alias: MDR_TEXT
-        final: true
-      - name: DEVICE_BRAND_NAME
-        type: VARCHAR
-        alias: BRAND_NAME
-        final: true
-      - name: DEVICE_CATALOG_NUMBER
-        type: VARCHAR
-        alias: CATALOG_NUMBER
-        final: false
-      - name: DEVICE_DEVICE_REPORT_PRODUCT_CODE
-        type: VARCHAR
-        alias: PRODUCT_CODE
-        final: true
-      - name: DEVICE_LOT_NUMBER
-        type: VARCHAR
-        alias: LOT_NUMBER
-        final: false
-      - name: DEVICE_MANUFACTURER_D_NAME
-        type: VARCHAR
-        alias: MANUFACTURER_NAME
-        final: true
-      - name: DEVICE_MANUFACTURER_D_POSTAL_CODE
-        type: VARCHAR
-        alias: MANUFACTURER_POSTAL_CODE
-        final: false
-      - name: DEVICE_MODEL_NUMBER
-        type: VARCHAR
-        alias: MODEL_NUMBER
-        final: true
-      - name: DEVICE_OPENFDA_DEVICE_NAME
-        type: VARCHAR
-        alias: PRODUCT_NAME
-        final: true
-      - name: DEVICE_UDI_DI
-        type: VARCHAR
-        alias: UDI_DI
-        final: true
-      - name: DEVICE_UDI_PUBLIC
-        type: VARCHAR
-        alias: UDI_PUBLIC
-        final: false
-  
-  # UDI 데이터
-  udi:
-    mode: blacklist  # UDI는 blacklist 방식
-    patterns:  # 제거할 패턴들
-      - "^customer_.*"
-      - "^device_sizes_.*"
-      - "^storage_.*"
-      - "^premarket_.*"
-      - "^gmdn_.*"
-    cols: []  # 추가로 제거할 개별 컬럼
+# MAUDE 데이터
+maude:
+  cols:  # 유지할 컬럼들
+    - name: ADVERSE_EVENT_FLAG
+      type: BOOLEAN
+      alias: ADVERSE_EVENT_FLAG
+      final: true
+    - name: DATE_OF_EVENT
+      type: DATE
+      alias: DATE_OCCURRED
+      final: false
+    - name: DATE_RECEIVED
+      type: DATE
+      alias: DATE_RECEIVED
+      final: true
+    - name: DEVICE_DATE_OF_MANUFACTURER
+      type: DATE
+      alias: DATE_MANUFACTURED
+      final: false
+    - name: EVENT_TYPE
+      type: VARCHAR
+      alias: EVENT_TYPE
+      final: true
+    - name: MDR_REPORT_KEY
+      type: INT
+      alias: MDR_REPORT_KEY
+      final: true
+    - name: PREVIOUS_USE_CODE
+      type: BOOLEAN
+      alias: PREVIOUS_USE_FLAG
+      final: true
+    - name: PRODUCT_PROBLEM_FLAG
+      type: BOOLEAN
+      alias: PRODUCT_PROBLEM_FLAG
+      final: true
+    - name: PRODUCT_PROBLEMS
+      type: ARRAY
+      alias: PRODUCT_PROBLEMS
+      final: true
+    - name: REPORT_NUMBER
+      type: VARCHAR
+      alias: REPORT_NUMBER
+      final: false
+    - name: REPROCESSED_AND_REUSED_FLAG
+      type: BOOLEAN
+      alias: REPROCESSED_AND_REUSED_FLAG
+      final: true
+    - name: SINGLE_USE_FLAG
+      type: BOOLEAN
+      alias: SINGLE_USE_FLAG
+      final: true
+    - name: MDR_TEXT
+      type: VARCHAR
+      alias: MDR_TEXT
+      final: true
+    - name: DEVICE_BRAND_NAME
+      type: VARCHAR
+      alias: BRAND_NAME
+      final: true
+    - name: DEVICE_CATALOG_NUMBER
+      type: VARCHAR
+      alias: CATALOG_NUMBER
+      final: false
+    - name: DEVICE_DEVICE_REPORT_PRODUCT_CODE
+      type: VARCHAR
+      alias: PRODUCT_CODE
+      final: true
+    - name: DEVICE_LOT_NUMBER
+      type: VARCHAR
+      alias: LOT_NUMBER
+      final: false
+    - name: DEVICE_MANUFACTURER_D_NAME
+      type: VARCHAR
+      alias: MANUFACTURER_NAME
+      final: true
+    - name: DEVICE_MANUFACTURER_D_POSTAL_CODE
+      type: VARCHAR
+      alias: MANUFACTURER_POSTAL_CODE
+      final: false
+    - name: DEVICE_MODEL_NUMBER
+      type: VARCHAR
+      alias: MODEL_NUMBER
+      final: true
+    - name: DEVICE_OPENFDA_DEVICE_NAME
+      type: VARCHAR
+      alias: PRODUCT_NAME
+      final: true
+    - name: DEVICE_UDI_DI
+      type: VARCHAR
+      alias: UDI_DI
+      final: true
+    - name: DEVICE_UDI_PUBLIC
+      type: VARCHAR
+      alias: UDI_PUBLIC
+      final: false
 
-# 2차 열 제거 (최종 정제 후)
-column_drop_2nd:
-  verbose: true
-  
-  maude:
-    mode: whitelist
-    patterns: []
-    cols:  # 최종 유지할 컬럼들
-      - mdr_report_key
-      - adverse_event_flag
-      - product_problem_flag
-      - single_use_flag
-      - previous_use_code
-      - reprocessed_and_reused_flag
-      - event_type
-      - product_problems
-      - date_of_event
-      - date_received
-      - date_of_manufactured
-      - manufacturer
-      - brand
-      - model_number
-      - udi_di
-      - product_code
-      - device_name
-      - operator
-      - patient_age
-      - mdr_text
-  
-  udi:
-    mode: whitelist
-    patterns: []
-    cols:
-      - udi_di
-      - manufacturer
-      - brand
-      - model_number
-      - product_code
-      - device_name
+# UDI 데이터
+udi:
+  cols:
+    - name: BRAND_NAME
+      type: VARCHAR
+      alias: BRAND_NAME
+    - name: CATALOG_NUMBER
+      type: VARCHAR
+      alias: CATALOG_NUMBER
+    - name: COMPANY_NAME
+      type: VARCHAR
+      alias: MANUFACTURER_NAME
+    - name: IDENTIFIERS_ID
+      type: VARCHAR
+      alias: UDI_DI
+    - name: IDENTIFIERS_TYPE
+      type: VARCHAR
+      alias: ID_TYPE
+    - name: PUBLIC_VERSION_DATE
+      type: DATE
+      alias: PUBLIC_VERSION_DATE
+    - name: PUBLISH_DATE
+      type: DATE
+      alias: PUBLISH_DATE

@@ -312,66 +312,67 @@ class SnowflakeLoader(SnowflakeBase):
         rows = cursor.fetchall()
         return {str(k): str(t) for k, t in rows if k is not None}
 
-    def _sanitize(name: str) -> str:
-        return (
-            name.replace(":", "_")
-                .replace("-", "_")
-                .replace(".", "_")
-                .replace(" ", "_")
-        )
-
     def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        """최상위 키와 타입 조회"""
         sql = f"""
         SELECT DISTINCT f.key, TYPEOF(f.value)
-        FROM (SELECT * FROM {table_fq}),
+        FROM {table_fq},
             LATERAL FLATTEN(input => {raw_column}) AS f
         ORDER BY f.key;
         """
         return SnowflakeLoader._fetch_map(cursor, sql)
 
-    def device_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
-        sql = f"""
-        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
-        FROM {table_fq} e,
-            LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
-            LATERAL FLATTEN(input => d.value) f
-        GROUP BY 1,2
-        ORDER BY 1
-        """
-        return SnowflakeLoader._fetch_map(cursor, sql)
+    def array_keys_with_type(cursor, table_fq: str, array_path: str, raw_column: str = "raw_data"):
+        """배열 내 모든 키를 RECURSIVE로 조회하여 nested dict 반환
 
-    def device_openfda_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        OBJECT 타입은 중간 노드이므로 제외하고, 하위 키가 자동으로
+        nested dict로 구성된다.
+
+        Args:
+            cursor: Snowflake cursor
+            table_fq: 테이블 전체 경로
+            array_path: 배열 경로 (예: "device", "patient", "mdr_text")
+            raw_column: JSON 컬럼명
+
+        Returns:
+            nested dict. 예:
+            {"brand_name": "VARCHAR", "openfda": {"device_name": "VARCHAR", ...}}
+        """
+        import re
         sql = f"""
-        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
-        FROM {table_fq} e,
-            LATERAL FLATTEN(input => e.{raw_column}:device, OUTER => TRUE) d,
-            LATERAL FLATTEN(input => d.value:openfda, OUTER => TRUE) f
+        SELECT DISTINCT f.path::STRING, f.key::STRING, TYPEOF(f.value)
+        FROM {table_fq},
+            LATERAL FLATTEN(input => {raw_column}:{array_path}, RECURSIVE => TRUE) f
         WHERE f.key IS NOT NULL
-        GROUP BY 1,2
-        ORDER BY 1
+          AND TYPEOF(f.value) != 'OBJECT'
+        ORDER BY 1, 2
         """
-        return SnowflakeLoader._fetch_map(cursor, sql)
+        cursor.execute(sql)
 
-    def patient_keys_with_type(cursor, table_fq:str, raw_column:str = "raw_data"):
-        sql = f"""
-        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
-        FROM {table_fq} e,
-            LATERAL FLATTEN(input => e.{raw_column}:patient[0], OUTER => TRUE) f
-        GROUP BY 1,2
-        ORDER BY 1
-        """
-        return SnowflakeLoader._fetch_map(cursor, sql)
+        result = {}
+        for raw_path, key, typ in cursor.fetchall():
+            # 첫 번째 배열 인덱스([0] 등) 제거 후, 내부에 [N]이 남아 있으면
+            # 배열 원소 전개이므로 스킵 (예: openfda.registration_number[0])
+            inner = re.sub(r'^\[\d+\]\.?', '', str(raw_path))
+            if re.search(r'\[\d+\]', inner):
+                continue
 
-    def mdr_text_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
-        sql = f"""
-        SELECT f.key::STRING AS key, TYPEOF(f.value) AS typ
-        FROM {table_fq} e,
-            LATERAL FLATTEN(input => e.{raw_column}:mdr_text, OUTER => TRUE) m,
-            LATERAL FLATTEN(input => m.value) f
-        GROUP BY 1,2
-        ORDER BY 1
-        """
-        return SnowflakeLoader._fetch_map(cursor, sql)    
+            clean = re.sub(r'\[\d+\]\.?', '', str(raw_path)).strip('.')
+            parts = [p for p in clean.split('.') if p]
+
+            # path의 마지막 요소는 key 자체이므로 부모 경로만 탐색
+            # 예: path="[0].openfda.device_name", key="device_name"
+            #   → parts=["openfda", "device_name"] → 탐색은 ["openfda"]만
+            parent_parts = parts[:-1] if parts else []
+
+            node = result
+            for part in parent_parts:
+                if part not in node or not isinstance(node[part], dict):
+                    node[part] = {}
+                node = node[part]
+            node[key] = typ
+
+        return result
 
 if __name__=='__main__':
     import pendulum

@@ -185,7 +185,7 @@ if __name__=='__main__':
         ]
     }
 
-    clean = {
+    maude_clean = {
         'mdr_text': {
             'remove_countries': False,
             'clean_default': True,
@@ -223,5 +223,5 @@ if __name__=='__main__':
         }
     }
     
-    sql = build_clean_sql("EVENT", clean, null_flavor, udf_schema=udf_schema)
+    sql = build_clean_sql("EVENT", maude_clean, null_flavor, udf_schema=udf_schema)
     print(sql)

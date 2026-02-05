@@ -15,33 +15,55 @@ def sanitize(name: str) -> str:
     return name.replace(":", "_").replace("-", "_").replace(".", "_").replace(" ", "_")
 
 
+def _flatten_to_entries(sub_keys) -> list:
+    """nested dict/list를 (json_path, dtype) 리스트로 평탄화"""
+    if isinstance(sub_keys, dict):
+        stack = [(k, sub_keys[k]) for k in sorted(sub_keys.keys())]
+    else:
+        stack = [(k, "VARCHAR") for k in sorted(sub_keys)]
+
+    entries = []
+    while stack:
+        path, val = stack.pop(0)
+        if isinstance(val, dict):
+            for ck in sorted(val.keys()):
+                stack.append((f"{path}:{ck}", val[ck]))
+        else:
+            entries.append((path, (val or "VARCHAR").upper()))
+    return entries
+
+
 def build_flatten_sql(
     table_name: str,
     raw_column: str = "raw_data",
     scalar_keys: List[str] = None,
-    patient_keys: Union[List[str], Dict[str, str]] = None,
-    device_keys: Union[List[str], Dict[str, str]] = None,
-    device_openfda_keys: Dict[str, str] = None,
-    mdr_text_keys: List[str] = None,
-    device_outer: bool = True,
+    first_element_keys: Dict[str, Union[List[str], Dict[str, str]]] = None,
+    transform_keys: Dict[str, List[str]] = None,
+    flatten_keys: Dict[str, Dict[str, Union[str, Dict[str, str]]]] = None,
+    flatten_outer: bool = True,
 ) -> str:
     """Snowflake Flatten SQL 생성
-    
+
     Args:
         table_name: 테이블명 (예: MAUDE.BRONZE.EVENT)
         raw_column: JSON 컬럼명
         scalar_keys: 최상위 스칼라 키들
-        patient_keys: patient[0]에서 추출할 키들 (리스트 또는 key->TYPE 딕셔너리)
-        device_keys: device 배열에서 추출할 키들 (리스트 또는 key->TYPE 딕셔너리)
-        device_openfda_keys: deivce_openfda_key 배열에서 추출할 키들
-        mdr_text_keys: mdr_text 배열에서 추출할 키들 (TRANSFORM)
-        device_outer: device FLATTEN 시 OUTER JOIN 사용 여부
-    
+        first_element_keys: 배열의 첫 번째 요소만 선택 (예: patient[0]).
+                           {"patient": ["key1", "key2"]} 또는
+                           {"patient": {"key1": "VARCHAR", "key2": "ARRAY"}}
+        transform_keys: 배열을 TRANSFORM으로 리스트화 (예: mdr_text).
+                       {"mdr_text": ["text", "text_type_code"]}
+        flatten_keys: LATERAL FLATTEN으로 행 분리 (예: device).
+                     값이 dict이면 nested object로 간주하여 하위 키를 펼침.
+                     {"device": {"brand_name": "VARCHAR", "openfda": {"device_name": "VARCHAR"}}}
+        flatten_outer: LATERAL FLATTEN 시 OUTER JOIN 사용 여부
+
     Returns:
         SELECT SQL 문자열
     """
     sections = []
-    
+    from_parts = [f"FROM {table_name}"]
+
     # 1) 최상위 스칼라 키
     if scalar_keys:
         scalar_cols = [
@@ -54,104 +76,84 @@ def build_flatten_sql(
             "    -- ================================================\n"
             + ",\n".join(scalar_cols)
         )
-    
-    # 2) patient[0] 키들 (TYPE 구분: ARRAY → TRANSFORM, 그 외 → ::STRING)
-    if patient_keys:
-        _keys = sorted(patient_keys.keys() if isinstance(patient_keys, dict) else patient_keys)
-        patient_cols = []
-        for key in _keys:
-            dtype = (patient_keys.get(key) or "VARCHAR").upper() if isinstance(patient_keys, dict) else "VARCHAR"
-            if dtype == "ARRAY":
-                patient_cols.append(
-                    f"    TRANSFORM({raw_column}:patient[0]:{key}, x -> x::STRING) AS patient_{sanitize(key)}"
-                )
-            else:
-                patient_cols.append(
-                    f"    {raw_column}:patient[0]:{key}::STRING AS patient_{sanitize(key)}"
-                )
-        sections.append(
-            "\n    -- ================================================\n"
-            "    -- Patient Information (patient[0])\n"
-            "    -- ================================================\n"
-            + ",\n".join(patient_cols)
-        )
-    
-    # 3) mdr_text 배열 → TRANSFORM
-    if mdr_text_keys:
-        mdr_cols = []
-        for key in sorted(mdr_text_keys):
-            alias = "mdr_text_keys" if key == "mdr_text_key" else f"mdr_text_{sanitize(key)}s"
-            mdr_cols.append(
-                f"    TRANSFORM({raw_column}:mdr_text, x -> x:{key}::STRING) AS {alias}"
-            )
-        sections.append(
-            "\n    -- ================================================\n"
-            "    -- MDR Text Array (TRANSFORM)\n"
-            "    -- ================================================\n"
-            + ",\n".join(mdr_cols)
-        )
-    
-    # 4) device 배열 → LATERAL FLATTEN (TYPE 구분: ARRAY → TRANSFORM, 그 외 → ::STRING)
-    # openfda는 아래 device_openfda_keys에서 별도 처리하므로 제외
-    if device_keys:
-        _keys = sorted(device_keys.keys() if isinstance(device_keys, dict) else device_keys)
-        _keys = [k for k in _keys if k != "openfda"]
-        device_cols = []
-        for key in _keys:
-            dtype = (device_keys.get(key) or "VARCHAR").upper() if isinstance(device_keys, dict) else "VARCHAR"
-            if dtype == "ARRAY":
-                device_cols.append(
-                    f"    TRANSFORM(d.value:{key}, x -> x::STRING) AS device_{sanitize(key)}"
-                )
-            else:
-                device_cols.append(
-                    f"    d.value:{key}::STRING AS device_{sanitize(key)}"
-                )
-        sections.append(
-            "\n    -- ================================================\n"
-            "    -- Device Information (LATERAL FLATTEN)\n"
-            "    -- ================================================\n"
-            + ",\n".join(device_cols)
-        )
 
-    # deivce 속 배열 openfda 배열 
-    if device_openfda_keys:
-        openfda_scalar_cols =[]
-        openfda_array_cols = []
-
-        for key in sorted(device_openfda_keys.keys()):
-            dtype = device_openfda_keys[key]
-
-            if dtype.upper() == "ARRAY":
-                # 배열 필트는 TRANSFORM 사용
-                openfda_array_cols.append(
-                    f"    TRANSFORM(d.value:openfda:{key} , x-> x::STRING) AS device_openfda_{sanitize(key)}"
+    # 2) first_element: 배열의 첫 번째 요소 선택 (array[0])
+    if first_element_keys:
+        for array_name, sub_keys in first_element_keys.items():
+            entries = _flatten_to_entries(sub_keys)
+            cols = []
+            for path, dtype in entries:
+                col_alias = f"{sanitize(array_name)}_{sanitize(path)}"
+                if dtype == "ARRAY":
+                    cols.append(
+                        f"    TRANSFORM({raw_column}:{array_name}[0]:{path}, x -> x::STRING)"
+                        f" AS {col_alias}"
+                    )
+                else:
+                    cols.append(
+                        f"    {raw_column}:{array_name}[0]:{path}::STRING AS {col_alias}"
+                    )
+            if cols:
+                sections.append(
+                    f"\n    -- ================================================\n"
+                    f"    -- {array_name} (first element [0])\n"
+                    f"    -- ================================================\n"
+                    + ",\n".join(cols)
                 )
-            else:
-                openfda_scalar_cols.append(
-                    f"    d.value:openfda:{key}::STRING AS device_openfda_{sanitize(key)}"
+
+    # 3) transform: 배열을 TRANSFORM으로 리스트화
+    if transform_keys:
+        for array_name, sub_keys in transform_keys.items():
+            entries = _flatten_to_entries(sub_keys)
+            cols = []
+            for path, dtype in entries:
+                col_alias = f"{sanitize(array_name)}_{sanitize(path)}"
+                cols.append(
+                    f"    TRANSFORM({raw_column}:{array_name}, x -> x:{path}::STRING)"
+                    f" AS {col_alias}"
                 )
-        if openfda_scalar_cols or openfda_array_cols:
-            all_openfda_cols = openfda_scalar_cols + openfda_array_cols
-            sections.append(
-                "\n    -- ================================================\n"
-                "    -- Device OpenFDA (Nested Object)\n"
-                "    -- ================================================\n"
-                + ",\n".join(all_openfda_cols)
+            if cols:
+                sections.append(
+                    f"\n    -- ================================================\n"
+                    f"    -- {array_name} (TRANSFORM)\n"
+                    f"    -- ================================================\n"
+                    + ",\n".join(cols)
+                )
+
+    # 4) flatten: LATERAL FLATTEN으로 행 분리
+    if flatten_keys:
+        outer = "TRUE" if flatten_outer else "FALSE"
+        for i, (array_name, sub_keys) in enumerate(flatten_keys.items()):
+            alias = f"f{i}"
+            entries = _flatten_to_entries(sub_keys)
+            cols = []
+            for path, dtype in entries:
+                col_alias = f"{sanitize(array_name)}_{sanitize(path)}"
+                if dtype == "ARRAY":
+                    cols.append(
+                        f"    TRANSFORM({alias}.value:{path}, x -> x::STRING) AS {col_alias}"
+                    )
+                else:
+                    cols.append(
+                        f"    {alias}.value:{path}::STRING AS {col_alias}"
+                    )
+
+            if cols:
+                sections.append(
+                    f"\n    -- ================================================\n"
+                    f"    -- {array_name} (LATERAL FLATTEN)\n"
+                    f"    -- ================================================\n"
+                    + ",\n".join(cols)
+                )
+
+            from_parts.append(
+                f"    , LATERAL FLATTEN(input => {raw_column}:{array_name}, OUTER => {outer}) AS {alias}"
             )
 
-    if device_keys or device_openfda_keys:
-        outer = "TRUE" if device_outer else "FALSE"
-        from_clause = (
-            f"FROM {table_name}\n"
-            f"    , LATERAL FLATTEN(input => {raw_column}:device, OUTER => {outer}) AS d"
-        )
-    else:
-        from_clause = f"FROM {table_name}"
-    
     # SQL 조립
+    from_clause = "\n".join(from_parts)
     select_body = ",\n".join(sections)
-    
+
     return f"""-- ====================================================================
 -- Snowflake Flatten SQL
 -- Table: {table_name}
@@ -167,13 +169,22 @@ SELECT
 # Snowflake 스키마 조회 (snowflake_load 활용)
 # ============================================================
 
-def fetch_schema_and_build_sql(table_name: str, raw_column: str = "raw_data") -> str:
+def fetch_schema_and_build_sql(
+    table_name: str,
+    raw_column: str = "raw_data",
+    flatten: List[str] = None,
+    transform: List[str] = None,
+    first_element: List[str] = None,
+) -> str:
     """Snowflake에서 스키마 조회 후 SQL 생성
-    
+
     Args:
         table_name: 테이블명
         raw_column: JSON 컬럼명
-        
+        flatten: LATERAL FLATTEN 전략을 적용할 배열 이름 목록 (예: ["device"])
+        transform: TRANSFORM 전략을 적용할 배열 이름 목록 (예: ["mdr_text"])
+        first_element: 첫 번째 요소([0]) 전략을 적용할 배열 이름 목록 (예: ["patient"])
+
     Returns:
         생성된 SQL 문자열
     """
@@ -199,65 +210,36 @@ def fetch_schema_and_build_sql(table_name: str, raw_column: str = "raw_data") ->
         )
         cursor = conn.cursor()
     except Exception as e:
-        # MFA 필요한 경우
-        if "TOTP" in str(e) or "MFA" in str(e):
-            print("\nMFA 인증이 필요합니다.", file=sys.stderr)
-            totp = input("TOTP 코드 입력 (6자리): ").strip()
-            try:
-                conn = snowflake.connector.connect(
-                    user=secret['user'],
-                    password=secret['password'],
-                    account=secret['account'],
-                    warehouse=secret['warehouse'],
-                    database=secret['database'],
-                    schema=secret['schema'],
-                    authenticator="USERNAME_PASSWORD_MFA",
-                    passcode=totp
-                )
-                cursor = conn.cursor()
-            except Exception:
-                try:
-                    conn = snowflake.connector.connect(
-                        user=secret['user'],
-                        password=secret['password'] + totp,
-                        account=secret['account'],
-                        warehouse=secret['warehouse'],
-                        database=secret['database'],
-                        schema=secret['schema'],
-                        passcode_in_password=True
-                    )
-                    cursor = conn.cursor()
-                except Exception as e2:
-                    print(f"Error: MFA 인증 실패 - {e2}", file=sys.stderr)
-                    sys.exit(1)
-        else:
-            print(f"Error: Snowflake 연결 실패 - {e}", file=sys.stderr)
-            sys.exit(1)
+        raise
     
-    # 스키마 조회
+    # 스키마 조회: top-level 키 + 각 배열의 nested 구조를 한 번에
     top = SnowflakeLoader.top_keys_with_type(cursor, table_name, raw_column)
-    device = SnowflakeLoader.device_keys_with_type(cursor, table_name, raw_column)
-    device_openfda = SnowflakeLoader.device_openfda_keys_with_type(cursor, table_name, raw_column)
-    patient = SnowflakeLoader.patient_keys_with_type(cursor, table_name, raw_column)
-    mdr_text = SnowflakeLoader.mdr_text_keys_with_type(cursor, table_name, raw_column)
-    
+
+    array_names = [k for k, t in top.items() if t.upper() == 'ARRAY']
+    array_schemas = {
+        name: SnowflakeLoader.array_keys_with_type(cursor, table_name, name, raw_column)
+        for name in array_names
+    }
+
     cursor.close()
     conn.close()
-    
-    # 최상위 키: device/patient/mdr_text만 제외 (나머지는 모두 포함, ARRAY/OBJECT도 ::STRING으로 출력)
-    # TYPE으로 제외하면 product_problems, remedial_action 등 top-level ARRAY 컬럼이 아예 누락됨
-    EXCLUDE_KEYS = {'device', 'patient', 'mdr_text'}
-    scalar_keys = [k for k in top.keys() if k not in EXCLUDE_KEYS]
 
-    # SQL 생성 (device/patient는 key->TYPE 딕셔너리 그대로 전달해 TYPE별 처리)
+    # 전략 매핑 (인자로 받은 배열 이름 → 전략)
+    flatten_keys = {k: array_schemas[k] for k in (flatten or []) if k in array_schemas}
+    transform_keys = {k: array_schemas[k] for k in (transform or []) if k in array_schemas}
+    first_element_keys = {k: array_schemas[k] for k in (first_element or []) if k in array_schemas}
+
+    # top-level에서 배열로 처리되는 키 제외
+    exclude = set(array_names)
+    scalar_keys = [k for k in top.keys() if k not in exclude]
+
     return build_flatten_sql(
         table_name=table_name,
         raw_column=raw_column,
         scalar_keys=scalar_keys,
-        patient_keys=patient,
-        device_keys=device,
-        device_openfda_keys=device_openfda,
-        mdr_text_keys=list(mdr_text.keys())
+        first_element_keys=first_element_keys,
+        transform_keys=transform_keys,
+        flatten_keys=flatten_keys,
     )
 
 
@@ -266,8 +248,23 @@ def fetch_schema_and_build_sql(table_name: str, raw_column: str = "raw_data") ->
 # ============================================================
 
 if __name__ == "__main__":
-    TABLE_NAME = "MAUDE.BRONZE.EVENT"
+    event_table_name = "MAUDE.BRONZE.EVENT"
+    udi_table_name = "MAUDE.BRONZE.UDI"
     RAW_COLUMN = "raw_data"
     
-    sql = fetch_schema_and_build_sql(TABLE_NAME, RAW_COLUMN)
+    sql = fetch_schema_and_build_sql(
+        event_table_name, RAW_COLUMN,
+        flatten=["device"],
+        transform=["mdr_text"],
+        first_element=["patient"],
+    )
     print(sql)
+    
+    sql = fetch_schema_and_build_sql(
+        udi_table_name, RAW_COLUMN,
+        flatten=["identifiers"],
+        transform=['product_codes']
+    )
+    print(sql)
+    
+    

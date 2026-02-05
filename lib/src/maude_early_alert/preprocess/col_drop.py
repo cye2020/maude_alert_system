@@ -2,10 +2,11 @@
 컬럼 선택 SQL 생성 모듈
 컬럼 리스트 → SELECT SQL 생성
 """
-from textwrap import dedent
 from typing import List
 
 import structlog
+
+from maude_early_alert.utils.sql_builder import build_cte_sql
 
 
 logger = structlog.get_logger()
@@ -27,20 +28,18 @@ def build_select_columns_sql(cols: List[str], table_name: str) -> str:
     """
     if not cols:
         logger.debug("선택할 컬럼이 없습니다. SELECT * 반환")
-        return f"SELECT * FROM {table_name}"
-    
-    select_clause = [
+        return build_cte_sql(ctes=[], from_clause=table_name)
+
+    select_cols = [
         f"{col['name']} AS {col['alias']}"
         for col in cols
     ]
-    
-    select_cols = ',\n    '.join(select_clause)
 
-    sql = dedent(f"""\
-    SELECT
-        {select_cols}
-    FROM
-        {table_name}""")
+    sql = build_cte_sql(
+        ctes=[],
+        from_clause=table_name,
+        select_cols=select_cols,
+    )
 
     logger.debug("SELECT SQL 생성 완료", table_name=table_name, column_count=len(cols))
 
@@ -85,7 +84,16 @@ if __name__ == '__main__':
     print("\n[MAUDE SQL]")
     print(sql_maude)
 
-    # udi_columns = ['udi_id', 'device_name', 'catalog_number']
-    # sql_udi = build_select_columns_sql(udi_columns, "MAUDE.SILVER.UDI_STAGE_02")
-    # print("\n[UDI SQL]")
-    # print(sql_udi)
+    udi_columns = [
+        {'name': 'BRAND_NAME', 'alias': 'BRAND_NAME'},
+        {'name': 'CATALOG_NUMBER', 'alias': 'CATALOG_NUMBER'},
+        {'name': 'COMPANY_NAME', 'alias': 'MANUFACTURER_NAME'},
+        {'name': 'IDENTIFIERS_ID', 'alias': 'UDI_DI'},
+        {'name': 'IDENTIFIERS_TYPE', 'alias': 'ID_TYPE'},
+        {'name': 'PUBLIC_VERSION_DATE', 'alias': 'PUBLIC_VERSION_DATE'},
+        {'name': 'PUBLISH_DATE', 'alias': 'PUBLISH_DATE'},
+    ]
+    
+    sql_udi = build_select_columns_sql(udi_columns, "MAUDE.SILVER.UDI_STAGE_02")
+    print("\n[UDI SQL]")
+    print(sql_udi)
