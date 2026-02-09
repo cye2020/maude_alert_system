@@ -14,6 +14,7 @@ def build_cte_sql(
     replace_cols: Optional[List[str]] = None,
     joins: Optional[List[str]] = None,
     where: Optional[str] = None,
+    distinct: bool = False
 ) -> str:
     """
     CTE 구조의 SQL 생성
@@ -61,15 +62,16 @@ def build_cte_sql(
         parts.append("WITH\n" + ",\n".join(cte_definitions))
 
     # SELECT 절
+    keyword = "SELECT DISTINCT" if distinct else "SELECT"
     if replace_cols:
         replace_clause = ",\n        ".join(replace_cols)
         star = f"{table_alias}.*" if table_alias else "*"
-        parts.append(f"SELECT {star} REPLACE (\n        {replace_clause}\n    )")
+        parts.append(f"{keyword} {star} REPLACE (\n        {replace_clause}\n    )")
     elif select_cols:
         select_clause = ",\n    ".join(select_cols)
-        parts.append(f"SELECT\n    {select_clause}")
+        parts.append(f"{keyword}\n    {select_clause}")
     else:
-        parts.append("SELECT\n    *")
+        parts.append(f"{keyword}\n    *")
 
     # FROM 절
     parts.append(f"FROM\n    {from_clause}")
