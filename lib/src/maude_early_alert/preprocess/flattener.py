@@ -36,7 +36,7 @@ def _flatten_to_entries(sub_keys) -> list:
 def build_flatten_sql(
     table_name: str,
     raw_column: str = "raw_data",
-    scalar_keys: List[str] = None,
+    scalar_keys: Dict[str, str] = None,
     first_element_keys: Dict[str, Union[List[str], Dict[str, str]]] = None,
     transform_keys: Dict[str, List[str]] = None,
     flatten_keys: Dict[str, Dict[str, Union[str, Dict[str, str]]]] = None,
@@ -47,7 +47,7 @@ def build_flatten_sql(
     Args:
         table_name: 테이블명 (예: MAUDE.BRONZE.EVENT)
         raw_column: JSON 컬럼명
-        scalar_keys: 최상위 스칼라 키들
+        scalar_keys: 최상위 키들 {key: dtype} (ARRAY 포함, 전략 미지정 키들)
         first_element_keys: 배열의 첫 번째 요소만 선택 (예: patient[0]).
                            {"patient": ["key1", "key2"]} 또는
                            {"patient": {"key1": "VARCHAR", "key2": "ARRAY"}}
@@ -64,15 +64,15 @@ def build_flatten_sql(
     sections = []
     from_parts = [f"FROM {table_name}"]
 
-    # 1) 최상위 스칼라 키
+    # 1) 최상위 키 (전략 미지정 - 캐스팅 없이 VARIANT 그대로)
     if scalar_keys:
-        scalar_cols = [
-            f"    {raw_column}:{key}::STRING AS {sanitize(key)}"
-            for key in sorted(scalar_keys)
-        ]
+        scalar_cols = sorted(
+            f"    {raw_column}:{key}::{t} AS {sanitize(key)}"
+            for key, t in scalar_keys.items()
+        )
         sections.append(
             "    -- ================================================\n"
-            "    -- Top-level Scalar Columns\n"
+            "    -- Top-level Columns\n"
             "    -- ================================================\n"
             + ",\n".join(scalar_cols)
         )
@@ -229,9 +229,9 @@ def fetch_schema_and_build_sql(
     transform_keys = {k: array_schemas[k] for k in (transform or []) if k in array_schemas}
     first_element_keys = {k: array_schemas[k] for k in (first_element or []) if k in array_schemas}
 
-    # top-level에서 배열로 처리되는 키 제외
-    exclude = set(array_names)
-    scalar_keys = [k for k in top.keys() if k not in exclude]
+    # 전략이 명시된 배열만 제외 (나머지는 타입 그대로 유지)
+    exclude = set((flatten or []) + (transform or []) + (first_element or []))
+    scalar_keys = {k: t.upper() for k, t in top.items() if k not in exclude}
 
     return build_flatten_sql(
         table_name=table_name,

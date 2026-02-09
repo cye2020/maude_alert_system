@@ -390,18 +390,19 @@ if __name__=='__main__':
     )
 
     snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], log_level='DEBUG')
-    table_name = 'UDI'
+    table_name = 'EVENT'
     s3_stg_table_name = 'BRONZE_S3_STAGE'
     metadata = {
         'source_system': 's3',
         'ingest_time': pendulum.now(),
         'batch_id': 'batch_001'
     }
-    business_primary_key = 'public_device_record_key'
-    primary_key = ['source_system', 'source_file', 'public_device_record_key']
+    business_primary_key = 'mdr_report_key'
+    # business_primary_key = 'public_device_record_key'
+    primary_key = ['source_system', 'source_file', business_primary_key]
     
     ym = pendulum.now().strftime('%Y%m')
-    s3_folder = f'{ym}/device/udi'
+    s3_folder = f'{ym}/device/event'
 
     snowflake_loader.load_from_s3(
         cursor=conn.cursor(),

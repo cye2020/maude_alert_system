@@ -121,3 +121,6 @@ udi:
     - name: PUBLISH_DATE
       type: DATE
       alias: PUBLISH_DATE
+    - name: VERSION_OR_MODEL_NUMBER
+      type: VARCHAR
+      alias: MODEL_NUMBER

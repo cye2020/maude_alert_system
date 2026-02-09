@@ -92,6 +92,7 @@ if __name__ == '__main__':
         {'name': 'IDENTIFIERS_TYPE', 'alias': 'ID_TYPE'},
         {'name': 'PUBLIC_VERSION_DATE', 'alias': 'PUBLIC_VERSION_DATE'},
         {'name': 'PUBLISH_DATE', 'alias': 'PUBLISH_DATE'},
+        {'name': 'VERSION_OR_MODEL_NUMBER', 'alias': 'MODEL_NUMBER'}
     ]
     
     sql_udi = build_select_columns_sql(udi_columns, "MAUDE.SILVER.UDI_STAGE_02")
