@@ -220,11 +220,11 @@ if __name__ == '__main__':
     print(build_primary_udi_di_sql("UDI_STAGE_02", "public_device_record_key"))
     print()
     print("-- company alias")
-    print(build_apply_company_alias_sql("MAUDE_CLEANED", "MANUFACTURER_NAME"))
+    print(build_apply_company_alias_sql("EVENT_STAGE_06", "MANUFACTURER_NAME"))
     print()
     print("-- manufacturer fuzzy match")
     print(build_manufacturer_fuzzy_match_sql(
-        "MAUDE_CLEANED", "UDI_CLEANED",
+        "EVENT_STAGE_06", "UDI_STAGE_05",
         "MANUFACTURER_NAME", "MANUFACTURER_NAME",
         "UDF", threshold=0.85
     ))
