@@ -2,11 +2,13 @@
 # 컬럼 선택/제거 설정
 
 # MAUDE 데이터
-maude:
+event:
   cols:  # 유지할 컬럼들
     - name: ADVERSE_EVENT_FLAG
       type: BOOLEAN
       alias: ADVERSE_EVENT_FLAG
+      true_value: "Y"
+      false_value: "N"
       final: true
     - name: DATE_OF_EVENT
       type: DATE
@@ -31,10 +33,14 @@ maude:
     - name: PREVIOUS_USE_CODE
       type: BOOLEAN
       alias: PREVIOUS_USE_FLAG
+      true_value: "I"
+      false_value: "R"
       final: true
     - name: PRODUCT_PROBLEM_FLAG
       type: BOOLEAN
       alias: PRODUCT_PROBLEM_FLAG
+      true_value: "Y"
+      false_value: "N"
       final: true
     - name: PRODUCT_PROBLEMS
       type: ARRAY
@@ -47,10 +53,14 @@ maude:
     - name: REPROCESSED_AND_REUSED_FLAG
       type: BOOLEAN
       alias: REPROCESSED_AND_REUSED_FLAG
+      true_value: "Y"
+      false_value: "N"
       final: true
     - name: SINGLE_USE_FLAG
       type: BOOLEAN
       alias: SINGLE_USE_FLAG
+      true_value: "Y"
+      false_value: "N"
       final: true
     - name: MDR_TEXT
       type: VARCHAR

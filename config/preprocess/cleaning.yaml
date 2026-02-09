@@ -87,12 +87,12 @@ maude:
   REPROCESSED_AND_REUSED_FLAG:
     - op_type: delete
       patterns:
-        - '[^IR]'
+        - '[^YN]'
 
   SINGLE_USE_FLAG:
     - op_type: delete
       patterns:
-        - '[^IR]'
+        - '[^YN]'
 
   PRODUCT_PROBLEMS:
     - op_type: filter_array
