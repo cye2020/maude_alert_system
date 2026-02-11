@@ -134,7 +134,7 @@ if __name__ == '__main__':
     import pendulum
     import structlog
 
-    from maude_early_alert.loading.fda_extract import FDAExtractor
+    from maude_early_alert.loaders.fda_extract import FDAExtractor
 
     logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 

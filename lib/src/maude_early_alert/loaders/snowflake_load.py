@@ -12,7 +12,7 @@ from snowflake.connector.cursor import SnowflakeCursor
 # ======================
 # 내부 라이브러리
 # ======================
-from maude_early_alert.loading.snowflake_base import SnowflakeBase
+from maude_early_alert.loaders.snowflake_base import SnowflakeBase
 from maude_early_alert.utils.helpers import (
     ensure_list,
     format_sql_literal,

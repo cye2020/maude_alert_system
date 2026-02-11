@@ -1,7 +1,6 @@
 # ======================
 # 표준 라이브러리
 # ======================
-import logging
 import re
 from typing import Dict, List
 
@@ -12,11 +11,13 @@ import requests
 import structlog
 
 
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
 class FDAExtractor:
     """FDA Open API에서 device 메타데이터를 조회하고 파일 목록을 추출"""
-
-    SUPPORTED_CATEGORIES = ('udi', 'event')
-
+    
+    SUPPORTED_CATEGORIES = ('event', 'udi')
+    
     @staticmethod
     def _filter_event(url: str, start: int = None, end: int = None) -> bool:
         """event 카테고리: URL에서 연도를 추출하여 범위 필터링"""
@@ -30,16 +31,12 @@ class FDAExtractor:
             return False
         return True
 
-    def __init__(self, session: requests.Session = None, log_level: str = 'INFO'):
+    def __init__(self, url: str, session: requests.Session = None):
         """Args:
             session: HTTP 세션 (미지정 시 기본 Session 사용)
-            log_level: 로그 레벨 (falsy 값 전달 시 로그 비활성화)
         """
-        self.url = 'https://api.fda.gov/download.json'
+        self.url = url
         self.session = session or requests.Session()
-        self.logger = structlog.get_logger(__name__)
-        level = getattr(logging, log_level, logging.CRITICAL + 1) if log_level else logging.CRITICAL + 1
-        logging.getLogger(__name__).setLevel(level)
         self.metadata = None
 
     def fetch_metadata(self) -> Dict:
@@ -68,14 +65,15 @@ class FDAExtractor:
         Raises:
             ValueError: 지원하지 않는 카테고리
         """
-        if category not in self.SUPPORTED_CATEGORIES:
-            raise ValueError(f"Invalid category: {category}")
 
         metadata = self.fetch_metadata()
         device_data = metadata['results']['device']
 
+        if category not in self.SUPPORTED_CATEGORIES:
+            raise ValueError(f"Invalid category: {category}")
+        
         if category not in device_data or 'partitions' not in device_data[category]:
-            return []
+            []
 
         # 카테고리별 필터 함수 탐색 (convention: _filter_{category})
         filter_fn = getattr(self, f'_filter_{category}', None)

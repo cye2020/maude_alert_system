@@ -190,7 +190,7 @@ def fetch_schema_and_build_sql(
     """
     # snowflake_load 임포트
     try:
-        from maude_early_alert.loading.snowflake_load import SnowflakeLoader
+        from maude_early_alert.loaders.snowflake_load import SnowflakeLoader
         import snowflake.connector
     except ImportError as e:
         print(f"Error: {e}", file=sys.stderr)
