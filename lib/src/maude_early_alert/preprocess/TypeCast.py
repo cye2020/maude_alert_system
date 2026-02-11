@@ -2,8 +2,9 @@
 타입 변환 SQL 생성 모듈
 """
 from typing import List, Dict
-
 import structlog
+
+from maude_early_alert.utils.sql_builder import build_cte_sql
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -31,8 +32,11 @@ def build_type_cast_sql(
         _build_cast_expr(col, table_alias)
         for col in columns
     ]
-    select_clause = ",\n    ".join(select_exprs)
-    sql = f"SELECT\n    {select_clause}\nFROM\n    {input_table} {table_alias}"
+    sql = build_cte_sql(
+        ctes=[],
+        from_clause=f"{input_table} {table_alias}",
+        select_cols=select_exprs,
+    )
 
     logger.debug("Type cast SQL generated", column_count=len(columns))
     return sql
@@ -45,7 +49,13 @@ def _build_cast_expr(col: Dict, table_alias: str) -> str:
     q = f'"{col_name}"'
 
     if col_type == "DATE":
-        return f"TRY_TO_DATE({table_alias}.{q}) AS {q}"
+        sql =  (
+            f"COALESCE("
+            f"\n    TRY_TO_DATE({table_alias}.{q}, 'YYYYMMDD'), "
+            f"\n    TRY_TO_DATE({table_alias}.{q}, 'YYYY-MM-DD')"
+            f"\n) AS {q}"
+        )
+        return sql
 
     if col_type in ["INTEGER", "INT"]:
         return f"TRY_TO_NUMBER({table_alias}.{q})::INTEGER AS {q}"

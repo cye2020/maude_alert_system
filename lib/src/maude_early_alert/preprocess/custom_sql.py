@@ -117,21 +117,58 @@ def build_apply_company_alias_sql(source: str, column: str) -> str:
     source = validate_identifier(source)
     column = validate_identifier(column)
 
-    when_clauses = "\n            ".join(
+    when_clauses = "\n        ".join(
         f"WHEN UPPER(TRIM({column})) LIKE '{alias}%' THEN '{parent}'"
         for alias, parent in _SORTED_ALIASES
     )
     case_expr = (
         f"CASE\n"
-        f"            {when_clauses}\n"
-        f"            ELSE {column}\n"
-        f"        END AS {column}"
+        f"        {when_clauses}\n"
+        f"        ELSE {column}\n"
+        f"    END AS {column}"
     )
 
     return build_cte_sql(
         ctes=[],
         from_clause=source,
         replace_cols=[case_expr],
+    ) + "\n;"
+
+
+def build_extract_udi_di_sql(source: str, column: str = "UDI_PUBLIC") -> str:
+    """UDI_PUBLIC에서 UDI_DI 추출 SQL 생성 (CASE WHEN + REGEXP)
+
+    3가지 패턴에 따라 DI를 추출한다:
+    1. +로 시작 → + 이후 다음 특수문자 전까지의 영숫자
+    2. (01)로 시작 → (01) 이후 14자리 숫자
+    3. 영문자로 시작 → 원본 값 그대로
+
+    Args:
+        source: 소스 테이블명
+        column: UDI PUBLIC 컬럼명 (기본값: UDI_PUBLIC)
+
+    Returns:
+        완성된 SQL 문자열
+    """
+    source = validate_identifier(source)
+    column = validate_identifier(column)
+
+    case_expr = (
+        f"CASE \n"
+        f"            WHEN REGEXP_LIKE({column}, '^\\+[A-Za-z0-9]{{7,}}.*') "
+        f"THEN REGEXP_SUBSTR({column}, '^\\+([A-Za-z0-9]+)', 1, 1, 'e') \n"
+        f"            WHEN REGEXP_LIKE({column}, '^\\(01\\)[0-9]{{14,}}.*') "
+        f"THEN REGEXP_SUBSTR({column}, '^\\(01\\)([0-9]{{14}})', 1, 1, 'e') \n"
+        f"            WHEN REGEXP_LIKE({column}, '^[a-zA-Z].*') "
+        f"THEN {column} ELSE NULL \n"
+        f"        END"
+    )
+    coalesce_expr = f"COALESCE(UDI_DI, \n        {case_expr}) AS UDI_DI"
+
+    return build_cte_sql(
+        ctes=[],
+        from_clause=source,
+        replace_cols=[coalesce_expr],
     ) + "\n;"
 
 
@@ -218,6 +255,9 @@ if __name__ == '__main__':
     print()
     print("-- primary_udi_di")
     print(build_primary_udi_di_sql("UDI_STAGE_02", "public_device_record_key"))
+    print()
+    print("-- extract udi_di")
+    print(build_extract_udi_di_sql("UDI_STAGE_03"))
     print()
     print("-- company alias")
     print(build_apply_company_alias_sql("EVENT_STAGE_06", "MANUFACTURER_NAME"))
