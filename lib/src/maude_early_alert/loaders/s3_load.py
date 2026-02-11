@@ -149,6 +149,6 @@ if __name__ == '__main__':
     logical_date = pendulum.now().strftime('%Y%m')
 
     for file in files:
-        s3_key = s3_loader.s3_key_generate(file['url'], logical_date)
-        result = s3_loader.load(s3_key, file['url'])
+        s3_key = s3_loader.s3_key_generate(file, logical_date)
+        result = s3_loader.load(s3_key, file)
         logger.info('Load Result', s3_key=s3_key, result=result)

@@ -1,0 +1,5 @@
+url: https://api.fda.gov/download.json
+period: 5
+categories:
+  - event
+  - udi
