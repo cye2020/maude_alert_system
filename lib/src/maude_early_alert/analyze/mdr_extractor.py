@@ -401,7 +401,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # 1. Snowflake 연결
     # ------------------------------------------------------------------
-    secret = get_secret('snowflake/udf/credentials')
+    secret = get_secret('snowflake/silver/credentials')
     conn = snowflake.connector.connect(
         user=secret['user'],
         password=secret['password'],
@@ -421,8 +421,6 @@ if __name__ == "__main__":
     print()
 
     # 아래 3줄이 파이프라인에서 실행되는 코드입니다
-    cursor.execute('USE DATABASE MAUDE')
-    cursor.execute('USE SCHEMA SILVER')
     result = cursor.execute(sql)
     mdr_text = result.fetchall()
     unique_mdr_text = list(set(r[0] for r in mdr_text if r[0]))
@@ -433,7 +431,7 @@ if __name__ == "__main__":
     # 3. MDRExtractor(파사드)로 배치 처리
     # ------------------------------------------------------------------
     extractor = MDRExtractor(
-        model_path='Qwen/Qwen3-8B',
+        model_path='nvidia/Qwen3-14B-FP8',
         tensor_parallel_size=1,
         gpu_memory_utilization=0.80,
         max_model_len=16384,
@@ -454,6 +452,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     loader = SnowflakeLoader(secret['database'], secret['schema'])
     loader.create_extraction_table_if_not_exists(cursor)
+    print(results)
     count = loader.load_extraction_results(
         cursor=cursor,
         results=results,

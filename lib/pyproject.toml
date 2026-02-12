@@ -8,6 +8,38 @@ version = "0.1.0"
 description = "Custom Airflow utilities for My Company"
 requires-python = ">=3.9"
 dependencies = [
+    # Core
+    "structlog",
+    "pyyaml",
+    "pendulum",
+    "requests",
+    "tqdm",
+    "pydantic",
+    "tenacity",
+    # Data
+    "pandas",
+    # AWS
+    "boto3",
+    "aws-secretsmanager-caching",
+    # Snowflake
+    "snowflake-connector-python[pandas]",
+    "snowflake-snowpark-python",
+]
+
+[project.optional-dependencies]
+llm = [
+    "torch",
+    "transformers",
+    "vllm",
+    "openai",
+]
+udf = [
+    "rapidfuzz",
+    "country-named-entity-recognition",
+    "clean-text",
+]
+all = [
+    "maude-early-alert[llm,udf]",
 ]
 
 [tool.hatch.build.targets.wheel]
