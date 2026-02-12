@@ -54,7 +54,7 @@ class FDAExtractor:
     def extract(
         self, category: str,
         start: int = None, end: int = None
-    ) -> List[Dict[str, str]]:
+    ) -> List[str]:
         """카테고리별 파일 정보(url, display_name) 추출
 
         Args:
@@ -88,16 +88,18 @@ class FDAExtractor:
             if filter_fn and not filter_fn(url, start, end):
                 continue
 
-            files.append({
-                'url': url,
-                'display_name': partition.get('display_name'),
-            })
+            files.append(url)
 
         return files
 
 
 if __name__ == '__main__':
-    extractor = FDAExtractor()
+    from maude_early_alert.utils.config_loader import load_config
+    
+    cfg = load_config('load/extract')
+    url = cfg['url']
+    
+    extractor = FDAExtractor(url)
 
     import pendulum
     files = extractor.extract('event', start=2020, end=pendulum.now().year)
