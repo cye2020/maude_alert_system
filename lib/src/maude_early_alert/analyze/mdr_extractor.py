@@ -385,7 +385,10 @@ class MAUDEExtractor:
 # ============================================================================
 
 if __name__ == "__main__":
+    import os
     import warnings
+    if not os.environ.get('CUDA_VISIBLE_DEVICES'):
+        os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     warnings.filterwarnings('ignore')
 
     import snowflake.connector
@@ -394,6 +397,7 @@ if __name__ == "__main__":
         MDRExtractor,
         build_mdr_text_extract_sql,
     )
+    from maude_early_alert.loaders.snowflake_load import SnowflakeLoader
     # ------------------------------------------------------------------
     # 1. Snowflake 연결
     # ------------------------------------------------------------------
@@ -426,44 +430,50 @@ if __name__ == "__main__":
     print(f"Fetched {len(mdr_text)} rows → {len(unique_mdr_text)} unique MDR texts")
 
     # ------------------------------------------------------------------
-    # 3. MDRExtractor(파사드)로 배치 처리 — 파이프라인과 동일한 코드
+    # 3. 추출 실행 (USE_MOCK=True 이면 GPU 없이 더미 데이터로 전체 흐름 테스트)
     # ------------------------------------------------------------------
-    extractor = MDRExtractor(
-        model_path='Qwen/Qwen3-8B',
-        tensor_parallel_size=1,
-        gpu_memory_utilization=0.80,
-        max_model_len=16384,
-        max_num_batched_tokens=32768,
-        max_num_seqs=128,
-        max_retries=2,
-        enable_prefix_caching=True,
+    USE_MOCK = True  # GPU가 없을 때 True, 실제 vLLM 실행 시 False로 변경
+
+    if USE_MOCK:
+        from maude_early_alert.analyze.mock_extractor import MockMAUDEExtractor
+        from maude_early_alert.loaders.text_extract import records_to_rows
+        mock = MockMAUDEExtractor(model_path='Qwen/Qwen3-8B', max_retries=2)
+        rows = records_to_rows(unique_mdr_text)
+        results = mock.process_batch(
+            rows,
+            checkpoint_dir='./checkpoints',
+            checkpoint_interval=5000,
+            checkpoint_prefix='maude',
+        )
+    else:
+        extractor = MDRExtractor(
+            model_path='Qwen/Qwen3-8B',
+            tensor_parallel_size=1,
+            gpu_memory_utilization=0.80,
+            max_model_len=16384,
+            max_num_batched_tokens=32768,
+            max_num_seqs=128,
+            max_retries=2,
+            enable_prefix_caching=True,
+        )
+        results = extractor.process_batch(
+            unique_mdr_text,
+            checkpoint_dir='./checkpoints',
+            checkpoint_interval=5000,
+            checkpoint_prefix='maude',
+        )
+
+    # ------------------------------------------------------------------
+    # 4. Snowflake 적재
+    # ------------------------------------------------------------------
+    loader = SnowflakeLoader(secret['database'], secret['schema'])
+    loader.create_extraction_table_if_not_exists(cursor)
+    count = loader.load_extraction_results(
+        cursor=cursor,
+        results=results,
+        table_name='EVENT_STAGE_12_EXTRACTED',
     )
-
-    # unique_mdr_text(str 리스트)를 그대로 전달 — records_to_rows가 내부에서 변환
-    results = extractor.process_batch(
-        unique_mdr_text,
-        checkpoint_dir='./checkpoints',
-        checkpoint_interval=5000,
-        checkpoint_prefix='maude',
-    )
-
-    # ------------------------------------------------------------------
-    # 4. 결과 파일 저장 (테스트용 — 파이프라인에서는 아래 Snowflake 적재로 교체)
-    # ------------------------------------------------------------------
-    import json
-    output_path = './mdr_extraction_results.json'
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"\n✓ 결과 저장 완료: {output_path} ({len(results)}건)")
-
-    # Snowflake 적재 (파이프라인에서 활성화)
-    # loader = SnowflakeLoader(secret['database'], secret['schema'])
-    # loader.create_extraction_table_if_not_exists()
-    # count = loader.load_extraction_results(
-    #     results=results,
-    #     table_name='EVENT_STAGE_12_EXTRACTED',
-    # )
-    # print(f"\n최종 적재 완료: {count:,}건")
+    print(f"\n최종 적재 완료: {count:,}건")
 
     cursor.close()
     conn.close()
