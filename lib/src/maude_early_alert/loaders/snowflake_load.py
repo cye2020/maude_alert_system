@@ -22,8 +22,9 @@ from maude_early_alert.utils.helpers import (
 # =====================
 # text sql 적재 필요 파일
 # =====================
-from sql_builder import build_insert_sql
+from maude_early_alert.utils.sql_builder import build_insert_sql
 from textwrap import dedent
+import json
 
 
 def get_staging_table_name(table_name: str) -> str:
@@ -443,6 +444,7 @@ class SnowflakeLoader(SnowflakeBase):
     
     def load_extraction_results(
         self,
+        cursor: SnowflakeCursor,
         results: List[Dict[str, Any]],
         table_name: str = 'EVENT_STAGE_12_EXTRACTED'
     ) -> int:
@@ -515,7 +517,7 @@ class SnowflakeLoader(SnowflakeBase):
         
         try:
             # executemany로 배치 INSERT 수행
-            self.cursor.executemany(insert_sql, insert_data)
+            cursor.executemany(insert_sql, insert_data)
             
             print(f"\n✓ {len(insert_data):,}개 행 적재 완료")
             print(f"{'='*70}\n")
@@ -531,6 +533,7 @@ class SnowflakeLoader(SnowflakeBase):
     
     def create_extraction_table_if_not_exists(
         self,
+        cursor: SnowflakeCursor,
         table_name: str = 'EVENT_STAGE_12_EXTRACTED'
     ):
         """
@@ -569,7 +572,7 @@ class SnowflakeLoader(SnowflakeBase):
         
         try:
             print(f"\n테이블 생성 확인 중: {table_name}")
-            self.cursor.execute(create_table_sql)
+            cursor.execute(create_table_sql)
             print(f"테이블 준비 완료 (이미 존재하거나 새로 생성됨)")
         except Exception as e:
             print(f"테이블 생성/확인 중 오류: {str(e)}")

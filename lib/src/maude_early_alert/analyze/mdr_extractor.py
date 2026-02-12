@@ -29,7 +29,7 @@ from vllm.sampling_params import StructuredOutputsParams
 # ======================
 # 내부 라이브러리
 # ======================
-from maude_early_alert.analyze.prompt import Prompt
+from maude_early_alert.analyze.prompt import Prompt, GeneralPrompt
 
 
 class MAUDEExtractor:
@@ -62,7 +62,7 @@ class MAUDEExtractor:
         self.max_retries = max_retries
         self.model_path = model_path
         # None이면 기본 Prompt 사용 (mutable default argument 방지)
-        self.prompt = prompt if prompt is not None else Prompt()
+        self.prompt = prompt if prompt is not None else GeneralPrompt()
         self.extraction_model = self.prompt.get_extraction_model()
 
         print("=" * 70)
@@ -397,7 +397,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # 1. Snowflake 연결
     # ------------------------------------------------------------------
-    secret = get_secret('snowflake/bronze/credentials')
+    secret = get_secret('snowflake/udf/credentials')
     conn = snowflake.connector.connect(
         user=secret['user'],
         password=secret['password'],
@@ -417,6 +417,8 @@ if __name__ == "__main__":
     print()
 
     # 아래 3줄이 파이프라인에서 실행되는 코드입니다
+    cursor.execute('USE DATABASE MAUDE')
+    cursor.execute('USE SCHEMA SILVER')
     result = cursor.execute(sql)
     mdr_text = result.fetchall()
     unique_mdr_text = list(set(r[0] for r in mdr_text if r[0]))
