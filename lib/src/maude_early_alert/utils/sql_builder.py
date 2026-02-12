@@ -1,9 +1,10 @@
 """
 SQL 빌더 유틸리티
 CTE 구조의 SQL을 생성하는 범용 함수
+JOIN 절 생성 및 MDR 추출·적재 CTE 연결
 """
 from textwrap import dedent, indent
-from typing import List, Optional
+from typing import List, Optional, Union
 
 
 def _normalize(sql: str) -> str:
@@ -102,6 +103,119 @@ def build_cte_sql(
     return "\n".join(parts)
 
 
+def build_insert_sql(
+    table_name: str,
+    columns: List[str],
+    num_rows: int = 1,
+) -> str:
+    """
+    INSERT INTO SQL 문자열 생성.
+
+    Snowflake connector의 executemany()와 함께 쓸 때는 num_rows=1로 고정하고
+    cursor.executemany(sql, list_of_tuples) 패턴으로 사용합니다.
+
+    Args:
+        table_name: INSERT 대상 테이블명
+        columns: 컬럼 이름 리스트 (순서가 데이터 튜플 순서와 일치해야 함)
+        num_rows: VALUES 절에 생성할 행 수. executemany 사용 시 1 고정
+
+    Returns:
+        "INSERT INTO table (col1, col2) VALUES (%s, %s)" 형태 문자열
+
+    Example:
+        sql = build_insert_sql("MY_TABLE", ["COL_A", "COL_B"])
+        cursor.executemany(sql, [("val1", "val2"), ("val3", "val4")])
+    """
+    col_clause = ", ".join(columns)
+    row_placeholder = "(" + ", ".join(["%s"] * len(columns)) + ")"
+
+    if num_rows == 1:
+        return f"INSERT INTO {table_name} ({col_clause}) VALUES {row_placeholder}"
+
+    # num_rows > 1: 단건 execute로 여러 행 한번에 INSERT할 때
+    values_clause = ", ".join([row_placeholder] * num_rows)
+    return f"INSERT INTO {table_name} ({col_clause}) VALUES {values_clause}"
+
+
+def build_join_clause(
+    left_table: str,
+    right_table: str,
+    on_columns: Union[str, List[str]],
+    join_type: str = "LEFT",
+    left_alias: Optional[str] = None,
+    right_alias: Optional[str] = None,
+) -> str:
+    """범용 JOIN 절 한 줄 생성 (예: EVENT_STAGE_12 에 추출 결과 LEFT JOIN).
+
+    Args:
+        left_table: 왼쪽 테이블 (또는 CTE 이름)
+        right_table: 오른쪽 테이블 (또는 CTE 이름)
+        on_columns: ON 조건에 쓸 컬럼명(들). 하나면 단일 컬럼 동등 조인, 리스트면 AND 로 연결
+        join_type: JOIN 종류 (LEFT, INNER, RIGHT 등)
+        left_alias: 왼쪽 alias (없으면 테이블명 그대로)
+        right_alias: 오른쪽 alias (없으면 테이블명 그대로)
+
+    Returns:
+        "LEFT JOIN right_table r ON l.MDR_TEXT = r.MDR_TEXT" 형태 문자열
+    """
+    join_type = join_type.strip().upper()
+    cols = [on_columns] if isinstance(on_columns, str) else list(on_columns)
+    l_a = left_alias or left_table
+    r_a = right_alias or right_table
+    on_parts = [f"{l_a}.{c} = {r_a}.{c}" for c in cols]
+    on_clause = " AND ".join(on_parts)
+    return f"{join_type} JOIN {right_table} {r_a} ON {on_clause}"
+
+
+def build_extract_join_sql(
+    extract_cte_name: str,
+    extract_cte_query: str,
+    base_table: str,
+    join_on_column: str = "MDR_TEXT",
+    base_alias: str = "e",
+    extract_alias: str = "ex",
+    select_columns: Optional[List[str]] = None,
+) -> str:
+    """MDR_TEXT 추출 CTE + EVENT_STAGE_12(또는 base_table) LEFT JOIN 한 SQL 생성.
+
+    - 1번 CTE: 추출용 (extract_cte_query → extract_cte_name)
+    - 최종: base_table base_alias LEFT JOIN extract_cte_name extract_alias ON e.MDR_TEXT = ex.MDR_TEXT
+
+    Args:
+        extract_cte_name: 추출 결과 CTE 이름
+        extract_cte_query: 추출용 SELECT 쿼리 (예: build_mdr_text_extract_sql 결과)
+        base_table: 기준 테이블 (예: EVENT_STAGE_12)
+        join_on_column: JOIN ON 에 쓸 컬럼명
+        base_alias: 기준 테이블 alias
+        extract_alias: 추출 CTE alias
+        select_columns: 최종 SELECT 컬럼 (None 이면 base.* + ex.* 등은 호출자가 final_query 로 지정)
+
+    Returns:
+        WITH ... SELECT ... FROM base_table e LEFT JOIN ... 형태의 전체 SQL
+    """
+    ctes = [{"name": extract_cte_name, "query": extract_cte_query}]
+    join_clause = build_join_clause(
+        left_table=base_table,
+        right_table=extract_cte_name,
+        on_columns=join_on_column,
+        join_type="LEFT",
+        left_alias=base_alias,
+        right_alias=extract_alias,
+    )
+    from_clause = f"{base_table} {base_alias}\n{join_clause}"
+    if select_columns is not None:
+        return build_cte_sql(
+            ctes=ctes,
+            from_clause=from_clause,
+            select_cols=select_columns,
+        )
+    final_query = (
+        f"SELECT {base_alias}.*, {extract_alias}.*\n"
+        f"FROM\n\t{base_table} {base_alias}\n\t{join_clause}"
+    )
+    return build_cte_sql(ctes=ctes, final_query=final_query)
+
+
 if __name__ == '__main__':
     # 테스트 1: 기존 방식 (from_clause) — dedent 자동 적용 확인
     ctes = [
@@ -146,3 +260,25 @@ if __name__ == '__main__':
     )
     print("\n=== 모드 2: final_query ===")
     print(sql2)
+
+    # 테스트 3: 범용 JOIN 절
+    join_line = build_join_clause(
+        left_table="EVENT_STAGE_12",
+        right_table="EXTRACTED",
+        on_columns="MDR_TEXT",
+        left_alias="e",
+        right_alias="ex",
+    )
+    print("\n=== build_join_clause (LEFT JOIN ON MDR_TEXT) ===")
+    print(join_line)
+
+    # 테스트 4: MDR 추출 CTE + EVENT_STAGE_12 LEFT JOIN
+    extract_sql = "SELECT MDR_TEXT, patient_harm, defect_type FROM some_extract_table"
+    full_sql = build_extract_join_sql(
+        extract_cte_name="extracted",
+        extract_cte_query=extract_sql,
+        base_table="EVENT_STAGE_12",
+        join_on_column="MDR_TEXT",
+    )
+    print("\n=== build_extract_join_sql ===")
+    print(full_sql)

@@ -19,6 +19,12 @@ from maude_early_alert.utils.helpers import (
     validate_identifier,
 )
 
+# =====================
+# text sql 적재 필요 파일
+# =====================
+from sql_builder import build_insert_sql
+from textwrap import dedent
+
 
 def get_staging_table_name(table_name: str) -> str:
     """원본 테이블명에서 STG_ 접두사가 붙은 스테이징 테이블명 생성"""
@@ -373,6 +379,204 @@ class SnowflakeLoader(SnowflakeBase):
             node[key] = typ
 
         return result
+
+    # extractor sql
+    def build_dataframe_load_sql(
+        self, 
+        table_name: str,
+        columns: List[str]
+    ) -> str:
+        """
+        dataframe 적재 sql
+        Args:
+            table_name: 데이터 넣을 테이블 이름
+            columns: 컬럼 이름 리스트
+        """
+        sql = build_insert_sql(
+            table_name = table_name,
+            columns = columns,
+            num_rows = 1    
+        )
+        
+        return sql
+    
+    def prepare_insert_data(
+        self, 
+        results: List[Dict[str, Any]]
+    ) -> List[tuple]:
+        """
+        vLLM 추출 결과를 INSERT용 데이터로 변환
+        """
+        insert_data = []
+        
+        # 성공한 결과만 처리
+        for result in results:
+            # _success 플래그 확인
+            if not result.get('_success', False):
+                continue
+            
+            # 결과에서 필요한 데이터 추출
+            incident = result.get('incident_details', {})
+            manufacturer = result.get('manufacturer_inspection', {})
+            
+            # 한 행의 데이터 튜플 생성
+            # 순서는 load_extraction_results의 columns 순서와 일치해야 함
+            row_data = (
+                result.get('_mdr_text', ''),                                    # MDR_TEXT
+                incident.get('patient_harm'),                                   # PATIENT_HARM
+                incident.get('patient_harm_original_text', ''),                # PATIENT_HARM_ORIGINAL_TEXT
+                json.dumps(incident.get('problem_components', [])),            # PROBLEM_COMPONENTS (JSON)
+                incident.get('problem_components_original_text', ''),          # PROBLEM_COMPONENTS_ORIGINAL_TEXT
+                manufacturer.get('defect_confirmed'),                          # DEFECT_CONFIRMED
+                manufacturer.get('defect_confirmed_original_text', ''),        # DEFECT_CONFIRMED_ORIGINAL_TEXT
+                manufacturer.get('defect_type'),                               # DEFECT_TYPE
+                manufacturer.get('defect_type_original_text', ''),             # DEFECT_TYPE_ORIGINAL_TEXT
+                result.get('_input_tokens', 0),                                # INPUT_TOKENS
+                result.get('_output_tokens', 0),                               # OUTPUT_TOKENS
+                result.get('_total_tokens', 0),                                # TOTAL_TOKENS
+                result.get('_attempts', 0)                                     # ATTEMPTS
+            )
+            
+            insert_data.append(row_data)
+        
+        return insert_data
+    
+    def load_extraction_results(
+        self,
+        results: List[Dict[str, Any]],
+        table_name: str = 'EVENT_STAGE_12_EXTRACTED'
+    ) -> int:
+        """
+        vLLM 추출 결과를 Snowflake 테이블에 적재
+        
+        MAUDEExtractor.process_batch()의 결과를 받아서
+        Snowflake 테이블에 적재합니다.
+        
+        Args:
+            results: MAUDEExtractor.process_batch()의 결과 리스트
+            table_name: 적재할 테이블 이름
+        
+        Returns:
+            적재된 행 개수
+            
+        Raises:
+            Exception: 적재 중 오류 발생 시
+            
+        Example:
+            extractor = MAUDEExtractor()
+            results = extractor.process_batch(mdr_records)
+            
+            loader = SnowflakeLoader(cursor)
+            count = loader.load_extraction_results(
+                results=results,
+                table_name='EVENT_STAGE_12_EXTRACTED'
+            )
+        """
+        # 적재할 컬럼 정의
+        # prepare_insert_data의 row_data 순서와 일치해야 함
+        columns = [
+            'MDR_TEXT',                          # 원본 MDR 텍스트
+            'PATIENT_HARM',                      # 환자 피해 분류
+            'PATIENT_HARM_ORIGINAL_TEXT',        # 환자 피해 원문
+            'PROBLEM_COMPONENTS',                # 문제 구성요소 (JSON 배열)
+            'PROBLEM_COMPONENTS_ORIGINAL_TEXT',  # 문제 구성요소 원문
+            'DEFECT_CONFIRMED',                  # 결함 확인 여부
+            'DEFECT_CONFIRMED_ORIGINAL_TEXT',    # 결함 확인 원문
+            'DEFECT_TYPE',                       # 결함 유형
+            'DEFECT_TYPE_ORIGINAL_TEXT',         # 결함 유형 원문
+            'INPUT_TOKENS',                      # 입력 토큰 수
+            'OUTPUT_TOKENS',                     # 출력 토큰 수
+            'TOTAL_TOKENS',                      # 전체 토큰 수
+            'ATTEMPTS'                           # 재시도 횟수
+        ]
+        
+        # INSERT SQL 생성
+        insert_sql = self.build_dataframe_load_sql(
+            table_name=table_name,
+            columns=columns
+        )
+        
+        # 데이터 준비
+        insert_data = self.prepare_insert_data(results)
+        
+        # 적재할 데이터가 없으면 경고 후 종료
+        if not insert_data:
+            print("경고: 적재할 데이터가 없습니다 (모든 추출이 실패했거나 결과가 비어있음)")
+            return 0
+        
+        # 배치 INSERT 실행
+        print(f"\n{'='*70}")
+        print(f"Snowflake 데이터 적재 시작")
+        print(f"{'='*70}")
+        print(f"  테이블: {table_name}")
+        print(f"  전체 결과: {len(results):,}개")
+        print(f"  적재 대상: {len(insert_data):,}개 (성공한 항목만)")
+        print(f"  실패/제외: {len(results) - len(insert_data):,}개")
+        
+        try:
+            # executemany로 배치 INSERT 수행
+            self.cursor.executemany(insert_sql, insert_data)
+            
+            print(f"\n✓ {len(insert_data):,}개 행 적재 완료")
+            print(f"{'='*70}\n")
+            
+            return len(insert_data)
+        
+        except Exception as e:
+            print(f"\n적재 중 오류 발생")
+            print(f"  오류 메시지: {str(e)}")
+            print(f"  테이블: {table_name}")
+            print(f"{'='*70}\n")
+            raise
+    
+    def create_extraction_table_if_not_exists(
+        self,
+        table_name: str = 'EVENT_STAGE_12_EXTRACTED'
+    ):
+        """
+        추출 결과를 저장할 테이블 생성 (없으면)
+        
+        vLLM 추출 결과를 저장할 테이블을 생성합니다.
+        이미 존재하면 무시됩니다.
+        
+        Args:
+            table_name: 생성할 테이블 이름
+            
+        Note:
+            - MDR_TEXT: 원본 텍스트 (최대 16MB)
+            - PROBLEM_COMPONENTS: JSON 형태로 저장 (최대 16MB)
+            - DEFECT_CONFIRMED: BOOLEAN 타입
+            - CREATED_AT: 자동 타임스탬프
+        """
+        create_table_sql = dedent(f"""\
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                MDR_TEXT VARCHAR(16777216),
+                PATIENT_HARM VARCHAR(50),
+                PATIENT_HARM_ORIGINAL_TEXT VARCHAR(200),
+                PROBLEM_COMPONENTS VARCHAR(16777216),
+                PROBLEM_COMPONENTS_ORIGINAL_TEXT VARCHAR(200),
+                DEFECT_CONFIRMED BOOLEAN,
+                DEFECT_CONFIRMED_ORIGINAL_TEXT VARCHAR(200),
+                DEFECT_TYPE VARCHAR(50),
+                DEFECT_TYPE_ORIGINAL_TEXT VARCHAR(200),
+                INPUT_TOKENS INTEGER,
+                OUTPUT_TOKENS INTEGER,
+                TOTAL_TOKENS INTEGER,
+                ATTEMPTS INTEGER,
+                CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+            )
+        """)
+        
+        try:
+            print(f"\n테이블 생성 확인 중: {table_name}")
+            self.cursor.execute(create_table_sql)
+            print(f"테이블 준비 완료 (이미 존재하거나 새로 생성됨)")
+        except Exception as e:
+            print(f"테이블 생성/확인 중 오류: {str(e)}")
+            # 테이블 생성 실패는 치명적이므로 예외를 다시 발생
+            raise
+        
+
 
 if __name__=='__main__':
     import pendulum
