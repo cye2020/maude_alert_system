@@ -430,38 +430,24 @@ if __name__ == "__main__":
     print(f"Fetched {len(mdr_text)} rows → {len(unique_mdr_text)} unique MDR texts")
 
     # ------------------------------------------------------------------
-    # 3. 추출 실행 (USE_MOCK=True 이면 GPU 없이 더미 데이터로 전체 흐름 테스트)
+    # 3. MDRExtractor(파사드)로 배치 처리
     # ------------------------------------------------------------------
-    USE_MOCK = True  # GPU가 없을 때 True, 실제 vLLM 실행 시 False로 변경
-
-    if USE_MOCK:
-        from maude_early_alert.analyze.mock_extractor import MockMAUDEExtractor
-        from maude_early_alert.loaders.text_extract import records_to_rows
-        mock = MockMAUDEExtractor(model_path='Qwen/Qwen3-8B', max_retries=2)
-        rows = records_to_rows(unique_mdr_text)
-        results = mock.process_batch(
-            rows,
-            checkpoint_dir='./checkpoints',
-            checkpoint_interval=5000,
-            checkpoint_prefix='maude',
-        )
-    else:
-        extractor = MDRExtractor(
-            model_path='Qwen/Qwen3-8B',
-            tensor_parallel_size=1,
-            gpu_memory_utilization=0.80,
-            max_model_len=16384,
-            max_num_batched_tokens=32768,
-            max_num_seqs=128,
-            max_retries=2,
-            enable_prefix_caching=True,
-        )
-        results = extractor.process_batch(
-            unique_mdr_text,
-            checkpoint_dir='./checkpoints',
-            checkpoint_interval=5000,
-            checkpoint_prefix='maude',
-        )
+    extractor = MDRExtractor(
+        model_path='Qwen/Qwen3-8B',
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.80,
+        max_model_len=16384,
+        max_num_batched_tokens=32768,
+        max_num_seqs=128,
+        max_retries=2,
+        enable_prefix_caching=True,
+    )
+    results = extractor.process_batch(
+        unique_mdr_text,
+        checkpoint_dir='./checkpoints',
+        checkpoint_interval=5000,
+        checkpoint_prefix='maude',
+    )
 
     # ------------------------------------------------------------------
     # 4. Snowflake 적재
