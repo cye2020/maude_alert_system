@@ -138,7 +138,7 @@ class MAUDEExtractor:
         """LLM 응답 JSON 파싱 + Pydantic 모델로 검증."""
         data = json.loads(response_text)
         validated = self.extraction_model(**data)
-        return validated.model_dump()
+        return validated.model_dump(mode='json')
 
     def _generate_and_parse(
         self,
@@ -431,7 +431,7 @@ if __name__ == "__main__":
     # 3. MDRExtractor(파사드)로 배치 처리
     # ------------------------------------------------------------------
     extractor = MDRExtractor(
-        model_path='nvidia/Qwen3-14B-FP8',
+        model_path='Qwen/Qwen3-14B-AWQ',
         tensor_parallel_size=1,
         gpu_memory_utilization=0.80,
         max_model_len=16384,
@@ -452,13 +452,15 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     loader = SnowflakeLoader(secret['database'], secret['schema'])
     loader.create_extraction_table_if_not_exists(cursor)
-    print(results)
     count = loader.load_extraction_results(
         cursor=cursor,
         results=results,
         table_name='EVENT_STAGE_12_EXTRACTED',
     )
     print(f"\n최종 적재 완료: {count:,}건")
+
+    # vLLM 엔진을 명시적으로 먼저 종료 (GC 순서 문제로 인한 spurious 에러 방지)
+    del extractor
 
     cursor.close()
     conn.close()
