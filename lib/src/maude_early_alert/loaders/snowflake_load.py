@@ -22,7 +22,7 @@ from maude_early_alert.utils.helpers import (
 # =====================
 # text sql 적재 필요 파일
 # =====================
-from maude_early_alert.utils.sql_builder import build_insert_sql
+from maude_early_alert.utils.sql_builder import build_cte_sql, build_insert_sql, build_join_clause
 from textwrap import dedent
 import json
 
@@ -579,17 +579,21 @@ class SnowflakeLoader(SnowflakeBase):
         if select_columns is None:
             select_columns = [f"{base_alias}.*"] + extract_cols
 
-        select_clause = ",\n    ".join(select_columns)
+        join_clause = build_join_clause(
+            left_table=base_table_name,
+            right_table=extracted_table,
+            on_columns="MDR_TEXT",
+            join_type="LEFT",
+            left_alias=base_alias,
+            right_alias=extract_alias,
+        )
 
-        return dedent(f"""\
-            SELECT
-                {select_clause}
-            FROM
-                {base_table_name} {base_alias}
-            LEFT JOIN
-                {extracted_table} {extract_alias}
-                ON {base_alias}.MDR_TEXT = {extract_alias}.MDR_TEXT
-        """)
+        return build_cte_sql(
+            ctes=[],
+            from_clause=f"{base_table_name} {base_alias}",
+            select_cols=select_columns,
+            joins=[join_clause],
+        )
 
 if __name__=='__main__':
     import pendulum

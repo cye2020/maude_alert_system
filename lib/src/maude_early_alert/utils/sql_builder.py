@@ -6,6 +6,8 @@ JOIN 절 생성 및 MDR 추출·적재 CTE 연결
 from textwrap import dedent, indent
 from typing import List, Optional, Union
 
+_INDENT = '    '  # 4-space indent
+
 
 def _normalize(sql: str) -> str:
     """dedent + strip 으로 들여쓰기 정규화"""
@@ -17,7 +19,7 @@ def _build_with_clause(ctes: List[dict]) -> str:
     cte_definitions = []
     for cte in ctes:
         query = _normalize(cte['query'])
-        indented = indent(query, '\t')
+        indented = indent(query, _INDENT)
         cte_definitions.append(f"{cte['name']} AS (\n{indented}\n)")
     return "WITH\n" + ",\n".join(cte_definitions)
 
@@ -80,25 +82,25 @@ def build_cte_sql(
     # SELECT 절
     keyword = "SELECT DISTINCT" if distinct else "SELECT"
     if replace_cols:
-        replace_clause = indent(",\n".join(replace_cols), '\t')
+        replace_clause = indent(",\n".join(replace_cols), _INDENT)
         star = f"{table_alias}.*" if table_alias else "*"
         parts.append(f"{keyword} {star} REPLACE (\n{replace_clause}\n)")
     elif select_cols:
-        select_clause = indent(",\n".join(select_cols), '\t')
+        select_clause = indent(",\n".join(select_cols), _INDENT)
         parts.append(f"{keyword}\n{select_clause}")
     else:
-        parts.append(f"{keyword}\n\t*")
+        parts.append(f"{keyword}\n{_INDENT}*")
 
     # FROM 절
-    parts.append("FROM\n" + indent(from_clause, '\t'))
+    parts.append("FROM\n" + indent(from_clause, _INDENT))
 
     # JOIN 절
     if joins:
-        parts.append(indent("\n".join(joins), '\t'))
+        parts.append(indent("\n".join(joins), _INDENT))
 
     # WHERE 절
     if where:
-        parts.append("WHERE\n" + indent(where, '\t'))
+        parts.append("WHERE\n" + indent(where, _INDENT))
 
     return "\n".join(parts)
 
