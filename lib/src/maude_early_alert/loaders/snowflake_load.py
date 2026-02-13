@@ -402,57 +402,65 @@ class SnowflakeLoader(SnowflakeBase):
         return sql
     
     def prepare_insert_data(
-        self, 
+        self,
         results: List[Dict[str, Any]]
     ) -> List[tuple]:
         """
-        vLLM 추출 결과를 INSERT용 데이터로 변환
+        vLLM 추출 결과를 MERGE용 데이터로 변환.
+
+        MDR_TEXT(키)와 추출된 4개 컬럼만 반환.
         """
         insert_data = []
-        
-        # 성공한 결과만 처리
+
         for result in results:
-            # _success 플래그 확인
             if not result.get('_success', False):
                 continue
-            
-            # 결과에서 필요한 데이터 추출
+
             incident = result.get('incident_details', {})
             manufacturer = result.get('manufacturer_inspection', {})
-            
-            # 한 행의 데이터 튜플 생성
-            # 순서는 load_extraction_results의 columns 순서와 일치해야 함
+
             row_data = (
-                result.get('_mdr_text', ''),                                    # MDR_TEXT
-                incident.get('patient_harm'),                                   # PATIENT_HARM
-                incident.get('patient_harm_original_text', ''),                # PATIENT_HARM_ORIGINAL_TEXT
-                json.dumps(incident.get('problem_components', [])),            # PROBLEM_COMPONENTS (JSON)
-                incident.get('problem_components_original_text', ''),          # PROBLEM_COMPONENTS_ORIGINAL_TEXT
-                manufacturer.get('defect_confirmed'),                          # DEFECT_CONFIRMED
-                manufacturer.get('defect_confirmed_original_text', ''),        # DEFECT_CONFIRMED_ORIGINAL_TEXT
-                manufacturer.get('defect_type'),                               # DEFECT_TYPE
-                manufacturer.get('defect_type_original_text', ''),             # DEFECT_TYPE_ORIGINAL_TEXT
-                result.get('_input_tokens', 0),                                # INPUT_TOKENS
-                result.get('_output_tokens', 0),                               # OUTPUT_TOKENS
-                result.get('_total_tokens', 0),                                # TOTAL_TOKENS
-                result.get('_attempts', 0)                                     # ATTEMPTS
+                result.get('_mdr_text', ''),                        # MDR_TEXT (JOIN 키)
+                incident.get('patient_harm'),                       # PATIENT_HARM
+                json.dumps(incident.get('problem_components', [])), # PROBLEM_COMPONENTS
+                manufacturer.get('defect_confirmed'),               # DEFECT_CONFIRMED
+                manufacturer.get('defect_type'),                    # DEFECT_TYPE
             )
-            
+
             insert_data.append(row_data)
-        
+
         return insert_data
-    
+
+    # 추출 결과 컬럼 정의 (ADD COLUMN IF NOT EXISTS 에 사용)
+    EXTRACTION_COLUMNS = [
+        ('PATIENT_HARM',       'VARCHAR(50)'),
+        ('PROBLEM_COMPONENTS', 'VARCHAR(16777216)'),
+        ('DEFECT_CONFIRMED',   'BOOLEAN'),
+        ('DEFECT_TYPE',        'VARCHAR(50)'),
+    ]
+
+    def _ensure_extraction_columns(
+        self,
+        cursor: SnowflakeCursor,
+        table_name: str,
+    ) -> None:
+        """컬럼이 없으면 추가, 이미 있으면 무시 (멱등성 보장)."""
+        for col_name, col_type in self.EXTRACTION_COLUMNS:
+            cursor.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+            )
+        print(f"  컬럼 준비 완료: {', '.join(c for c, _ in self.EXTRACTION_COLUMNS)}")
+
     def load_extraction_results(
         self,
         cursor: SnowflakeCursor,
         results: List[Dict[str, Any]],
-        table_name: str = 'EVENT_STAGE_12_EXTRACTED'
+        table_name: str = 'EVENT_STAGE_12'
     ) -> int:
         """
-        vLLM 추출 결과를 Snowflake 테이블에 적재
+        vLLM 추출 결과를 EVENT_STAGE_12 테이블에 MERGE.
         
-        MAUDEExtractor.process_batch()의 결과를 받아서
-        Snowflake 테이블에 적재합니다.
+        MDR_TEXT를 키로 삼아 일치하는 행의 4개 컬럼을 UPDATE합니다. 
         
         Args:
             results: MAUDEExtractor.process_batch()의 결과 리스트
@@ -471,34 +479,11 @@ class SnowflakeLoader(SnowflakeBase):
             loader = SnowflakeLoader(cursor)
             count = loader.load_extraction_results(
                 results=results,
-                table_name='EVENT_STAGE_12_EXTRACTED'
+                table_name='EVENT_STAGE_12'
             )
         """
-        # 적재할 컬럼 정의
-        # prepare_insert_data의 row_data 순서와 일치해야 함
-        columns = [
-            'MDR_TEXT',                          # 원본 MDR 텍스트
-            'PATIENT_HARM',                      # 환자 피해 분류
-            'PATIENT_HARM_ORIGINAL_TEXT',        # 환자 피해 원문
-            'PROBLEM_COMPONENTS',                # 문제 구성요소 (JSON 배열)
-            'PROBLEM_COMPONENTS_ORIGINAL_TEXT',  # 문제 구성요소 원문
-            'DEFECT_CONFIRMED',                  # 결함 확인 여부
-            'DEFECT_CONFIRMED_ORIGINAL_TEXT',    # 결함 확인 원문
-            'DEFECT_TYPE',                       # 결함 유형
-            'DEFECT_TYPE_ORIGINAL_TEXT',         # 결함 유형 원문
-            'INPUT_TOKENS',                      # 입력 토큰 수
-            'OUTPUT_TOKENS',                     # 출력 토큰 수
-            'TOTAL_TOKENS',                      # 전체 토큰 수
-            'ATTEMPTS'                           # 재시도 횟수
-        ]
+        import time
         
-        # INSERT SQL 생성
-        insert_sql = self.build_dataframe_load_sql(
-            table_name=table_name,
-            columns=columns
-        )
-        
-        # 데이터 준비
         insert_data = self.prepare_insert_data(results)
         
         # 적재할 데이터가 없으면 경고 후 종료
@@ -514,79 +499,70 @@ class SnowflakeLoader(SnowflakeBase):
         print(f"  전체 결과: {len(results):,}개")
         print(f"  적재 대상: {len(insert_data):,}개 (성공한 항목만)")
         print(f"  실패/제외: {len(results) - len(insert_data):,}개")
+
+        # 1단계: 컬럼이 없으면 자동 추가
+        self._ensure_extraction_columns(cursor, table_name)
+
+        temp_table = f"{table_name}_STAGE_{int(time.time())}"
         
         try:
-            # executemany로 배치 INSERT 수행
-            cursor.executemany(insert_sql, insert_data)
+            cursor.execute(dedent(f"""\
+                CREATE TEMPORARY TABLE {temp_table} (
+                    MDR_TEXT           VARCHAR(16777216),
+                    PATIENT_HARM       VARCHAR(50),
+                    PROBLEM_COMPONENTS VARCHAR(16777216),
+                    DEFECT_CONFIRMED   BOOLEAN,
+                    DEFECT_TYPE        VARCHAR(50)
+                )
+            """))
             
-            print(f"\n✓ {len(insert_data):,}개 행 적재 완료")
-            print(f"{'='*70}\n")
+            stage_insert_sql = build_insert_sql(
+                table_name=temp_table,
+                columns=[
+                    'MDR_TEXT', 'PATIENT_HARM', 'PROBLEM_COMPONENTS',
+                    'DEFECT_CONFIRMED', 'DEFECT_TYPE',
+                ],
+                num_rows=1,
+            )
             
+            cursor.executemany(stage_insert_sql, insert_data)
+            
+            cursor.execute(dedent(f"""\
+                MERGE INTO {table_name} AS target
+                USING {temp_table} AS source
+                ON target.MDR_TEXT = source.MDR_TEXT
+                WHEN MATCHED THEN UPDATE SET
+                    target.PATIENT_HARM        = source.PATIENT_HARM,
+                    target.PROBLEM_COMPONENTS  = source.PROBLEM_COMPONENTS,
+                    target.DEFECT_CONFIRMED    = source.DEFECT_CONFIRMED,
+                    target.DEFECT_TYPE         = source.DEFECT_TYPE
+            """))
+
+            # Snowflake MERGE 결과: (rows inserted, rows updated, rows deleted)
+            merge_result = cursor.fetchone()
+            updated = merge_result[1] if merge_result and len(merge_result) > 1 else '?'
+
             return len(insert_data)
-        
+
         except Exception as e:
             print(f"\n적재 중 오류 발생")
             print(f"  오류 메시지: {str(e)}")
             print(f"  테이블: {table_name}")
             print(f"{'='*70}\n")
             raise
-    
-    def create_extraction_table_if_not_exists(
-        self,
-        cursor: SnowflakeCursor,
-        table_name: str = 'EVENT_STAGE_12_EXTRACTED'
-    ):
-        """
-        추출 결과를 저장할 테이블 생성 (없으면)
-        
-        vLLM 추출 결과를 저장할 테이블을 생성합니다.
-        이미 존재하면 무시됩니다.
-        
-        Args:
-            table_name: 생성할 테이블 이름
-            
-        Note:
-            - MDR_TEXT: 원본 텍스트 (최대 16MB)
-            - PROBLEM_COMPONENTS: JSON 형태로 저장 (최대 16MB)
-            - DEFECT_CONFIRMED: BOOLEAN 타입
-            - CREATED_AT: 자동 타임스탬프
-        """
-        create_table_sql = dedent(f"""\
-            CREATE TABLE IF NOT EXISTS {table_name} (
-                MDR_TEXT VARCHAR(16777216),
-                PATIENT_HARM VARCHAR(50),
-                PATIENT_HARM_ORIGINAL_TEXT VARCHAR(200),
-                PROBLEM_COMPONENTS VARCHAR(16777216),
-                PROBLEM_COMPONENTS_ORIGINAL_TEXT VARCHAR(200),
-                DEFECT_CONFIRMED BOOLEAN,
-                DEFECT_CONFIRMED_ORIGINAL_TEXT VARCHAR(200),
-                DEFECT_TYPE VARCHAR(50),
-                DEFECT_TYPE_ORIGINAL_TEXT VARCHAR(200),
-                INPUT_TOKENS INTEGER,
-                OUTPUT_TOKENS INTEGER,
-                TOTAL_TOKENS INTEGER,
-                ATTEMPTS INTEGER,
-                CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-            )
-        """)
-        
-        try:
-            print(f"\n테이블 생성 확인 중: {table_name}")
-            cursor.execute(create_table_sql)
-            print(f"테이블 준비 완료 (이미 존재하거나 새로 생성됨)")
-        except Exception as e:
-            print(f"테이블 생성/확인 중 오류: {str(e)}")
-            # 테이블 생성 실패는 치명적이므로 예외를 다시 발생
-            raise
-        
 
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+            except Exception:
+                pass
 
 if __name__=='__main__':
     import pendulum
     import snowflake.connector
     from maude_early_alert.utils.secrets import get_secret
 
-    secret = get_secret('snowflake/bronze/credentials')
+    secret = get_secret('snowflake/silver/credentials')
     conn = snowflake.connector.connect(
         user=secret['user'],
         password=secret['password'],

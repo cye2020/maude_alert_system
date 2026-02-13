@@ -451,11 +451,10 @@ if __name__ == "__main__":
     # 4. Snowflake 적재
     # ------------------------------------------------------------------
     loader = SnowflakeLoader(secret['database'], secret['schema'])
-    loader.create_extraction_table_if_not_exists(cursor)
     count = loader.load_extraction_results(
         cursor=cursor,
         results=results,
-        table_name='EVENT_STAGE_12_EXTRACTED',
+        table_name='EVENT_STAGE_12',
     )
     print(f"\n최종 적재 완료: {count:,}건")
 
