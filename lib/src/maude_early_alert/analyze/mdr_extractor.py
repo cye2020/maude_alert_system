@@ -454,14 +454,14 @@ if __name__ == "__main__":
     count = loader.load_extraction_results(
         cursor=cursor,
         results=results,
-        table_name='EVENT_STAGE_12',
+        base_table_name='EVENT_STAGE_12',
     )
     print(f"\n최종 적재 완료: {count:,}건")
 
     # ------------------------------------------------------------------
     # 5. JOIN SQL 확인 (EVENT_STAGE_12 LEFT JOIN EVENT_STAGE_12_EXTRACTED)
     # ------------------------------------------------------------------
-    join_sql = loader.build_extracted_join_sql(table_name='EVENT_STAGE_12')
+    join_sql = loader.build_extracted_join_sql(base_table_name='EVENT_STAGE_12')
     print("\n=== 조회용 JOIN SQL ===")
     print(join_sql)
 

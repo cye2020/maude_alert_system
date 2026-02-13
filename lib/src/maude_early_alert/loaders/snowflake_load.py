@@ -453,11 +453,11 @@ class SnowflakeLoader(SnowflakeBase):
         self,
         cursor: SnowflakeCursor,
         results: List[Dict[str, Any]],
-        table_name: str = 'EVENT_STAGE_12',
+        base_table_name: str = 'EVENT_STAGE_12',
         extracted_suffix: str = '_EXTRACTED',
     ) -> int:
         """
-        vLLM 추출 결과를 별도 테이블({table_name}_EXTRACTED)에 MERGE.
+        vLLM 추출 결과를 별도 테이블({base_table_name}_EXTRACTED)에 MERGE.
 
         원본 테이블(EVENT_STAGE_12)에는 쓰기 권한이 필요 없으며,
         MDR_TEXT를 키로 MERGE하여 멱등성을 보장합니다.
@@ -466,7 +466,7 @@ class SnowflakeLoader(SnowflakeBase):
         Args:
             cursor: Snowflake cursor
             results: MAUDEExtractor.process_batch()의 결과 리스트
-            table_name: 원본 테이블 이름 (JOIN 대상)
+            base_table_name: 원본 테이블 이름 (JOIN 대상, 실제 적재 대상은 {base_table_name}_EXTRACTED)
             extracted_suffix: 추출 테이블 접미사
 
         Returns:
@@ -474,7 +474,7 @@ class SnowflakeLoader(SnowflakeBase):
         """
         import time
 
-        extracted_table = f"{table_name}{extracted_suffix}"
+        extracted_table = f"{base_table_name}{extracted_suffix}"
         insert_data = self.prepare_insert_data(results)
 
         if not insert_data:
@@ -550,7 +550,7 @@ class SnowflakeLoader(SnowflakeBase):
 
     def build_extracted_join_sql(
         self,
-        table_name: str = 'EVENT_STAGE_12',
+        base_table_name: str = 'EVENT_STAGE_12',
         extracted_suffix: str = '_EXTRACTED',
         base_alias: str = 'e',
         extract_alias: str = 'ex',
@@ -559,7 +559,7 @@ class SnowflakeLoader(SnowflakeBase):
         """원본 테이블과 추출 결과 테이블을 LEFT JOIN하는 SELECT SQL 생성.
 
         Args:
-            table_name: 원본 테이블
+            base_table_name: 원본 테이블 (JOIN 기준, 실제 적재 대상은 {base_table_name}_EXTRACTED)
             extracted_suffix: 추출 테이블 접미사
             base_alias: 원본 테이블 alias
             extract_alias: 추출 테이블 alias
@@ -568,7 +568,7 @@ class SnowflakeLoader(SnowflakeBase):
         Returns:
             SELECT ... FROM EVENT_STAGE_12 e LEFT JOIN EVENT_STAGE_12_EXTRACTED ex ON ...
         """
-        extracted_table = f"{table_name}{extracted_suffix}"
+        extracted_table = f"{base_table_name}{extracted_suffix}"
         extract_cols = [
             f"{extract_alias}.PATIENT_HARM",
             f"{extract_alias}.PROBLEM_COMPONENTS",
@@ -585,7 +585,7 @@ class SnowflakeLoader(SnowflakeBase):
             SELECT
                 {select_clause}
             FROM
-                {table_name} {base_alias}
+                {base_table_name} {base_alias}
             LEFT JOIN
                 {extracted_table} {extract_alias}
                 ON {base_alias}.MDR_TEXT = {extract_alias}.MDR_TEXT
