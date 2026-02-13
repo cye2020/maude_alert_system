@@ -448,7 +448,7 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------------
-    # 4. Snowflake 적재
+    # 4. Snowflake 적재 (EVENT_STAGE_12_EXTRACTED 에 MERGE)
     # ------------------------------------------------------------------
     loader = SnowflakeLoader(secret['database'], secret['schema'])
     count = loader.load_extraction_results(
@@ -457,6 +457,13 @@ if __name__ == "__main__":
         table_name='EVENT_STAGE_12',
     )
     print(f"\n최종 적재 완료: {count:,}건")
+
+    # ------------------------------------------------------------------
+    # 5. JOIN SQL 확인 (EVENT_STAGE_12 LEFT JOIN EVENT_STAGE_12_EXTRACTED)
+    # ------------------------------------------------------------------
+    join_sql = loader.build_extracted_join_sql(table_name='EVENT_STAGE_12')
+    print("\n=== 조회용 JOIN SQL ===")
+    print(join_sql)
 
     # vLLM 엔진을 명시적으로 먼저 종료 (GC 순서 문제로 인한 spurious 에러 방지)
     del extractor

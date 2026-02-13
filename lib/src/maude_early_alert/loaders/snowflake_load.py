@@ -431,124 +431,115 @@ class SnowflakeLoader(SnowflakeBase):
 
         return insert_data
 
-    # 추출 결과 컬럼 정의 (ADD COLUMN IF NOT EXISTS 에 사용)
-    EXTRACTION_COLUMNS = [
-        ('PATIENT_HARM',       'VARCHAR(50)'),
-        ('PROBLEM_COMPONENTS', 'VARCHAR(16777216)'),
-        ('DEFECT_CONFIRMED',   'BOOLEAN'),
-        ('DEFECT_TYPE',        'VARCHAR(50)'),
-    ]
-
-    def _ensure_extraction_columns(
+    def _ensure_extracted_table(
         self,
         cursor: SnowflakeCursor,
-        table_name: str,
+        extracted_table: str,
     ) -> None:
-        """컬럼이 없으면 추가, 이미 있으면 무시 (멱등성 보장)."""
-        for col_name, col_type in self.EXTRACTION_COLUMNS:
-            cursor.execute(
-                f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+        """추출 결과 전용 테이블이 없으면 생성 (멱등성 보장)."""
+        cursor.execute(dedent(f"""\
+            CREATE TABLE IF NOT EXISTS {extracted_table} (
+                MDR_TEXT           VARCHAR(16777216) NOT NULL,
+                PATIENT_HARM       VARCHAR(50),
+                PROBLEM_COMPONENTS VARCHAR(16777216),
+                DEFECT_CONFIRMED   BOOLEAN,
+                DEFECT_TYPE        VARCHAR(50),
+                PRIMARY KEY (MDR_TEXT)
             )
-        print(f"  컬럼 준비 완료: {', '.join(c for c, _ in self.EXTRACTION_COLUMNS)}")
+        """))
+        self.logger.debug('추출 테이블 준비 완료', extracted_table=extracted_table)
 
     def load_extraction_results(
         self,
         cursor: SnowflakeCursor,
         results: List[Dict[str, Any]],
-        table_name: str = 'EVENT_STAGE_12'
+        table_name: str = 'EVENT_STAGE_12',
+        extracted_suffix: str = '_EXTRACTED',
     ) -> int:
         """
-        vLLM 추출 결과를 EVENT_STAGE_12 테이블에 MERGE.
-        
-        MDR_TEXT를 키로 삼아 일치하는 행의 4개 컬럼을 UPDATE합니다. 
-        
+        vLLM 추출 결과를 별도 테이블({table_name}_EXTRACTED)에 MERGE.
+
+        원본 테이블(EVENT_STAGE_12)에는 쓰기 권한이 필요 없으며,
+        MDR_TEXT를 키로 MERGE하여 멱등성을 보장합니다.
+        조회 시에는 build_extracted_join_sql()로 LEFT JOIN하여 사용합니다.
+
         Args:
+            cursor: Snowflake cursor
             results: MAUDEExtractor.process_batch()의 결과 리스트
-            table_name: 적재할 테이블 이름
-        
+            table_name: 원본 테이블 이름 (JOIN 대상)
+            extracted_suffix: 추출 테이블 접미사
+
         Returns:
             적재된 행 개수
-            
-        Raises:
-            Exception: 적재 중 오류 발생 시
-            
-        Example:
-            extractor = MAUDEExtractor()
-            results = extractor.process_batch(mdr_records)
-            
-            loader = SnowflakeLoader(cursor)
-            count = loader.load_extraction_results(
-                results=results,
-                table_name='EVENT_STAGE_12'
-            )
         """
         import time
-        
+
+        extracted_table = f"{table_name}{extracted_suffix}"
         insert_data = self.prepare_insert_data(results)
-        
-        # 적재할 데이터가 없으면 경고 후 종료
+
         if not insert_data:
-            print("경고: 적재할 데이터가 없습니다 (모든 추출이 실패했거나 결과가 비어있음)")
+            self.logger.warning('적재할 데이터가 없습니다', total_results=len(results))
             return 0
-        
-        # 배치 INSERT 실행
-        print(f"\n{'='*70}")
-        print(f"Snowflake 데이터 적재 시작")
-        print(f"{'='*70}")
-        print(f"  테이블: {table_name}")
-        print(f"  전체 결과: {len(results):,}개")
-        print(f"  적재 대상: {len(insert_data):,}개 (성공한 항목만)")
-        print(f"  실패/제외: {len(results) - len(insert_data):,}개")
 
-        # 1단계: 컬럼이 없으면 자동 추가
-        self._ensure_extraction_columns(cursor, table_name)
+        self.logger.info('Snowflake 데이터 적재 시작',
+                         extracted_table=extracted_table,
+                         total_results=len(results),
+                         target_rows=len(insert_data),
+                         skipped_rows=len(results) - len(insert_data))
 
-        temp_table = f"{table_name}_STAGE_{int(time.time())}"
-        
+        # 1단계: 추출 결과 전용 테이블 생성 (IF NOT EXISTS)
+        self._ensure_extracted_table(cursor, extracted_table)
+
+        temp_table = f"{extracted_table}_STG_{int(time.time())}"
+
         try:
-            cursor.execute(dedent(f"""\
-                CREATE TEMPORARY TABLE {temp_table} (
-                    MDR_TEXT           VARCHAR(16777216),
-                    PATIENT_HARM       VARCHAR(50),
-                    PROBLEM_COMPONENTS VARCHAR(16777216),
-                    DEFECT_CONFIRMED   BOOLEAN,
-                    DEFECT_TYPE        VARCHAR(50)
+            with self.transaction(cursor):
+                cursor.execute(dedent(f"""\
+                    CREATE TEMPORARY TABLE {temp_table} (
+                        MDR_TEXT           VARCHAR(16777216),
+                        PATIENT_HARM       VARCHAR(50),
+                        PROBLEM_COMPONENTS VARCHAR(16777216),
+                        DEFECT_CONFIRMED   BOOLEAN,
+                        DEFECT_TYPE        VARCHAR(50)
+                    )
+                """))
+
+                stage_insert_sql = build_insert_sql(
+                    table_name=temp_table,
+                    columns=[
+                        'MDR_TEXT', 'PATIENT_HARM', 'PROBLEM_COMPONENTS',
+                        'DEFECT_CONFIRMED', 'DEFECT_TYPE',
+                    ],
+                    num_rows=1,
                 )
-            """))
-            
-            stage_insert_sql = build_insert_sql(
-                table_name=temp_table,
-                columns=[
-                    'MDR_TEXT', 'PATIENT_HARM', 'PROBLEM_COMPONENTS',
-                    'DEFECT_CONFIRMED', 'DEFECT_TYPE',
-                ],
-                num_rows=1,
-            )
-            
-            cursor.executemany(stage_insert_sql, insert_data)
-            
-            cursor.execute(dedent(f"""\
-                MERGE INTO {table_name} AS target
-                USING {temp_table} AS source
-                ON target.MDR_TEXT = source.MDR_TEXT
-                WHEN MATCHED THEN UPDATE SET
-                    target.PATIENT_HARM        = source.PATIENT_HARM,
-                    target.PROBLEM_COMPONENTS  = source.PROBLEM_COMPONENTS,
-                    target.DEFECT_CONFIRMED    = source.DEFECT_CONFIRMED,
-                    target.DEFECT_TYPE         = source.DEFECT_TYPE
-            """))
 
-            # Snowflake MERGE 결과: (rows inserted, rows updated, rows deleted)
-            merge_result = cursor.fetchone()
-            updated = merge_result[1] if merge_result and len(merge_result) > 1 else '?'
+                cursor.executemany(stage_insert_sql, insert_data)
 
+                cursor.execute(dedent(f"""\
+                    MERGE INTO {extracted_table} AS target
+                    USING {temp_table} AS source
+                    ON target.MDR_TEXT = source.MDR_TEXT
+                    WHEN MATCHED THEN UPDATE SET
+                        target.PATIENT_HARM        = source.PATIENT_HARM,
+                        target.PROBLEM_COMPONENTS  = source.PROBLEM_COMPONENTS,
+                        target.DEFECT_CONFIRMED    = source.DEFECT_CONFIRMED,
+                        target.DEFECT_TYPE         = source.DEFECT_TYPE
+                    WHEN NOT MATCHED THEN INSERT (
+                        MDR_TEXT, PATIENT_HARM, PROBLEM_COMPONENTS,
+                        DEFECT_CONFIRMED, DEFECT_TYPE
+                    ) VALUES (
+                        source.MDR_TEXT, source.PATIENT_HARM, source.PROBLEM_COMPONENTS,
+                        source.DEFECT_CONFIRMED, source.DEFECT_TYPE
+                    )
+                """))
+
+            self.logger.info('MERGE 완료', extracted_table=extracted_table, rows=len(insert_data))
             return len(insert_data)
 
         except Exception as e:
-            print(f"\n적재 중 오류 발생")
-            print(f"  오류 메시지: {str(e)}")
-            print(f"  테이블: {table_name}")
-            print(f"{'='*70}\n")
+            self.logger.error('적재 중 오류 발생',
+                              extracted_table=extracted_table,
+                              error=str(e))
             raise
 
         finally:
@@ -556,6 +547,49 @@ class SnowflakeLoader(SnowflakeBase):
                 cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
             except Exception:
                 pass
+
+    def build_extracted_join_sql(
+        self,
+        table_name: str = 'EVENT_STAGE_12',
+        extracted_suffix: str = '_EXTRACTED',
+        base_alias: str = 'e',
+        extract_alias: str = 'ex',
+        select_columns: List[str] = None,
+    ) -> str:
+        """원본 테이블과 추출 결과 테이블을 LEFT JOIN하는 SELECT SQL 생성.
+
+        Args:
+            table_name: 원본 테이블
+            extracted_suffix: 추출 테이블 접미사
+            base_alias: 원본 테이블 alias
+            extract_alias: 추출 테이블 alias
+            select_columns: 최종 SELECT 컬럼 (None이면 e.* + 추출 4개 컬럼)
+
+        Returns:
+            SELECT ... FROM EVENT_STAGE_12 e LEFT JOIN EVENT_STAGE_12_EXTRACTED ex ON ...
+        """
+        extracted_table = f"{table_name}{extracted_suffix}"
+        extract_cols = [
+            f"{extract_alias}.PATIENT_HARM",
+            f"{extract_alias}.PROBLEM_COMPONENTS",
+            f"{extract_alias}.DEFECT_CONFIRMED",
+            f"{extract_alias}.DEFECT_TYPE",
+        ]
+
+        if select_columns is None:
+            select_columns = [f"{base_alias}.*"] + extract_cols
+
+        select_clause = ",\n    ".join(select_columns)
+
+        return dedent(f"""\
+            SELECT
+                {select_clause}
+            FROM
+                {table_name} {base_alias}
+            LEFT JOIN
+                {extracted_table} {extract_alias}
+                ON {base_alias}.MDR_TEXT = {extract_alias}.MDR_TEXT
+        """)
 
 if __name__=='__main__':
     import pendulum
