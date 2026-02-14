@@ -1,31 +1,26 @@
 # ======================
 # 표준 라이브러리
 # ======================
-import datetime
-from typing import Any, Dict, List, Tuple, Union
-
-# ======================
-# 서드파티 라이브러리
-# ======================
-from snowflake.connector.cursor import SnowflakeCursor
+from typing import Any, Dict, List, Union
 
 # ======================
 # 내부 라이브러리
 # ======================
-from maude_early_alert.loaders.snowflake_base import SnowflakeBase
 from maude_early_alert.utils.helpers import (
     ensure_list,
     format_sql_literal,
-    validate_identifier,
 )
 
 # =====================
 # text sql 적재 필요 파일
 # =====================
-from maude_early_alert.utils.sql_builder import build_cte_sql, build_insert_sql, build_join_clause
-from textwrap import dedent
+from maude_early_alert.utils.sql_builder import build_cte_sql, build_insert_sql, build_join_clause, _INDENT
+from textwrap import dedent, indent
 import json
 
+import structlog
+
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 def get_staging_table_name(table_name: str) -> str:
     """원본 테이블명에서 STG_ 접두사가 붙은 스테이징 테이블명 생성"""
@@ -34,382 +29,159 @@ def get_staging_table_name(table_name: str) -> str:
     return '.'.join(parts)
 
 
-class SnowflakeLoader(SnowflakeBase):
-    """S3에서 Snowflake로 데이터 적재 (COPY INTO → FLATTEN INSERT → MERGE)"""
+def get_raw_table_name(s3_stage_path: str) -> str:
+    """S3 스테이지 경로에서 RAW_TEMP 테이블명 생성"""
+    return f"RAW_TEMP_{s3_stage_path.replace('/', '_')}"
 
-    def load_from_s3(
-        self, cursor: SnowflakeCursor,
-        table_name: str, s3_stg_table_name: str,
-        primary_key: Union[str, List[str]],
-        metadata: Dict[str, Any] = None,
-        business_primary_key: Union[str, List[str]] = None,
-        s3_folder: str = None
-    ) -> Dict[str, Any]:
-        """S3에서 Snowflake 테이블로 데이터 적재
 
-        Args:
-            cursor: Snowflake cursor
-            table_name: 목적 테이블명
-            s3_stg_table_name: S3 스테이지명
-            primary_key: MERGE 기본 키
-            metadata: 메타데이터 (ingest_time 등)
-            business_primary_key: 비즈니스 기본 키
-            s3_folder: S3 폴더 경로 (None이면 ingest_time에서 자동 생성)
-        """
-        validate_identifier(table_name)
-        validate_identifier(s3_stg_table_name)
-        for pk in ensure_list(primary_key):
-            validate_identifier(pk)
-        if business_primary_key:
-            for bpk in ensure_list(business_primary_key):
-                validate_identifier(bpk)
+class SnowflakeLoader:
+    """S3→Snowflake 적재용 SQL 빌더 (실행하지 않음)"""
 
-        # S3 폴더 경로 결정: 명시적 지정 > metadata의 ingest_time > 없음
-        if s3_folder is None and metadata and 'ingest_time' in metadata:
-            ingest_time = metadata['ingest_time']
-            if isinstance(ingest_time, datetime.datetime):
-                s3_folder = ingest_time.strftime('%Y%m')
+    # ==================== Bronze SQL 빌더 ====================
 
-        s3_stage_path = f"{s3_stg_table_name}/{s3_folder}" if s3_folder else s3_stg_table_name
-
-        self.logger.info('S3 데이터 적재 시작',
-                        table_name=table_name, s3_stage=s3_stage_path)
-
-        table_schema = self.get_table_schema(cursor, table_name)
-
-        # 1. 스테이징 테이블 생성
-        stg_table_name = self.create_temporary_staging_table(cursor, table_name, table_schema)
-
-        # 2. S3에서 Raw JSON을 임시 테이블에 COPY INTO
-        raw_table_name, copy_result = self.copy_raw_to_temp(cursor, s3_stage_path)
-
-        # 3. FLATTEN으로 results 배열을 풀어서 스테이징 테이블에 INSERT
-        insert_result = self.flatten_and_insert(
-            cursor, raw_table_name, stg_table_name,
-            metadata=metadata, business_primary_key=business_primary_key
-        )
-
-        # 4. MERGE로 목적 테이블로 적재
-        column_names = [col_name for col_name, _ in table_schema]
-        merge_count = self.load_merge(cursor, table_name, stg_table_name, primary_key, column_names)
-
-        self.logger.info('S3 데이터 적재 완료',
-                        table_name=table_name,
-                        rows_inserted=insert_result.get('rows_inserted', 0),
-                        total_rows=merge_count)
-
-        return {
-            'files_loaded': copy_result.get('files_loaded', 0),
-            'rows_inserted': insert_result.get('rows_inserted', 0),
-            'total_rows': merge_count
-        }
-
-    def create_temporary_staging_table(
-        self, cursor: SnowflakeCursor,
-        table_name: str, table_schema: list = None
+    @staticmethod
+    def build_create_staging_sql(
+        table_name: str,
+        table_schema: List[tuple],
     ) -> str:
-        """원본 테이블 구조로 임시 스테이징 테이블 생성
+        """원본 테이블 구조로 임시 스테이징 테이블 CREATE SQL 생성
 
         Args:
-            cursor: Snowflake cursor
             table_name: 원본 테이블명
-            table_schema: 스키마 (미지정 시 자동 조회)
+            table_schema: [(col_name, data_type), ...] 리스트
         """
         stg_table_name = get_staging_table_name(table_name)
-        self.logger.debug( '임시 스테이징 테이블 생성 시작', stg_table_name=stg_table_name)
+        column_defs = indent(",\n".join([f"{col} {data_type}" for col, data_type in table_schema]), _INDENT)
+        return f"CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (\n{column_defs}\n)"
 
-        with self._error_logging('임시 테이블 생성', stg_table_name=stg_table_name):
-            if not table_schema:
-                table_schema = self.get_table_schema(cursor, table_name)
+    @staticmethod
+    def build_create_raw_temp_sql(s3_stage_path: str) -> str:
+        """Raw JSON 임시 테이블 CREATE SQL 생성"""
+        raw_table_name = get_raw_table_name(s3_stage_path)
+        return dedent(f"""\
+            CREATE OR REPLACE TEMPORARY TABLE {raw_table_name} (
+                src_file VARCHAR,
+                raw_json VARIANT
+            )""")
 
-            column_defs = ", ".join([f"{col} {data_type}" for col, data_type in table_schema])
-
-            cursor.execute(f"""
-                CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (
-                    {column_defs}
-                )
-            """)
-
-            self.logger.debug( '임시 스테이징 테이블 생성 완료', stg_table_name=stg_table_name)
-            return stg_table_name
-
-    def copy_raw_to_temp(
-        self, cursor: SnowflakeCursor,
-        s3_stg_table_name: str
-    ) -> Tuple[str, Dict[str, Any]]:
-        """S3에서 Raw JSON을 임시 테이블에 COPY INTO
-
-        Args:
-            cursor: Snowflake cursor
-            s3_stg_table_name: S3 스테이지 경로
-        """
-        raw_table_name = f"RAW_TEMP_{s3_stg_table_name.replace('/', '_')}"
-        self.logger.debug( 'Raw COPY INTO 시작',
-                  raw_table_name=raw_table_name, s3_stage=s3_stg_table_name)
-
-        with self._error_logging('Raw COPY INTO', raw_table_name=raw_table_name):
-            self._set_context(cursor)
-
-            cursor.execute(f"""
-                CREATE OR REPLACE TEMPORARY TABLE {raw_table_name} (
-                    src_file VARCHAR,
-                    raw_json VARIANT
-                )
-            """)
-            self.logger.debug( 'Raw 임시 테이블 생성 완료', raw_table_name=raw_table_name)
-
-            copy_query = f"""
+    @staticmethod
+    def build_copy_into_sql(
+        raw_table_name: str,
+        s3_stage_path: str,
+    ) -> str:
+        """S3에서 Raw JSON을 임시 테이블에 COPY INTO SQL 생성"""
+        return dedent(f"""\
             COPY INTO {raw_table_name} (src_file, raw_json)
             FROM (
                 SELECT METADATA$FILENAME, $1
-                FROM @{s3_stg_table_name}
+                FROM @{s3_stage_path}
             )
             FILE_FORMAT = (TYPE = 'JSON', STRIP_OUTER_ARRAY = FALSE)
-            ON_ERROR = 'CONTINUE'
-            """
-            self.logger.debug( 'COPY INTO 쿼리 실행', query=copy_query)
+            ON_ERROR = 'CONTINUE'""")
 
-            cursor.execute(copy_query)
-            results = cursor.fetchall()
-
-            # COPY INTO 결과 합산: (file, status, rows_parsed, rows_loaded, error_limit, errors_seen, ...)
-            files_loaded = sum(1 for r in results if r[1] == 'LOADED')
-            rows_loaded = sum(r[3] for r in results if r and len(r) > 3)
-            errors_seen = sum(r[5] for r in results if r and len(r) > 5)
-
-            self.logger.debug( 'Raw COPY INTO 완료',
-                      raw_table_name=raw_table_name,
-                      files_loaded=files_loaded, rows_loaded=rows_loaded,
-                      errors_seen=errors_seen)
-
-            if errors_seen > 0:
-                self.logger.warning( 'Raw COPY INTO 중 에러 발생',
-                          raw_table_name=raw_table_name, errors_seen=errors_seen)
-
-                for r in results:
-                    if r[5] > 0:
-                        self.logger.warning( 'COPY INTO 에러 상세',
-                                  file=r[0], status=r[1],
-                                  errors_seen=r[5], first_error=r[6],
-                                  first_error_line=r[7])
-
-            return raw_table_name, {
-                'files_loaded': files_loaded,
-                'rows_loaded': rows_loaded,
-                'errors_seen': errors_seen
-            }
-
-    def flatten_and_insert(
-        self, cursor: SnowflakeCursor,
+    @staticmethod
+    def build_flatten_insert_sql(
         raw_table_name: str,
         stg_table_name: str,
         metadata: Dict[str, Any] = None,
         business_primary_key: Union[str, List[str]] = None,
-        json_path: str = 'results'
-    ) -> Dict[str, Any]:
-        """Raw 테이블의 JSON 배열을 FLATTEN하여 스테이징 테이블에 INSERT
+        json_path: str = 'results',
+    ) -> str:
+        """Raw 테이블의 JSON 배열을 FLATTEN하여 스테이징 테이블에 INSERT하는 SQL 생성
 
         Args:
-            cursor: Snowflake cursor
             raw_table_name: Raw JSON 임시 테이블명
             stg_table_name: 스테이징 테이블명
             metadata: 메타데이터 (컬럼으로 추가됨)
             business_primary_key: 비즈니스 기본 키
             json_path: FLATTEN 대상 JSON 경로
         """
-        self.logger.debug( 'FLATTEN INSERT 시작',
-                  raw_table_name=raw_table_name, stg_table_name=stg_table_name)
+        bpk_list = ensure_list(business_primary_key) if business_primary_key else None
 
-        with self._error_logging('FLATTEN INSERT', stg_table_name=stg_table_name):
-            bpk_list = ensure_list(business_primary_key) if business_primary_key else None
+        column_names = []
+        select_items = []
 
-            column_names = []
-            select_items = []
+        if metadata:
+            for key, value in metadata.items():
+                column_names.append(key)
+                select_items.append(format_sql_literal(key, value))
 
-            if metadata:
-                for key, value in metadata.items():
-                    column_names.append(key)
-                    select_items.append(format_sql_literal(key, value))
-
-            if bpk_list:
-                column_names.extend(bpk_list)
-                select_items.extend([
-                    f"value:{key}::STRING AS {key}" for key in bpk_list
-                ])
-                object_delete_keys = ",".join([f"'{key}'" for key in bpk_list])
-            else:
-                object_delete_keys = None
-
-            column_names.extend(['source_file', 'record_hash', 'raw_data'])
+        if bpk_list:
+            column_names.extend(bpk_list)
             select_items.extend([
-                "src_file AS source_file",
-                f"HASH(OBJECT_DELETE(value, {object_delete_keys})) AS record_hash" if bpk_list else "HASH(value) AS record_hash",
-                "value::VARIANT AS raw_data"
+                f"value:{key}::STRING AS {key}" for key in bpk_list
             ])
-            select_clause = ',\n'.join(select_items)
+            object_delete_keys = ",".join([f"'{key}'" for key in bpk_list])
+        else:
+            object_delete_keys = None
 
-            insert_query = f"""
-            INSERT INTO {stg_table_name} ({', '.join(column_names)})
-            SELECT {select_clause}
-            FROM {raw_table_name},
-            LATERAL FLATTEN(input => raw_json:{json_path})
-            """
-            self.logger.debug( 'INSERT 쿼리 실행', query=insert_query)
+        column_names.extend(['source_file', 'record_hash', 'raw_data'])
+        select_items.extend([
+            "src_file AS source_file",
+            f"HASH(OBJECT_DELETE(value, {object_delete_keys})) AS record_hash" if bpk_list else "HASH(value) AS record_hash",
+            "value::VARIANT AS raw_data"
+        ])
+        select_clause = indent(",\n".join(select_items), _INDENT)
 
-            cursor.execute(insert_query)
-            rows_inserted = cursor.rowcount
+        return (
+            f"INSERT INTO {stg_table_name} ({', '.join(column_names)})\n"
+            f"SELECT\n{select_clause}\n"
+            f"FROM {raw_table_name},\n"
+            f"LATERAL FLATTEN(input => raw_json:{json_path})"
+        )
 
-            self.logger.debug( 'FLATTEN INSERT 완료',
-                      stg_table_name=stg_table_name, rows_inserted=rows_inserted)
-
-            return {'rows_inserted': rows_inserted}
-
-    def load_merge(
-        self, cursor: SnowflakeCursor,
-        table_name: str, stg_table_name: str,
-        primary_key: Union[str, List[str]], column_names: List[str]
-    ) -> int:
-        """스테이징 → 목적 테이블 MERGE (UPSERT)
+    @staticmethod
+    def build_merge_sql(
+        table_name: str,
+        stg_table_name: str,
+        primary_key: Union[str, List[str]],
+        column_names: List[str],
+    ) -> str:
+        """스테이징 → 목적 테이블 MERGE (UPSERT) SQL 생성
 
         Args:
-            cursor: Snowflake cursor
             table_name: 목적 테이블명
             stg_table_name: 스테이징 테이블명
             primary_key: MERGE 조건 키
             column_names: 대상 컬럼 리스트
         """
-        self.logger.debug( 'MERGE 시작',
-                  table_name=table_name, stg_table_name=stg_table_name)
+        pk_list = ensure_list(primary_key)
+        on_conditions = " AND ".join([f"t.{pk} = s.{pk}" for pk in pk_list])
 
-        with self._error_logging('MERGE', table_name=table_name):
-            pk_list = ensure_list(primary_key)
-            on_conditions = " AND ".join([f"t.{pk} = s.{pk}" for pk in pk_list])
+        update_column_names = [col for col in column_names if col not in pk_list]
+        update_set = ", ".join([f"t.{col} = s.{col}" for col in update_column_names])
 
-            update_column_names = [col for col in column_names if col not in pk_list]
-            update_set = ", ".join([f"t.{col} = s.{col}" for col in update_column_names])
+        insert_column_names = ", ".join(column_names)
+        insert_values = ", ".join([f"s.{col}" for col in column_names])
 
-            insert_column_names = ", ".join(column_names)
-            insert_values = ", ".join([f"s.{col}" for col in column_names])
+        return dedent(f"""\
+            MERGE INTO {table_name} t
+            USING {stg_table_name} s
+            ON {on_conditions}
+            WHEN MATCHED THEN
+            UPDATE SET {update_set}
+            WHEN NOT MATCHED THEN
+            INSERT ({insert_column_names}) VALUES ({insert_values})""")
 
-            query = f"""
-                MERGE INTO {table_name} t
-                USING {stg_table_name} s
-                ON {on_conditions}
-                WHEN MATCHED THEN
-                UPDATE SET {update_set}
-                WHEN NOT MATCHED THEN
-                INSERT ({insert_column_names}) VALUES ({insert_values})
-            """
+    # ==================== Silver (extractor) SQL 빌더 ====================
 
-            with self.transaction(cursor):
-                cursor.execute(query)
-
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name}")
-            total_count = cursor.fetchone()[0]
-
-            self.logger.debug( 'MERGE 완료',
-                      table_name=table_name, total_rows=total_count)
-
-            return total_count
-
-    # key & type 값 불러오기
-
-    def _fetch_map(cursor, sql: str) -> Dict[str, str]:
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        return {str(k): str(t) for k, t in rows if k is not None}
-
-    def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
-        """최상위 키와 타입 조회"""
-        sql = f"""
-        SELECT DISTINCT f.key, TYPEOF(f.value)
-        FROM {table_fq},
-            LATERAL FLATTEN(input => {raw_column}) AS f
-        ORDER BY f.key;
-        """
-        return SnowflakeLoader._fetch_map(cursor, sql)
-
-    def array_keys_with_type(cursor, table_fq: str, array_path: str, raw_column: str = "raw_data"):
-        """배열 내 모든 키를 RECURSIVE로 조회하여 nested dict 반환
-
-        OBJECT 타입은 중간 노드이므로 제외하고, 하위 키가 자동으로
-        nested dict로 구성된다.
-
-        Args:
-            cursor: Snowflake cursor
-            table_fq: 테이블 전체 경로
-            array_path: 배열 경로 (예: "device", "patient", "mdr_text")
-            raw_column: JSON 컬럼명
-
-        Returns:
-            nested dict. 예:
-            {"brand_name": "VARCHAR", "openfda": {"device_name": "VARCHAR", ...}}
-        """
-        import re
-        sql = f"""
-        SELECT DISTINCT f.path::STRING, f.key::STRING, TYPEOF(f.value)
-        FROM {table_fq},
-            LATERAL FLATTEN(input => {raw_column}:{array_path}, RECURSIVE => TRUE) f
-        WHERE f.key IS NOT NULL
-          AND TYPEOF(f.value) != 'OBJECT'
-        ORDER BY 1, 2
-        """
-        cursor.execute(sql)
-
-        result = {}
-        for raw_path, key, typ in cursor.fetchall():
-            # 첫 번째 배열 인덱스([0] 등) 제거 후, 내부에 [N]이 남아 있으면
-            # 배열 원소 전개이므로 스킵 (예: openfda.registration_number[0])
-            inner = re.sub(r'^\[\d+\]\.?', '', str(raw_path))
-            if re.search(r'\[\d+\]', inner):
-                continue
-
-            clean = re.sub(r'\[\d+\]\.?', '', str(raw_path)).strip('.')
-            parts = [p for p in clean.split('.') if p]
-
-            # path의 마지막 요소는 key 자체이므로 부모 경로만 탐색
-            # 예: path="[0].openfda.device_name", key="device_name"
-            #   → parts=["openfda", "device_name"] → 탐색은 ["openfda"]만
-            parent_parts = parts[:-1] if parts else []
-
-            node = result
-            for part in parent_parts:
-                if part not in node or not isinstance(node[part], dict):
-                    node[part] = {}
-                node = node[part]
-            node[key] = typ
-
-        return result
-
-    # extractor sql
+    @staticmethod
     def build_dataframe_load_sql(
-        self, 
         table_name: str,
-        columns: List[str]
+        columns: List[str],
     ) -> str:
-        """
-        dataframe 적재 sql
-        Args:
-            table_name: 데이터 넣을 테이블 이름
-            columns: 컬럼 이름 리스트
-        """
-        sql = build_insert_sql(
-            table_name = table_name,
-            columns = columns,
-            num_rows = 1    
+        """dataframe 적재 sql"""
+        return build_insert_sql(
+            table_name=table_name,
+            columns=columns,
+            num_rows=1,
         )
-        
-        return sql
-    
-    def prepare_insert_data(
-        self,
-        results: List[Dict[str, Any]]
-    ) -> List[tuple]:
-        """
-        vLLM 추출 결과를 MERGE용 데이터로 변환.
 
-        MDR_TEXT(키)와 추출된 4개 컬럼만 반환.
-        """
+    @staticmethod
+    def prepare_insert_data(
+        results: List[Dict[str, Any]],
+    ) -> List[tuple]:
+        """vLLM 추출 결과를 MERGE용 데이터로 변환."""
         insert_data = []
 
         for result in results:
@@ -420,24 +192,21 @@ class SnowflakeLoader(SnowflakeBase):
             manufacturer = result.get('manufacturer_inspection', {})
 
             row_data = (
-                result.get('_mdr_text', ''),                        # MDR_TEXT (JOIN 키)
-                incident.get('patient_harm'),                       # PATIENT_HARM
-                json.dumps(incident.get('problem_components', [])), # PROBLEM_COMPONENTS
-                manufacturer.get('defect_confirmed'),               # DEFECT_CONFIRMED
-                manufacturer.get('defect_type'),                    # DEFECT_TYPE
+                result.get('_mdr_text', ''),
+                incident.get('patient_harm'),
+                json.dumps(incident.get('problem_components', [])),
+                manufacturer.get('defect_confirmed'),
+                manufacturer.get('defect_type'),
             )
 
             insert_data.append(row_data)
 
         return insert_data
 
-    def _ensure_extracted_table(
-        self,
-        cursor: SnowflakeCursor,
-        extracted_table: str,
-    ) -> None:
-        """추출 결과 전용 테이블이 없으면 생성 (멱등성 보장)."""
-        cursor.execute(dedent(f"""\
+    @staticmethod
+    def build_ensure_extracted_table_sql(extracted_table: str) -> str:
+        """추출 결과 전용 테이블 CREATE IF NOT EXISTS SQL 생성"""
+        return dedent(f"""\
             CREATE TABLE IF NOT EXISTS {extracted_table} (
                 MDR_TEXT           VARCHAR(16777216) NOT NULL,
                 PATIENT_HARM       VARCHAR(50),
@@ -445,129 +214,64 @@ class SnowflakeLoader(SnowflakeBase):
                 DEFECT_CONFIRMED   BOOLEAN,
                 DEFECT_TYPE        VARCHAR(50),
                 PRIMARY KEY (MDR_TEXT)
-            )
-        """))
-        self.logger.debug('추출 테이블 준비 완료', extracted_table=extracted_table)
+            )""")
 
-    def load_extraction_results(
-        self,
-        cursor: SnowflakeCursor,
-        results: List[Dict[str, Any]],
-        base_table_name: str = 'EVENT_STAGE_12',
-        extracted_suffix: str = '_EXTRACTED',
-    ) -> int:
-        """
-        vLLM 추출 결과를 별도 테이블({base_table_name}_EXTRACTED)에 MERGE.
+    @staticmethod
+    def build_create_extract_temp_sql(temp_table: str) -> str:
+        """추출 결과용 임시 스테이징 테이블 CREATE SQL 생성"""
+        return dedent(f"""\
+            CREATE TEMPORARY TABLE {temp_table} (
+                MDR_TEXT           VARCHAR(16777216),
+                PATIENT_HARM       VARCHAR(50),
+                PROBLEM_COMPONENTS VARCHAR(16777216),
+                DEFECT_CONFIRMED   BOOLEAN,
+                DEFECT_TYPE        VARCHAR(50)
+            )""")
 
-        원본 테이블(EVENT_STAGE_12)에는 쓰기 권한이 필요 없으며,
-        MDR_TEXT를 키로 MERGE하여 멱등성을 보장합니다.
-        조회 시에는 build_extracted_join_sql()로 LEFT JOIN하여 사용합니다.
+    @staticmethod
+    def build_extract_stage_insert_sql(temp_table: str) -> str:
+        """추출 결과 임시 테이블 INSERT SQL 생성 (executemany용)"""
+        return build_insert_sql(
+            table_name=temp_table,
+            columns=[
+                'MDR_TEXT', 'PATIENT_HARM', 'PROBLEM_COMPONENTS',
+                'DEFECT_CONFIRMED', 'DEFECT_TYPE',
+            ],
+            num_rows=1,
+        )
 
-        Args:
-            cursor: Snowflake cursor
-            results: MAUDEExtractor.process_batch()의 결과 리스트
-            base_table_name: 원본 테이블 이름 (JOIN 대상, 실제 적재 대상은 {base_table_name}_EXTRACTED)
-            extracted_suffix: 추출 테이블 접미사
+    @staticmethod
+    def build_extract_merge_sql(
+        extracted_table: str,
+        temp_table: str,
+    ) -> str:
+        """추출 결과 MERGE SQL 생성"""
+        return dedent(f"""\
+            MERGE INTO {extracted_table} AS target
+            USING {temp_table} AS source
+            ON target.MDR_TEXT = source.MDR_TEXT
+            WHEN MATCHED THEN UPDATE SET
+                target.PATIENT_HARM        = source.PATIENT_HARM,
+                target.PROBLEM_COMPONENTS  = source.PROBLEM_COMPONENTS,
+                target.DEFECT_CONFIRMED    = source.DEFECT_CONFIRMED,
+                target.DEFECT_TYPE         = source.DEFECT_TYPE
+            WHEN NOT MATCHED THEN INSERT (
+                MDR_TEXT, PATIENT_HARM, PROBLEM_COMPONENTS,
+                DEFECT_CONFIRMED, DEFECT_TYPE
+            ) VALUES (
+                source.MDR_TEXT, source.PATIENT_HARM, source.PROBLEM_COMPONENTS,
+                source.DEFECT_CONFIRMED, source.DEFECT_TYPE
+            )""")
 
-        Returns:
-            적재된 행 개수
-        """
-        import time
-
-        extracted_table = f"{base_table_name}{extracted_suffix}"
-        insert_data = self.prepare_insert_data(results)
-
-        if not insert_data:
-            self.logger.warning('적재할 데이터가 없습니다', total_results=len(results))
-            return 0
-
-        self.logger.info('Snowflake 데이터 적재 시작',
-                         extracted_table=extracted_table,
-                         total_results=len(results),
-                         target_rows=len(insert_data),
-                         skipped_rows=len(results) - len(insert_data))
-
-        # 1단계: 추출 결과 전용 테이블 생성 (IF NOT EXISTS)
-        self._ensure_extracted_table(cursor, extracted_table)
-
-        temp_table = f"{extracted_table}_STG_{int(time.time())}"
-
-        try:
-            with self.transaction(cursor):
-                cursor.execute(dedent(f"""\
-                    CREATE TEMPORARY TABLE {temp_table} (
-                        MDR_TEXT           VARCHAR(16777216),
-                        PATIENT_HARM       VARCHAR(50),
-                        PROBLEM_COMPONENTS VARCHAR(16777216),
-                        DEFECT_CONFIRMED   BOOLEAN,
-                        DEFECT_TYPE        VARCHAR(50)
-                    )
-                """))
-
-                stage_insert_sql = build_insert_sql(
-                    table_name=temp_table,
-                    columns=[
-                        'MDR_TEXT', 'PATIENT_HARM', 'PROBLEM_COMPONENTS',
-                        'DEFECT_CONFIRMED', 'DEFECT_TYPE',
-                    ],
-                    num_rows=1,
-                )
-
-                cursor.executemany(stage_insert_sql, insert_data)
-
-                cursor.execute(dedent(f"""\
-                    MERGE INTO {extracted_table} AS target
-                    USING {temp_table} AS source
-                    ON target.MDR_TEXT = source.MDR_TEXT
-                    WHEN MATCHED THEN UPDATE SET
-                        target.PATIENT_HARM        = source.PATIENT_HARM,
-                        target.PROBLEM_COMPONENTS  = source.PROBLEM_COMPONENTS,
-                        target.DEFECT_CONFIRMED    = source.DEFECT_CONFIRMED,
-                        target.DEFECT_TYPE         = source.DEFECT_TYPE
-                    WHEN NOT MATCHED THEN INSERT (
-                        MDR_TEXT, PATIENT_HARM, PROBLEM_COMPONENTS,
-                        DEFECT_CONFIRMED, DEFECT_TYPE
-                    ) VALUES (
-                        source.MDR_TEXT, source.PATIENT_HARM, source.PROBLEM_COMPONENTS,
-                        source.DEFECT_CONFIRMED, source.DEFECT_TYPE
-                    )
-                """))
-
-            self.logger.info('MERGE 완료', extracted_table=extracted_table, rows=len(insert_data))
-            return len(insert_data)
-
-        except Exception as e:
-            self.logger.error('적재 중 오류 발생',
-                              extracted_table=extracted_table,
-                              error=str(e))
-            raise
-
-        finally:
-            try:
-                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
-            except Exception:
-                pass
-
+    @staticmethod
     def build_extracted_join_sql(
-        self,
         base_table_name: str = 'EVENT_STAGE_12',
         extracted_suffix: str = '_EXTRACTED',
         base_alias: str = 'e',
         extract_alias: str = 'ex',
         select_columns: List[str] = None,
     ) -> str:
-        """원본 테이블과 추출 결과 테이블을 LEFT JOIN하는 SELECT SQL 생성.
-
-        Args:
-            base_table_name: 원본 테이블 (JOIN 기준, 실제 적재 대상은 {base_table_name}_EXTRACTED)
-            extracted_suffix: 추출 테이블 접미사
-            base_alias: 원본 테이블 alias
-            extract_alias: 추출 테이블 alias
-            select_columns: 최종 SELECT 컬럼 (None이면 e.* + 추출 4개 컬럼)
-
-        Returns:
-            SELECT ... FROM EVENT_STAGE_12 e LEFT JOIN EVENT_STAGE_12_EXTRACTED ex ON ...
-        """
+        """원본 테이블과 추출 결과 테이블을 LEFT JOIN하는 SELECT SQL 생성."""
         extracted_table = f"{base_table_name}{extracted_suffix}"
         extract_cols = [
             f"{extract_alias}.PATIENT_HARM",
@@ -595,42 +299,143 @@ class SnowflakeLoader(SnowflakeBase):
             joins=[join_clause],
         )
 
-if __name__=='__main__':
+    # ==================== key & type 조회 (유틸) ====================
+
+    @staticmethod
+    def _fetch_map(cursor, sql: str) -> Dict[str, str]:
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        return {str(k): str(t) for k, t in rows if k is not None}
+
+    @staticmethod
+    def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
+        """최상위 키와 타입 조회"""
+        sql = f"""
+        SELECT DISTINCT f.key, TYPEOF(f.value)
+        FROM {table_fq},
+            LATERAL FLATTEN(input => {raw_column}) AS f
+        ORDER BY f.key;
+        """
+        return SnowflakeLoader._fetch_map(cursor, sql)
+
+    @staticmethod
+    def array_keys_with_type(cursor, table_fq: str, array_path: str, raw_column: str = "raw_data"):
+        """배열 내 모든 키를 RECURSIVE로 조회하여 nested dict 반환"""
+        import re
+        sql = f"""
+        SELECT DISTINCT f.path::STRING, f.key::STRING, TYPEOF(f.value)
+        FROM {table_fq},
+            LATERAL FLATTEN(input => {raw_column}:{array_path}, RECURSIVE => TRUE) f
+        WHERE f.key IS NOT NULL
+          AND TYPEOF(f.value) != 'OBJECT'
+        ORDER BY 1, 2
+        """
+        cursor.execute(sql)
+
+        result = {}
+        for raw_path, key, typ in cursor.fetchall():
+            inner = re.sub(r'^\[\d+\]\.?', '', str(raw_path))
+            if re.search(r'\[\d+\]', inner):
+                continue
+
+            clean = re.sub(r'\[\d+\]\.?', '', str(raw_path)).strip('.')
+            parts = [p for p in clean.split('.') if p]
+
+            parent_parts = parts[:-1] if parts else []
+
+            node = result
+            for part in parent_parts:
+                if part not in node or not isinstance(node[part], dict):
+                    node[part] = {}
+                node = node[part]
+            node[key] = typ
+
+        return result
+
+
+if __name__ == '__main__':
     import pendulum
-    import snowflake.connector
-    from maude_early_alert.utils.secrets import get_secret
 
-    secret = get_secret('snowflake/silver/credentials')
-    conn = snowflake.connector.connect(
-        user=secret['user'],
-        password=secret['password'],
-        account=secret['account'],
-        warehouse=secret['warehouse'],
-        database=secret['database'],
-        schema=secret['schema']
-    )
-
-    snowflake_loader = SnowflakeLoader(secret['database'], secret['schema'], log_level='DEBUG')
+    # ── 테스트용 파라미터 ──
     table_name = 'EVENT'
-    s3_stg_table_name = 'BRONZE_S3_STAGE'
+    s3_stage_path = 'BRONZE_S3_STAGE/202602/device/event'
+    table_schema = [
+        ('SOURCE_SYSTEM', 'VARCHAR(50)'),
+        ('INGEST_TIME', 'TIMESTAMP_NTZ'),
+        ('BATCH_ID', 'VARCHAR(100)'),
+        ('MDR_REPORT_KEY', 'VARCHAR(255)'),
+        ('SOURCE_FILE', 'VARCHAR(500)'),
+        ('RECORD_HASH', 'NUMBER'),
+        ('RAW_DATA', 'VARIANT'),
+    ]
+    primary_key = ['SOURCE_SYSTEM', 'SOURCE_FILE', 'MDR_REPORT_KEY']
+    business_primary_key = 'MDR_REPORT_KEY'
     metadata = {
         'source_system': 's3',
         'ingest_time': pendulum.now(),
-        'batch_id': 'batch_001'
+        'batch_id': 'batch_test_001',
     }
-    business_primary_key = 'mdr_report_key'
-    # business_primary_key = 'public_device_record_key'
-    primary_key = ['source_system', 'source_file', business_primary_key]
-    
-    ym = pendulum.now().strftime('%Y%m')
-    s3_folder = f'{ym}/device/event'
+    column_names = [col for col, _ in table_schema]
+    stg_table_name = get_staging_table_name(table_name)
+    raw_table_name = get_raw_table_name(s3_stage_path)
 
-    snowflake_loader.load_from_s3(
-        cursor=conn.cursor(),
-        table_name=table_name,
-        s3_stg_table_name=s3_stg_table_name,
-        primary_key=primary_key,
-        business_primary_key=business_primary_key,
+    # ── Bronze SQL 빌더 출력 ──
+    print('=' * 60)
+    print('[1] CREATE STAGING TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_staging_sql(table_name, table_schema))
+
+    print('\n' + '=' * 60)
+    print('[2] CREATE RAW TEMP TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_raw_temp_sql(s3_stage_path))
+
+    print('\n' + '=' * 60)
+    print('[3] COPY INTO')
+    print('=' * 60)
+    print(SnowflakeLoader.build_copy_into_sql(raw_table_name, s3_stage_path))
+
+    print('\n' + '=' * 60)
+    print('[4] FLATTEN INSERT')
+    print('=' * 60)
+    print(SnowflakeLoader.build_flatten_insert_sql(
+        raw_table_name, stg_table_name,
         metadata=metadata,
-        s3_folder=s3_folder
-    )
+        business_primary_key=business_primary_key,
+    ))
+
+    print('\n' + '=' * 60)
+    print('[5] MERGE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_merge_sql(
+        table_name, stg_table_name, primary_key, column_names,
+    ))
+
+    # ── Silver SQL 빌더 출력 ──
+    extracted_table = 'EVENT_STAGE_12_EXTRACTED'
+    temp_table = 'EVENT_STAGE_12_EXTRACTED_STG_1234567890'
+
+    print('\n' + '=' * 60)
+    print('[6] ENSURE EXTRACTED TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_ensure_extracted_table_sql(extracted_table))
+
+    print('\n' + '=' * 60)
+    print('[7] CREATE EXTRACT TEMP TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_extract_temp_sql(temp_table))
+
+    print('\n' + '=' * 60)
+    print('[8] EXTRACT STAGE INSERT (executemany)')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extract_stage_insert_sql(temp_table))
+
+    print('\n' + '=' * 60)
+    print('[9] EXTRACT MERGE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extract_merge_sql(extracted_table, temp_table))
+
+    print('\n' + '=' * 60)
+    print('[10] EXTRACTED JOIN SQL')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extracted_join_sql(base_table_name='EVENT_STAGE_12'))

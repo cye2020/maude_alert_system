@@ -14,6 +14,7 @@ import zipfile
 import requests
 import structlog
 
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 class S3Loader:
     """FDA 데이터를 다운로드하여 S3에 업로드 (ZIP → GZIP 변환)"""
@@ -25,8 +26,7 @@ class S3Loader:
 
     def __init__(
         self, bucket_name: str,
-        client, session: requests.Session = None,
-        log_level: str = 'INFO'
+        client, session: requests.Session = None
     ):
         """Args:
             bucket_name: S3 버킷 이름
@@ -37,11 +37,8 @@ class S3Loader:
         self.bucket_name = bucket_name
         self.s3_client = client
         self.session = session or requests.Session()
-        self.logger = structlog.get_logger(__name__)
-        level = getattr(logging, log_level, logging.CRITICAL + 1) if log_level else logging.CRITICAL + 1
-        logging.getLogger(__name__).setLevel(level)
 
-    def s3_key_generate(self, url: str, logical_date: str = None) -> str:
+    def s3_key_generate(self, url: str, ym: str = None) -> str:
         """다운로드 URL에서 S3 키 생성
 
         Args:
@@ -49,8 +46,8 @@ class S3Loader:
             logical_date: 논리적 날짜 (prefix로 사용)
         """
         prefix = ''
-        if logical_date:
-            prefix = logical_date + '/'
+        if ym:
+            prefix = ym + '/'
 
         s3_key = prefix + url.replace(self.BASE_URL, '')
 
@@ -117,15 +114,15 @@ class S3Loader:
             return True
 
         except requests.RequestException as e:
-            self.logger.error('다운로드 실패', file_url=file_url, error=str(e))
+            logger.error('다운로드 실패', file_url=file_url, error=str(e))
             return False
 
         except zipfile.BadZipFile as e:
-            self.logger.error('ZIP 파일 오류', file_url=file_url, error=str(e))
+            logger.error('ZIP 파일 오류', file_url=file_url, error=str(e))
             return False
 
         except Exception as e:
-            self.logger.error('업로드 오류', s3_key=s3_key, error=str(e))
+            logger.error('업로드 오류', s3_key=s3_key, error=str(e))
             return False
 
 

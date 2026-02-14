@@ -398,6 +398,7 @@ if __name__ == "__main__":
         build_mdr_text_extract_sql,
     )
     from maude_early_alert.loaders.snowflake_load import SnowflakeLoader
+    from maude_early_alert.loaders.snowflake_base import SnowflakeBase
     # ------------------------------------------------------------------
     # 1. Snowflake 연결
     # ------------------------------------------------------------------
@@ -450,18 +451,38 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # 4. Snowflake 적재 (EVENT_STAGE_12_EXTRACTED 에 MERGE)
     # ------------------------------------------------------------------
-    loader = SnowflakeLoader(secret['database'], secret['schema'])
-    count = loader.load_extraction_results(
-        cursor=cursor,
-        results=results,
-        base_table_name='EVENT_STAGE_12',
-    )
-    print(f"\n최종 적재 완료: {count:,}건")
+    import time
+
+    base_table_name = 'EVENT_STAGE_12'
+    extracted_table = f"{base_table_name}_EXTRACTED"
+    insert_data = SnowflakeLoader.prepare_insert_data(results)
+
+    if not insert_data:
+        print('적재할 데이터가 없습니다')
+    else:
+        base = SnowflakeBase(secret['database'], secret['schema'])
+
+        # 추출 테이블 생성
+        cursor.execute(SnowflakeLoader.build_ensure_extracted_table_sql(extracted_table))
+
+        temp_table = f"{extracted_table}_STG_{int(time.time())}"
+        try:
+            with base.transaction(cursor):
+                cursor.execute(SnowflakeLoader.build_create_extract_temp_sql(temp_table))
+                stage_insert_sql = SnowflakeLoader.build_extract_stage_insert_sql(temp_table)
+                cursor.executemany(stage_insert_sql, insert_data)
+                cursor.execute(SnowflakeLoader.build_extract_merge_sql(extracted_table, temp_table))
+            print(f"\n최종 적재 완료: {len(insert_data):,}건")
+        finally:
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # 5. JOIN SQL 확인 (EVENT_STAGE_12 LEFT JOIN EVENT_STAGE_12_EXTRACTED)
     # ------------------------------------------------------------------
-    join_sql = loader.build_extracted_join_sql(base_table_name='EVENT_STAGE_12')
+    join_sql = SnowflakeLoader.build_extracted_join_sql(base_table_name=base_table_name)
     print("\n=== 조회용 JOIN SQL ===")
     print(join_sql)
 

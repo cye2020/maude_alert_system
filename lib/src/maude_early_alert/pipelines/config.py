@@ -4,7 +4,7 @@
 Bronze: load/extract.yaml, load/load.yaml
 Silver: preprocess/columns.yaml, preprocess/cleaning.yaml, preprocess/filtering.yaml
 """
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 from maude_early_alert.utils.config_loader import load_config
 
 
@@ -12,16 +12,16 @@ class BronzeConfig:
     """Bronze 레이어 적재 설정"""
 
     def __init__(self):
-        self._extract = load_config('load/extract')
-        self._load = load_config('load/load')
+        self._extract = load_config('extract')
+        self._storage = load_config('storage')
 
     @property
     def extract(self) -> dict:
         return self._extract
 
     @property
-    def load(self) -> dict:
-        return self._load
+    def storage(self) -> dict:
+        return self._storage
 
     # ==================== extract 설정 ====================
 
@@ -36,6 +36,52 @@ class BronzeConfig:
     def get_extract_categories(self) -> List[str]:
         """추출 대상 카테고리 목록 (event, udi)"""
         return self._extract['categories']
+
+    # ==================== storage 설정 ====================
+
+    def get_s3_enabled(self) -> bool:
+        """S3 사용 여부"""
+        return self.storage['s3']['enabled']
+
+    def get_s3_region(self) -> str:
+        """S3 리전"""
+        return self.storage['s3']['region']
+
+    def get_s3_bucket_name(self) -> str:
+        """S3 버킷 이름"""
+        return self.storage['s3']['bucket_name']
+
+    def get_snowflake_enabled(self) -> bool:
+        """Snowflake 사용 여부"""
+        return self.storage['snowflake']['enabled']    
+
+    def get_snowflake_load_database(self) -> str:
+        """Snowflake load 데이터베이스"""
+        return self.storage['snowflake']['load']['database']
+
+    def get_snowflake_load_schema(self) -> str:
+        """Snowflake load 스키마"""
+        return self.storage['snowflake']['load']['schema']
+    
+    def get_snowflake_load_tables(self) -> List[str]:
+        """Snowflake load 테이블명 목록"""
+        return list(self.storage['snowflake']['load']['tables'].keys())
+
+    def get_snowflake_load_table_config(self, table_name: str) -> Dict[str, Union[str, List[str]]]:
+        """테이블별 적재 설정 (primary_key, business_primary_key)"""
+        return self.storage['snowflake']['load']['tables'][table_name]
+
+    def get_snowflake_load_primary_key(self, table_name: str) -> Union[str, List[str]]:
+        """테이블의 MERGE primary key"""
+        return self.storage['snowflake']['load']['tables'][table_name]['primary_key']
+
+    def get_snowflake_load_business_primary_key(self, table_name: str) -> str:
+        """테이블의 비즈니스 primary key"""
+        return self.storage['snowflake']['load']['tables'][table_name]['business_primary_key']
+
+    def get_snowflake_load_stage(self) -> str:
+        """Snowflake load S3 스테이지명"""
+        return self.storage['snowflake']['load']['stage']
 
 class SilverConfig:
     """Silver 레이어 전처리 설정"""
