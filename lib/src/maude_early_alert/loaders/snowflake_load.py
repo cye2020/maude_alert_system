@@ -14,14 +14,13 @@ from maude_early_alert.utils.helpers import (
 # =====================
 # text sql 적재 필요 파일
 # =====================
-from maude_early_alert.utils.sql_builder import build_cte_sql, build_insert_sql, build_join_clause
-from textwrap import dedent
+from maude_early_alert.utils.sql_builder import build_cte_sql, build_insert_sql, build_join_clause, _INDENT
+from textwrap import dedent, indent
 import json
 
 import structlog
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
-
 
 def get_staging_table_name(table_name: str) -> str:
     """원본 테이블명에서 STG_ 접두사가 붙은 스테이징 테이블명 생성"""
@@ -52,11 +51,8 @@ class SnowflakeLoader:
             table_schema: [(col_name, data_type), ...] 리스트
         """
         stg_table_name = get_staging_table_name(table_name)
-        column_defs = ", ".join([f"{col} {data_type}" for col, data_type in table_schema])
-        return dedent(f"""\
-            CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (
-                {column_defs}
-            )""")
+        column_defs = indent(",\n".join([f"{col} {data_type}" for col, data_type in table_schema]), _INDENT)
+        return f"CREATE OR REPLACE TEMPORARY TABLE {stg_table_name} (\n{column_defs}\n)"
 
     @staticmethod
     def build_create_raw_temp_sql(s3_stage_path: str) -> str:
@@ -125,13 +121,14 @@ class SnowflakeLoader:
             f"HASH(OBJECT_DELETE(value, {object_delete_keys})) AS record_hash" if bpk_list else "HASH(value) AS record_hash",
             "value::VARIANT AS raw_data"
         ])
-        select_clause = ',\n'.join(select_items)
+        select_clause = indent(",\n".join(select_items), _INDENT)
 
-        return dedent(f"""\
-            INSERT INTO {stg_table_name} ({', '.join(column_names)})
-            SELECT {select_clause}
-            FROM {raw_table_name},
-            LATERAL FLATTEN(input => raw_json:{json_path})""")
+        return (
+            f"INSERT INTO {stg_table_name} ({', '.join(column_names)})\n"
+            f"SELECT\n{select_clause}\n"
+            f"FROM {raw_table_name},\n"
+            f"LATERAL FLATTEN(input => raw_json:{json_path})"
+        )
 
     @staticmethod
     def build_merge_sql(
@@ -354,3 +351,91 @@ class SnowflakeLoader:
             node[key] = typ
 
         return result
+
+
+if __name__ == '__main__':
+    import pendulum
+
+    # ── 테스트용 파라미터 ──
+    table_name = 'EVENT'
+    s3_stage_path = 'BRONZE_S3_STAGE/202602/device/event'
+    table_schema = [
+        ('SOURCE_SYSTEM', 'VARCHAR(50)'),
+        ('INGEST_TIME', 'TIMESTAMP_NTZ'),
+        ('BATCH_ID', 'VARCHAR(100)'),
+        ('MDR_REPORT_KEY', 'VARCHAR(255)'),
+        ('SOURCE_FILE', 'VARCHAR(500)'),
+        ('RECORD_HASH', 'NUMBER'),
+        ('RAW_DATA', 'VARIANT'),
+    ]
+    primary_key = ['SOURCE_SYSTEM', 'SOURCE_FILE', 'MDR_REPORT_KEY']
+    business_primary_key = 'MDR_REPORT_KEY'
+    metadata = {
+        'source_system': 's3',
+        'ingest_time': pendulum.now(),
+        'batch_id': 'batch_test_001',
+    }
+    column_names = [col for col, _ in table_schema]
+    stg_table_name = get_staging_table_name(table_name)
+    raw_table_name = get_raw_table_name(s3_stage_path)
+
+    # ── Bronze SQL 빌더 출력 ──
+    print('=' * 60)
+    print('[1] CREATE STAGING TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_staging_sql(table_name, table_schema))
+
+    print('\n' + '=' * 60)
+    print('[2] CREATE RAW TEMP TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_raw_temp_sql(s3_stage_path))
+
+    print('\n' + '=' * 60)
+    print('[3] COPY INTO')
+    print('=' * 60)
+    print(SnowflakeLoader.build_copy_into_sql(raw_table_name, s3_stage_path))
+
+    print('\n' + '=' * 60)
+    print('[4] FLATTEN INSERT')
+    print('=' * 60)
+    print(SnowflakeLoader.build_flatten_insert_sql(
+        raw_table_name, stg_table_name,
+        metadata=metadata,
+        business_primary_key=business_primary_key,
+    ))
+
+    print('\n' + '=' * 60)
+    print('[5] MERGE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_merge_sql(
+        table_name, stg_table_name, primary_key, column_names,
+    ))
+
+    # ── Silver SQL 빌더 출력 ──
+    extracted_table = 'EVENT_STAGE_12_EXTRACTED'
+    temp_table = 'EVENT_STAGE_12_EXTRACTED_STG_1234567890'
+
+    print('\n' + '=' * 60)
+    print('[6] ENSURE EXTRACTED TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_ensure_extracted_table_sql(extracted_table))
+
+    print('\n' + '=' * 60)
+    print('[7] CREATE EXTRACT TEMP TABLE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_create_extract_temp_sql(temp_table))
+
+    print('\n' + '=' * 60)
+    print('[8] EXTRACT STAGE INSERT (executemany)')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extract_stage_insert_sql(temp_table))
+
+    print('\n' + '=' * 60)
+    print('[9] EXTRACT MERGE')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extract_merge_sql(extracted_table, temp_table))
+
+    print('\n' + '=' * 60)
+    print('[10] EXTRACTED JOIN SQL')
+    print('=' * 60)
+    print(SnowflakeLoader.build_extracted_join_sql(base_table_name='EVENT_STAGE_12'))

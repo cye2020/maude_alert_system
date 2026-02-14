@@ -14,9 +14,13 @@ snowflake:
   load:
     database: MAUDE
     schema: BRONZE
-    table:
-      - EVENT
-      - UDI
+    tables:
+      EVENT:
+        primary_key: [source_system, source_file, mdr_report_key]
+        business_primary_key: mdr_report_key
+      UDI:
+        primary_key: [source_system, source_file, public_device_record_key]
+        business_primary_key: public_device_record_key
     stage: BRONZE_S3_STAGE
   transform:
     database: MAUDE

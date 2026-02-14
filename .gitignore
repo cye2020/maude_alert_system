@@ -253,3 +253,6 @@ notebooks/**/.ipynb_checkpoints/
 
 # IDE
 .idea/
+
+# claude 확장
+.claude

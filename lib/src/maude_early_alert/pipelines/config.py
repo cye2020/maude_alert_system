@@ -4,7 +4,7 @@
 Bronze: load/extract.yaml, load/load.yaml
 Silver: preprocess/columns.yaml, preprocess/cleaning.yaml, preprocess/filtering.yaml
 """
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 from maude_early_alert.utils.config_loader import load_config
 
 
@@ -13,7 +13,7 @@ class BronzeConfig:
 
     def __init__(self):
         self._extract = load_config('extract')
-        self.storage = load_config('storage')
+        self._storage = load_config('storage')
 
     @property
     def extract(self) -> dict:
@@ -21,7 +21,7 @@ class BronzeConfig:
 
     @property
     def storage(self) -> dict:
-        return self.storage
+        return self._storage
 
     # ==================== extract 설정 ====================
 
@@ -64,8 +64,20 @@ class BronzeConfig:
         return self.storage['snowflake']['load']['schema']
     
     def get_snowflake_load_tables(self) -> List[str]:
-        """Snowflake load 테이블"""
-        return self.storage['snowflake']['load']['table']
+        """Snowflake load 테이블명 목록"""
+        return list(self.storage['snowflake']['load']['tables'].keys())
+
+    def get_snowflake_load_table_config(self, table_name: str) -> Dict[str, Union[str, List[str]]]:
+        """테이블별 적재 설정 (primary_key, business_primary_key)"""
+        return self.storage['snowflake']['load']['tables'][table_name]
+
+    def get_snowflake_load_primary_key(self, table_name: str) -> Union[str, List[str]]:
+        """테이블의 MERGE primary key"""
+        return self.storage['snowflake']['load']['tables'][table_name]['primary_key']
+
+    def get_snowflake_load_business_primary_key(self, table_name: str) -> str:
+        """테이블의 비즈니스 primary key"""
+        return self.storage['snowflake']['load']['tables'][table_name]['business_primary_key']
 
     def get_snowflake_load_stage(self) -> str:
         """Snowflake load S3 스테이지명"""

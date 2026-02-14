@@ -114,17 +114,13 @@ class BronzePipeline(SnowflakeBase):
 
     def load_all(
         self, cursor: SnowflakeCursor,
-        metadata: Dict[str, Any] = None,
-        business_primary_key: Union[str, List[str]] = None,
-        primary_key: Union[str, List[str]] = None,
+        batch_id: str,
     ) -> List[Dict[str, Any]]:
         """config의 모든 테이블 순회하며 S3→Snowflake 적재
 
         Args:
             cursor: Snowflake cursor
-            metadata: 메타데이터
-            business_primary_key: 비즈니스 기본 키
-            primary_key: MERGE 기본 키
+            batch_id: 배치 식별자
         """
         self._set_context(cursor)
 
@@ -133,8 +129,17 @@ class BronzePipeline(SnowflakeBase):
         ym = self.logical_date.strftime('%Y%m')
         results = []
 
+        metadata = {
+            'source_system': 's3',
+            'ingest_time': self.logical_date,
+            'batch_id': batch_id,
+        }
+
         for table in tables:
             s3_stage_path = f"{stage}/{ym}/device/{table.lower()}"
+            primary_key = self.cfg.get_snowflake_load_primary_key(table)
+            business_primary_key = self.cfg.get_snowflake_load_business_primary_key(table)
+
             result = self.load_folder(
                 cursor,
                 table_name=table,
@@ -173,3 +178,32 @@ class BronzePipeline(SnowflakeBase):
             'rows_loaded': rows_loaded,
             'errors_seen': errors_seen,
         }
+
+
+
+if __name__ == '__main__':
+    import snowflake.connector
+    from maude_early_alert.utils.secrets import get_secret
+
+    secret = get_secret('snowflake/de')
+    
+    conn = snowflake.connector.connect(
+        user=secret['user'],
+        password=secret['password'],
+        account=secret['account'],
+        warehouse=secret['warehouse'],
+    )
+
+    logical_date = pendulum.now()
+    pipeline = BronzePipeline(logical_date)
+    batch_id = f"bronze_{logical_date.strftime('%Y%m%d_%H%M%S')}"
+
+    try:
+        cursor = conn.cursor()
+        results = pipeline.load_all(cursor, batch_id=batch_id)
+
+        for i, result in enumerate(results):
+            print(f"\n[테이블 {i+1}] {result}")
+    finally:
+        cursor.close()
+        conn.close()
