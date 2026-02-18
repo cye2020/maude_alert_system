@@ -87,9 +87,16 @@ class SilverConfig:
     """Silver 레이어 전처리 설정"""
 
     def __init__(self):
+        self._filtering = load_config('preprocess/filtering')
         self._columns = load_config('preprocess/columns')
         self._cleaning = load_config('preprocess/cleaning')
-        self._filtering = load_config('preprocess/filtering')
+        self._flatten = load_config('preprocess/flatten')
+        self._storage = load_config('storage')
+
+    @property
+    def filtering(self) -> dict:
+        """필터링 설정 (filtering.yaml)"""
+        return self._filtering
 
     @property
     def columns(self) -> dict:
@@ -101,10 +108,80 @@ class SilverConfig:
         """클린징 설정 (cleaning.yaml)"""
         return self._cleaning
 
-    @property
-    def filtering(self) -> dict:
-        """필터링 설정 (filtering.yaml)"""
-        return self._filtering
+    # ==================== snowflake 설정 ====================
+
+    def get_snowflake_enabled(self) -> bool:
+        """Snowflake 사용 여부"""
+        return self._storage['snowflake']['enabled']
+
+    def get_snowflake_transform_database(self) -> str:
+        """Silver transform 데이터베이스"""
+        return self._storage['snowflake']['transform']['database']
+
+    def get_snowflake_transform_schema(self) -> str:
+        """Silver transform 스키마"""
+        return self._storage['snowflake']['transform']['schema']
+
+    # ==================== flatten 설정 ====================
+
+    def get_flatten_categories(self) -> List[str]:
+        """flatten 대상 카테고리 목록 반환 (e.g. ['event', 'udi'])"""
+        return list(self._flatten.keys())
+
+    def get_flatten_config(self, category: str) -> Dict[str, List[str]]:
+        """카테고리별 flatten 전략 딕셔너리 반환
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            {'flatten': [...], 'transform': [...], 'first_element': [...]}
+
+        Example:
+            scfg.get_flatten_config('event')
+            # {'flatten': ['device'], 'transform': ['mdr_text'], 'first_element': ['patient']}
+        """
+        return self._flatten.get(category, {})
+
+    # ==================== filtering 설정 ====================
+
+    def get_filtering_step(self, key: str) -> Dict[str, dict]:
+        """특정 filter step key가 enabled된 category와 step 설정 반환
+
+        Args:
+            key: 필터 스텝명 (e.g. 'DEDUP', 'SCOPING', 'QUALITY_FILTER')
+
+        Returns:
+            standalone: {category: {'type': 'standalone', 'where': [...], 'qualify': [...]}}
+            chain:      {category: {'type': 'chain', 'ctes': [...], 'final': str}}
+            enabled=False인 카테고리는 제외
+
+        Example:
+            scfg.get_filtering_step('DEDUP')
+            # {'event': {'type': 'standalone', 'qualify': [...]}, 'udi': {...}}
+            scfg.get_filtering_step('QUALITY_FILTER')
+            # {'event': {'type': 'chain', 'ctes': [...], 'final': 'logical'}}
+        """
+        result = {}
+        for category, steps in self._filtering.items():
+            if not isinstance(steps, dict):
+                continue
+            step = steps.get(key)
+            if not step or not step.get('enabled', False):
+                continue
+            step_type = step.get('type', 'standalone')
+            if step_type == 'chain':
+                result[category] = {
+                    'type': 'chain',
+                    'ctes': step['ctes'],
+                    'final': step['final'],
+                }
+            else:
+                result[category] = {
+                    'type': 'standalone',
+                    **{k: v for k, v in step.items() if k in ('where', 'qualify')},
+                }
+        return result
 
 
 # ==================== ConfigManager (싱글톤 패턴) ====================

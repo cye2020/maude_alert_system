@@ -41,44 +41,53 @@ def build_filter_sql(
     return sql
 
 
-def build_filter_pipeline(cfg: Dict, source: str, alias: str = "s") -> str:
-    """필터링 스텝들 → CTE 체인 SQL
+def build_filter_pipeline(source: str, ctes: List[dict], final: str, alias: str = "s") -> str:
+    """CTE 체인 SQL 생성
 
-    CTE 흐름:
-        source → low_quality → dedup_step1 → dup_to_drop (QUALIFY)
-                                    ↓               ↓
-                               dedup_clean (NOT EXISTS)
-                                    ↓
-                                 logical
+    filtering.yaml의 chain 스텝 설정을 받아 WITH ... SELECT 형태의 SQL을 반환한다.
+    각 CTE의 from 필드가 'source'이면 source 인자로 대체한다.
 
     Args:
-        cfg: filtering.yaml 로드 결과
-        source: 최초 소스 테이블/CTE 이름
+        source: 최초 소스 테이블명 (cte의 from: source 대체값)
+        ctes: filtering.yaml QUALITY_FILTER.ctes 리스트
+        final: 마지막 SELECT 대상 CTE명
         alias: 테이블 별칭
-    """
-    steps = [
-        ('low_quality',    cfg['LOW_QUALITY'],         source),
-        ('dedup_step1',    cfg['REPORT_DEDUP_STEP1'],  'low_quality'),
-        ('dup_to_drop',    cfg['REPORT_DEDUP_STEP2'],  'dedup_step1'),
-        ('dedup_clean',    cfg['REPORT_DEDUP_STEP3'],  'low_quality'),
-        ('logical',        cfg['LOGICAL'],             'dedup_clean'),
-    ]
 
-    ctes = []
-    for cte_name, step_cfg, from_source in steps:
+    Returns:
+        완성된 CTE 체인 SQL 문자열
+    """
+    built_ctes = []
+    for cte in ctes:
+        from_source = source if cte['from'] == 'source' else cte['from']
         query = build_filter_sql(
             from_source, alias=alias,
-            where=step_cfg.get('where'),
-            qualify=step_cfg.get('qualify'),
+            where=cte.get('where'),
+            qualify=cte.get('qualify'),
         )
-        ctes.append({'name': cte_name, 'query': query})
-
-    return build_cte_sql(ctes=ctes, final_query="SELECT * FROM logical")
+        built_ctes.append({'name': cte['name'], 'query': query})
+    return build_cte_sql(ctes=built_ctes, final_query=f"SELECT * FROM {final}")
 
 
 if __name__ == '__main__':
     from maude_early_alert.utils.config_loader import load_config
 
     cfg = load_config('preprocess/filtering')
-    sql = build_filter_pipeline(cfg, source='EVENT_STAGE_10')
-    print(sql)
+
+    # standalone: event DEDUP
+    event_dedup = cfg['event']['DEDUP']
+    sql_dedup = build_filter_sql(
+        'EVENT_STAGE_00',
+        qualify=event_dedup.get('qualify'),
+    )
+    print("=== EVENT DEDUP (standalone) ===")
+    print(sql_dedup)
+
+    # chain: event QUALITY_FILTER
+    qf = cfg['event']['QUALITY_FILTER']
+    sql_chain = build_filter_pipeline(
+        source='EVENT_STAGE_02',
+        ctes=qf['ctes'],
+        final=qf['final'],
+    )
+    print("\n=== EVENT QUALITY_FILTER (chain) ===")
+    print(sql_chain)

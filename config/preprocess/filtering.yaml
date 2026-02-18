@@ -1,63 +1,67 @@
-# config/preprocess/filtering.yaml
+event:
+  DEDUP:
+    description: "business_primary_key, record_hash 기준 중복행 제거"
+    enabled: true
+    type: standalone
+    qualify:
+      - >
+        ROW_NUMBER() OVER (PARTITION BY MDR_REPORT_KEY ORDER BY INGEST_TIME DESC) = 1
+        AND LEAD(RECORD_HASH) OVER (PARTITION BY MDR_REPORT_KEY ORDER BY INGEST_TIME DESC) IS DISTINCT FROM RECORD_HASH
 
-DEDUP:
-  description: "mdr_report_key, record_hash 기준 중복행 제거"
-  enabled: true
-  qualify:
-    - >
-      QUALIFY ROW_NUMBER() OVER (PARTITION BY MDR_REPORT_KEY ORDER BY INGEST_TIME DESC) = 1
-      AND LEAD(RECORD_HASH) OVER (PARTITION BY MDR_REPORT_KEY ORDER BY INGEST_TIME DESC) IS DISTINCT FROM RECORD_HASH
+  SCOPING:
+    description: "스코핑: 고위험 기기, 텍스트 존재"
+    enabled: true
+    type: standalone
+    where:
+      - "device_openfda_device_class = '3'"
+      - "ARRAY_SIZE(mdr_text_texts) > 0"
 
-SCOPING:
-  description: "스코핑: 고위험 기기, 텍스트 존재"
-  enabled: true
-  where:
-    - "device_openfda_device_class = '3'"
-    - "ARRAY_SIZE(mdr_text_texts) > 0"
-
-LOW_QUALITY:
-  description: "저품질 행 필터링: 제조사·기기버전·UDI 신뢰도"
-  enabled: true
-  where:
-    - "MANUFACTURER_NAME IS NOT NULL"
-    - "CONFIDENCE IN ('HIGH', 'MEDIUM', 'LOW')"
-
-REPORT_DEDUP_STEP1:
-  description: "보고서 중복 제거 Step1: 기준 컬럼 NULL이 아닌 행만 선별"
-  enabled: true
-  where:
-    - "REPORT_NUMBER IS NOT NULL"
-    - "DATE_OCCURRED IS NOT NULL"
-    - "MANUFACTURER_NAME IS NOT NULL"
-    - "UDI_DI IS NOT NULL"
-    - "LOT_NUMBER IS NOT NULL"
-    - "UDI_PUBLIC IS NOT NULL"
-
-REPORT_DEDUP_STEP2:
-  description: "보고서 중복 제거 Step2: 기준 컬럼의 중복 행 식별"
-  enabled: true
-  qualify:
-    - "ROW_NUMBER() OVER (PARTITION BY REPORT_NUMBER, DATE_OCCURRED, MANUFACTURER_NAME, UDI_DI, LOT_NUMBER, UDI_PUBLIC ORDER BY MDR_REPORT_KEY) > 1"
-
-REPORT_DEDUP_STEP3:
-  description: "보고서 중복 제거 Step3: 식별된 중복 행 제외"
-  enabled: true
-  where:
-    - "NOT EXISTS (SELECT 1 FROM dup_to_drop d WHERE d.mdr_report_key = s.mdr_report_key)"
-
-LOGICAL:
-  description: "논리적 일관성"
-  enabled: true
-  where:
-    - "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
+  QUALITY_FILTER:
+    description: "품질 필터링 + 보고서 중복 제거 + 논리 일관성 (CTE 체인)"
+    enabled: true
+    type: chain
+    ctes:
+      - name: low_quality
+        from: source
+        where:
+          - "MANUFACTURER_NAME IS NOT NULL"
+          - "CONFIDENCE IN ('HIGH', 'MEDIUM', 'LOW')"
+      - name: dedup_step1
+        from: low_quality
+        where:
+          - "REPORT_NUMBER IS NOT NULL"
+          - "DATE_OCCURRED IS NOT NULL"
+          - "MANUFACTURER_NAME IS NOT NULL"
+          - "UDI_DI IS NOT NULL"
+          - "LOT_NUMBER IS NOT NULL"
+          - "UDI_PUBLIC IS NOT NULL"
+      - name: dup_to_drop
+        from: dedup_step1
+        qualify:
+          - "ROW_NUMBER() OVER (PARTITION BY REPORT_NUMBER, DATE_OCCURRED, MANUFACTURER_NAME, UDI_DI, LOT_NUMBER, UDI_PUBLIC ORDER BY MDR_REPORT_KEY) > 1"
+      - name: dedup_clean
+        from: low_quality
+        where:
+          - "NOT EXISTS (SELECT 1 FROM dup_to_drop d WHERE d.mdr_report_key = s.mdr_report_key)"
+      - name: logical
+        from: dedup_clean
+        where:
+          - "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
+    final: logical
 
 udi:
-  source: RAW_UDI
-  alias: s
+  DEDUP:
+    description: "business_primary_key, record_hash 기준 중복행 제거"
+    enabled: true
+    type: standalone
+    qualify:
+      - >
+        ROW_NUMBER() OVER (PARTITION BY public_device_record_key ORDER BY INGEST_TIME DESC) = 1
+        AND LEAD(RECORD_HASH) OVER (PARTITION BY public_device_record_key ORDER BY INGEST_TIME DESC) IS DISTINCT FROM RECORD_HASH
 
-  filters:
-    HIGH_RISK_DEVICE:
-      description: "고위험 의료기기만 포함 (device_class = 3)"
-      enabled: true
-      where:
-        - "s.device_class = '3'"
+  SCOPING:
+    description: "고위험 의료기기만 포함 (device_class = 3)"
+    enabled: true
+    type: standalone
+    where:
+      - "ARRAY_CONTAINS('3'::VARIANT, product_codes_openfda_device_class)"

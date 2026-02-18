@@ -299,59 +299,6 @@ class SnowflakeLoader:
             joins=[join_clause],
         )
 
-    # ==================== key & type 조회 (유틸) ====================
-
-    @staticmethod
-    def _fetch_map(cursor, sql: str) -> Dict[str, str]:
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-        return {str(k): str(t) for k, t in rows if k is not None}
-
-    @staticmethod
-    def top_keys_with_type(cursor, table_fq: str, raw_column: str = "raw_data"):
-        """최상위 키와 타입 조회"""
-        sql = f"""
-        SELECT DISTINCT f.key, TYPEOF(f.value)
-        FROM {table_fq},
-            LATERAL FLATTEN(input => {raw_column}) AS f
-        ORDER BY f.key;
-        """
-        return SnowflakeLoader._fetch_map(cursor, sql)
-
-    @staticmethod
-    def array_keys_with_type(cursor, table_fq: str, array_path: str, raw_column: str = "raw_data"):
-        """배열 내 모든 키를 RECURSIVE로 조회하여 nested dict 반환"""
-        import re
-        sql = f"""
-        SELECT DISTINCT f.path::STRING, f.key::STRING, TYPEOF(f.value)
-        FROM {table_fq},
-            LATERAL FLATTEN(input => {raw_column}:{array_path}, RECURSIVE => TRUE) f
-        WHERE f.key IS NOT NULL
-          AND TYPEOF(f.value) != 'OBJECT'
-        ORDER BY 1, 2
-        """
-        cursor.execute(sql)
-
-        result = {}
-        for raw_path, key, typ in cursor.fetchall():
-            inner = re.sub(r'^\[\d+\]\.?', '', str(raw_path))
-            if re.search(r'\[\d+\]', inner):
-                continue
-
-            clean = re.sub(r'\[\d+\]\.?', '', str(raw_path)).strip('.')
-            parts = [p for p in clean.split('.') if p]
-
-            parent_parts = parts[:-1] if parts else []
-
-            node = result
-            for part in parent_parts:
-                if part not in node or not isinstance(node[part], dict):
-                    node[part] = {}
-                node = node[part]
-            node[key] = typ
-
-        return result
-
 
 if __name__ == '__main__':
     import pendulum
