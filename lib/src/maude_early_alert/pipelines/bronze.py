@@ -168,10 +168,12 @@ class BronzePipeline(SnowflakeBase):
             logger.warning('COPY INTO 중 에러 발생', errors_seen=errors_seen)
             for r in results:
                 if r[5] > 0:
-                    logger.warning('COPY INTO 에러 상세',
-                                   file=r[0], status=r[1],
-                                   errors_seen=r[5], first_error=r[6],
-                                   first_error_line=r[7])
+                    logger.warning(
+                        'COPY INTO 에러 상세',
+                        file=r[0], status=r[1],
+                        errors_seen=r[5], first_error=r[6],
+                        first_error_line=r[7]
+                    )
 
         return {
             'files_loaded': files_loaded,
