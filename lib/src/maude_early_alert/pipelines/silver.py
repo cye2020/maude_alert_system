@@ -6,8 +6,15 @@ from snowflake.connector.cursor import SnowflakeCursor
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase
 from maude_early_alert.pipelines.config import get_config
+from maude_early_alert.preprocessors.custom_transform import (
+    build_combine_mdr_text_sql,
+    build_primary_udi_di_sql,
+    build_extract_udi_di_sql,
+    build_apply_company_alias_sql,
+    build_manufacturer_fuzzy_match_sql,
+)
 from maude_early_alert.preprocessors.flatten import (
-    build_array_keys_sql, 
+    build_array_keys_sql,
     build_flatten_sql,
     build_top_keys_sql,
     parse_array_keys_result
@@ -29,35 +36,40 @@ class SilverPipeline(SnowflakeBase):
         database = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
         super().__init__(database, schema)
-    
+
     def _stage_table(self, category: str) -> str:
         """현재 stage 테이블명 반환 (e.g. 'EVENT_STAGE_01')"""
+        if self.stage[category] == 0:
+            database = self.cfg.get_snowflake_load_database()
+            schema = self.cfg.get_snowflake_load_schema()
+            return f'{database}.{schema}.{category}'.upper()
         return f'{category}_stage_{self.stage[category]:02d}'.upper()
 
-    def _create_next_stage(self, category: str, sql: str, cursor: SnowflakeCursor):
+    def _create_next_stage(self, cursor: SnowflakeCursor, category: str, sql: str):
         """다음 stage 테이블 생성 후 self.stage 업데이트"""
         self.stage[category] += 1
         next_table = self._stage_table(category)
         cursor.execute(f'CREATE OR REPLACE TABLE {next_table} AS\n{sql}')
 
-    def _filter_step(self, key: str, cursor: SnowflakeCursor, source: str = None):
+    def _filter_step(self, key: str, cursor: SnowflakeCursor):
         """filtering.yaml의 key에 해당하는 스텝을 category별로 실행"""
+        self._set_context(cursor)
         for category, step in self.cfg.get_filtering_step(key).items():
-            source = source if source else self._stage_table(category)
+            source = self._stage_table(category)
             if step['type'] == 'standalone':
                 sql = build_filter_sql(source, **{k: v for k, v in step.items() if k in ('where', 'qualify')})
             else:  # chain
                 sql = build_filter_pipeline(source, step['ctes'], step['final'])
-            self._create_next_stage(category, sql, cursor)
+            self._create_next_stage(cursor, category, sql)
 
-    def filter_dedup_rows(self, cursor: SnowflakeCursor, source: str = None):
-        self._filter_step('DEDUP', cursor, source)
+    def filter_dedup_rows(self, cursor: SnowflakeCursor):
+        self._filter_step('DEDUP', cursor)
 
-    def filter_scoping(self, cursor: SnowflakeCursor, source: str = None):
-        self._filter_step('SCOPING', cursor, source)
+    def filter_scoping(self, cursor: SnowflakeCursor):
+        self._filter_step('SCOPING', cursor)
 
-    def filter_quality(self, cursor: SnowflakeCursor, source: str = None):
-        self._filter_step('QUALITY_FILTER', cursor, source)
+    def filter_quality(self, cursor: SnowflakeCursor):
+        self._filter_step('QUALITY_FILTER', cursor)
 
     def _fetch_schema(self, cursor: SnowflakeCursor, table_name: str):
         """top-level 키/타입 + 배열별 nested 스키마 조회"""
@@ -73,6 +85,7 @@ class SilverPipeline(SnowflakeBase):
         return top, array_schemas
 
     def flatten(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         for category in self.cfg.get_flatten_categories():
             table_name = self._stage_table(category)
             flatten_cfg = self.cfg.get_flatten_config(category)
@@ -94,4 +107,70 @@ class SilverPipeline(SnowflakeBase):
                 scalar_keys=scalar_keys,
                 **strategy_keys,
             )
-            self._create_next_stage(category, flatten_sql, cursor)
+            print(flatten_sql)
+            self._create_next_stage(cursor, category, flatten_sql)
+
+    def combine_mdr_text(self, cursor: SnowflakeCursor):
+        category = self.cfg.get_combine_category()
+        sql = build_combine_mdr_text_sql(self._stage_table(category), **self.cfg.get_combine_columns())
+        self._create_next_stage(cursor, category, sql)
+
+    def extract_primary_udi_di(self, cursor: SnowflakeCursor):
+        category = self.cfg.get_primary_category()
+        sql = build_primary_udi_di_sql(self._stage_table(category), **self.cfg.get_primary_columns())
+        self._create_next_stage(cursor, category, sql)
+
+    def extract_udi_di(self, cursor: SnowflakeCursor):
+        category = self.cfg.get_extract_udi_di_category()
+        sql = build_extract_udi_di_sql(self._stage_table(category), **self.cfg.get_extract_udi_di_columns())
+        self._create_next_stage(cursor, category, sql)
+
+    def apply_company_alias(self, cursor: SnowflakeCursor):
+        sql = build_apply_company_alias_sql(
+            source=self._stage_table('event'),
+            company_col=self.cfg.get_ma_company_col(),
+            aliases=self.cfg.get_ma_aliases(),
+        )
+        self._create_next_stage(cursor, 'event', sql)
+
+    def fuzzy_match_manufacturer(self, cursor: SnowflakeCursor):
+        udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
+        target_category = self.cfg.get_fuzzy_match_target_category()
+        sql = build_manufacturer_fuzzy_match_sql(
+            target=self._stage_table(target_category),
+            source=self._stage_table(self.cfg.get_fuzzy_match_source_category()),
+            mfr_col=self.cfg.get_fuzzy_match_mfr_col(),
+            udf_schema=udf_schema,
+            threshold=self.cfg.get_fuzzy_match_threshold(),
+        )
+        self._create_next_stage(cursor, target_category, sql)
+
+
+if __name__=='__main__':
+    import snowflake.connector
+    from maude_early_alert.utils.secrets import get_secret
+
+    secret = get_secret('snowflake/de')
+
+    conn = snowflake.connector.connect(
+        user=secret['user'],
+        password=secret['password'],
+        account=secret['account'],
+        warehouse=secret['warehouse'],
+    )
+
+    stage = {
+        'event': 0,
+        'udi': 0
+    }
+    pipeline = SilverPipeline(stage, pendulum.now())
+
+    try:
+        cursor = conn.cursor()
+        pipeline.filter_dedup_rows(cursor)
+        pipeline.flatten(cursor)
+        pipeline.filter_scoping(cursor)
+
+    finally:
+        cursor.close()
+        conn.close()

@@ -1,0 +1,54 @@
+combine:
+  category: event
+  columns:
+    text_col: MDR_TEXT_TEXTS
+    type_col: MDR_TEXT_TEXT_TYPE_CODES
+    combine_col: MDR_TEXT
+
+primary:
+  category: udi
+  columns:
+    id_col: IDENTIFIERS_ID
+    type_col: IDENTIFIERS_TYPE
+    partition_key: PUBLIC_DEVICE_RECORD_KEY
+    primary_col: PRIMARY_UDI_DI
+
+extract_udi_di:
+  category: udi
+  columns:
+    public_col: UDI_PUBLIC
+    target_col: UDI_DI
+
+fuzzy_match:
+  threshold: 0.85
+  source_category: udi
+  target_category: event
+  mfr_col: MANUFACTURER_NAME
+
+M&A:
+  company_col: MANUFACTURER_NAME
+  aliases:
+    # Abbott 인수 계열
+    IRVINE BIOMEDICAL: ABBOTT
+    ST JUDE: ABBOTT
+    THORATEC: ABBOTT
+    PACESETTER: ABBOTT
+    # Medtronic 인수 계열
+    COVIDIEN: MEDTRONIC
+    HEARTWARE: MEDTRONIC
+    NELLCOR: MEDTRONIC
+    EV3: MEDTRONIC
+    # Becton Dickinson 인수 계열
+    CR BARD: BECTON DICKINSON
+    C R BARD: BECTON DICKINSON
+    DAVOL: BECTON DICKINSON
+    BARD: BECTON DICKINSON
+    # Johnson & Johnson 계열
+    ETHICON: JOHNSON & JOHNSON
+    DEPUY: JOHNSON & JOHNSON
+    CODMAN: JOHNSON & JOHNSON
+    SYNTHES: JOHNSON & JOHNSON
+    # Boston Scientific 인수 계열
+    GUIDANT: BOSTON SCIENTIFIC
+    # LivaNova (Cyberonics 리브랜딩)
+    CYBERONICS: LIVANOVA

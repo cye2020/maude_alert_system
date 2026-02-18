@@ -1,10 +1,14 @@
 """파이프라인 특화 SQL 생성 (일회용 변환 함수)"""
 
+from textwrap import dedent, indent
+
 from maude_early_alert.utils.helpers import validate_identifier
 from maude_early_alert.utils.sql_builder import build_cte_sql
 
+_INDENT = '    '  # 4-space indent
 
-def build_combine_mdr_text_sql(source: str) -> str:
+
+def build_combine_mdr_text_sql(source: str, text_col: str, type_col: str, combine_col: str) -> str:
     """mdr_text_text_type_codes와 mdr_text_texts 배열을 결합하여 mdr_text 컬럼 생성
 
     결과 형식:
@@ -22,25 +26,28 @@ def build_combine_mdr_text_sql(source: str) -> str:
     """
     source = validate_identifier(source)
 
-    mdr_text_expr = (
-        "ARRAY_TO_STRING(\n"
-        "        TRANSFORM(\n"
-        "            ARRAY_GENERATE_RANGE(0, ARRAY_SIZE(MDR_TEXT_TEXTS)),\n"
-        "            i INT -> CONCAT('[', GET(MDR_TEXT_TEXT_TYPE_CODES, i)::STRING, ']',\n"
-        "                CHAR(10), GET(MDR_TEXT_TEXTS, i)::STRING)\n"
-        "        ),\n"
-        "        CONCAT(CHAR(10), CHAR(10))\n"
-        "    ) AS mdr_text"
-    )
+    mdr_text_expr = dedent(f"""\
+        ARRAY_TO_STRING(
+            TRANSFORM(
+                ARRAY_GENERATE_RANGE(0, ARRAY_SIZE({text_col})),
+                i INT -> CONCAT('[', GET({type_col}, i)::STRING, ']',
+                    CHAR(10), GET({text_col}, i)::STRING)
+            ),
+            CONCAT(CHAR(10), CHAR(10))
+        ) AS {combine_col}""").strip()
 
     return build_cte_sql(
         ctes=[],
         from_clause=source,
         select_cols=["*", mdr_text_expr],
-    ) + "\n;"
+    )
 
 
-def build_primary_udi_di_sql(source: str, partition_key: str) -> str:
+def build_primary_udi_di_sql(
+        source: str, 
+        partition_key: str,
+        id_col: str, type_col: str, primary_col: str
+    ) -> str:
     """identifiers에서 Primary type의 id를 전체 행에 전파
 
     같은 레코드(partition_key 기준) 내 identifiers 중
@@ -56,86 +63,55 @@ def build_primary_udi_di_sql(source: str, partition_key: str) -> str:
     source = validate_identifier(source)
     partition_key = validate_identifier(partition_key)
 
-    window_expr = (
-        f"MAX(CASE WHEN identifiers_type = 'Primary'\n"
-        f"                 THEN identifiers_id END)\n"
-        f"        OVER (PARTITION BY {partition_key}) AS primary_udi_di"
-    )
+    window_expr = dedent(f"""\
+        MAX(CASE WHEN {type_col} = 'Primary'
+                 THEN {id_col} END)
+        OVER (PARTITION BY {partition_key}) AS {primary_col}""").strip()
 
     return build_cte_sql(
         ctes=[],
         from_clause=source,
         select_cols=["*", window_expr],
-    ) + "\n;"
+    )
 
 
-# 인수합병(M&A) 기반 회사명 통합 매핑
-# key: 피인수/자회사 prefix, value: 모회사명
-COMPANY_ALIASES = {
-    # Abbott 인수 계열
-    "IRVINE BIOMEDICAL": "ABBOTT",
-    "ST JUDE": "ABBOTT",
-    "THORATEC": "ABBOTT",
-    "PACESETTER": "ABBOTT",
-    # Medtronic 인수 계열
-    "COVIDIEN": "MEDTRONIC",
-    "HEARTWARE": "MEDTRONIC",
-    "NELLCOR": "MEDTRONIC",
-    "EV3": "MEDTRONIC",
-    # Becton Dickinson 인수 계열
-    "CR BARD": "BECTON DICKINSON",
-    "C R BARD": "BECTON DICKINSON",
-    "DAVOL": "BECTON DICKINSON",
-    "BARD": "BECTON DICKINSON",
-    # Johnson & Johnson 계열
-    "ETHICON": "JOHNSON & JOHNSON",
-    "DEPUY": "JOHNSON & JOHNSON",
-    "CODMAN": "JOHNSON & JOHNSON",
-    "SYNTHES": "JOHNSON & JOHNSON",
-    # Boston Scientific 인수 계열
-    "GUIDANT": "BOSTON SCIENTIFIC",
-    # LivaNova (Cyberonics 리브랜딩)
-    "CYBERONICS": "LIVANOVA",
-}
-
-# 긴 키부터 매칭하도록 정렬 (IRVINE BIOMEDICAL > IRVINE, CR BARD > CR 방지)
-_SORTED_ALIASES = sorted(COMPANY_ALIASES.items(), key=lambda x: -len(x[0]))
-
-
-def build_apply_company_alias_sql(source: str, column: str) -> str:
+def build_apply_company_alias_sql(source: str, company_col: str, aliases: dict) -> str:
     """M&A 기반 회사명 통합 SQL 생성 (CASE WHEN + LIKE prefix 매칭)
 
     원본 컬럼을 REPLACE하여 모회사명으로 치환한다.
+    aliases는 config/preprocess/transform.yaml의 M&A.aliases에서 로드한다.
 
     Args:
         source: 소스 테이블명
-        column: 제조사명 컬럼명
+        company_col: 제조사명 컬럼명
+        aliases: {피인수사 prefix: 모회사명} 매핑 dict
 
     Returns:
         완성된 SQL 문자열
     """
     source = validate_identifier(source)
-    column = validate_identifier(column)
+    company_col = validate_identifier(company_col)
 
-    when_clauses = "\n        ".join(
-        f"WHEN UPPER(TRIM({column})) LIKE '{alias}%' THEN '{parent}'"
-        for alias, parent in _SORTED_ALIASES
+    # 긴 키부터 매칭 (IRVINE BIOMEDICAL > IRVINE, CR BARD > CR 방지)
+    sorted_aliases = sorted(aliases.items(), key=lambda x: -len(x[0]))
+    when_lines = "\n".join(
+        f"WHEN UPPER(TRIM({company_col})) LIKE '{alias}%' THEN '{parent}'"
+        for alias, parent in sorted_aliases
     )
     case_expr = (
-        f"CASE\n"
-        f"        {when_clauses}\n"
-        f"        ELSE {column}\n"
-        f"    END AS {column}"
+        "CASE\n"
+        + indent(when_lines + f"\nELSE {company_col}", _INDENT)
+        + f"\nEND AS {company_col}"
     )
 
     return build_cte_sql(
         ctes=[],
         from_clause=source,
         replace_cols=[case_expr],
-    ) + "\n;"
+    )
 
 
-def build_extract_udi_di_sql(source: str, column: str = "UDI_PUBLIC") -> str:
+def build_extract_udi_di_sql(source: str, public_col: str, target_col: str) -> str:
     """UDI_PUBLIC에서 UDI_DI 추출 SQL 생성 (CASE WHEN + REGEXP)
 
     3가지 패턴에 따라 DI를 추출한다:
@@ -145,40 +121,38 @@ def build_extract_udi_di_sql(source: str, column: str = "UDI_PUBLIC") -> str:
 
     Args:
         source: 소스 테이블명
-        column: UDI PUBLIC 컬럼명 (기본값: UDI_PUBLIC)
+        public_col: UDI PUBLIC 컬럼명 (config: extract_udi_di.columns.public_col)
+        target_col: 추출 결과 컬럼명 (config: extract_udi_di.columns.target_col)
 
     Returns:
         완성된 SQL 문자열
     """
     source = validate_identifier(source)
-    column = validate_identifier(column)
+    public_col = validate_identifier(public_col)
+    target_col = validate_identifier(target_col)
 
-    case_expr = (
-        f"CASE \n"
-        f"            WHEN REGEXP_LIKE({column}, '^\\+[A-Za-z0-9]{{7,}}.*') "
-        f"THEN REGEXP_SUBSTR({column}, '^\\+([A-Za-z0-9]+)', 1, 1, 'e') \n"
-        f"            WHEN REGEXP_LIKE({column}, '^\\(01\\)[0-9]{{14,}}.*') "
-        f"THEN REGEXP_SUBSTR({column}, '^\\(01\\)([0-9]{{14}})', 1, 1, 'e') \n"
-        f"            WHEN REGEXP_LIKE({column}, '^[a-zA-Z].*') "
-        f"THEN {column} ELSE NULL \n"
-        f"        END"
-    )
-    coalesce_expr = f"COALESCE(UDI_DI, \n        {case_expr}) AS UDI_DI"
+    when_lines = "\n".join([
+        f"WHEN REGEXP_LIKE({public_col}, '^\\+[A-Za-z0-9]{{7,}}.*') THEN REGEXP_SUBSTR({public_col}, '^\\+([A-Za-z0-9]+)', 1, 1, 'e')",
+        f"WHEN REGEXP_LIKE({public_col}, '^\\(01\\)[0-9]{{14,}}.*') THEN REGEXP_SUBSTR({public_col}, '^\\(01\\)([0-9]{{14}})', 1, 1, 'e')",
+        f"WHEN REGEXP_LIKE({public_col}, '^[a-zA-Z].*') THEN {public_col}",
+        "ELSE NULL",
+    ])
+    case_expr = f"CASE\n{indent(when_lines, _INDENT)}\nEND"
+    coalesce_expr = f"COALESCE(\n{indent(f'{target_col},', _INDENT)}\n{indent(case_expr, _INDENT)}\n) AS {target_col}"
 
     return build_cte_sql(
         ctes=[],
         from_clause=source,
         replace_cols=[coalesce_expr],
-    ) + "\n;"
+    )
 
 
 def build_manufacturer_fuzzy_match_sql(
-    maude_table: str,
-    udi_table: str,
-    maude_col: str,
-    udi_col: str,
+    target: str,
+    source: str,
+    mfr_col: str,
     udf_schema: str,
-    threshold: float = 0.85,
+    threshold: float,
 ) -> str:
     """제조사명 퍼지 매칭 후 MAUDE 테이블의 제조사명을 UDI 매칭 결과로 치환
 
@@ -186,85 +160,62 @@ def build_manufacturer_fuzzy_match_sql(
     threshold 이상인 best match를 LEFT JOIN으로 원본에 적용.
 
     Args:
-        maude_table: MAUDE 테이블명
-        udi_table: UDI 테이블명
-        maude_col: MAUDE 제조사명 컬럼
-        udi_col: UDI 제조사명 컬럼
+        target: 치환 대상
+        source: 참조 기순
+        mfr_col: 제조사명 컬럼 (config: fuzzy_match.mfr_col)
         udf_schema: UDF 스키마명
-        threshold: 매칭 임계값 (0.0 ~ 1.0)
+        threshold: 매칭 임계값 (config: fuzzy_match.threshold)
 
     Returns:
         완성된 SQL 문자열
     """
-    maude_table = validate_identifier(maude_table)
-    udi_table = validate_identifier(udi_table)
-    maude_col = validate_identifier(maude_col)
-    udi_col = validate_identifier(udi_col)
+    target = validate_identifier(target)
+    source = validate_identifier(source)
+    mfr_col = validate_identifier(mfr_col)
 
     ctes = [
         {
-            'name': 'maude_mfrs',
-            'query': (
-                f"SELECT DISTINCT {maude_col} AS manufacturer\n"
-                f"FROM {maude_table}\n"
-                f"WHERE {maude_col} IS NOT NULL"
-            ),
+            'name': 'target_mfrs',
+            'query': f"""\
+                SELECT DISTINCT {mfr_col} AS manufacturer
+                FROM {target}
+                WHERE {mfr_col} IS NOT NULL""",
         },
         {
-            'name': 'udi_mfrs',
-            'query': (
-                f"SELECT DISTINCT {udi_col} AS manufacturer\n"
-                f"FROM {udi_table}\n"
-                f"WHERE {udi_col} IS NOT NULL"
-            ),
+            'name': 'source_mfrs',
+            'query': f"""\
+                SELECT DISTINCT {mfr_col} AS manufacturer
+                FROM {source}
+                WHERE {mfr_col} IS NOT NULL""",
         },
         {
             'name': 'cross_matched',
-            'query': (
-                f"SELECT\n"
-                f"    m.manufacturer AS maude_mfr,\n"
-                f"    u.manufacturer AS udi_mfr,\n"
-                f"    {udf_schema}.fuzzy_match_score(m.manufacturer, u.manufacturer) AS score\n"
-                f"FROM maude_mfrs m\n"
-                f"CROSS JOIN udi_mfrs u"
-            ),
+            'query': f"""\
+                SELECT
+                    m.manufacturer AS target_mfr,
+                    u.manufacturer AS source_mfr,
+                    {udf_schema}.fuzzy_match_score(m.manufacturer, u.manufacturer) AS score
+                FROM target_mfrs m
+                CROSS JOIN source_mfrs u""",
         },
         {
             'name': 'best_match',
-            'query': (
-                f"SELECT maude_mfr, udi_mfr, score\n"
-                f"FROM cross_matched\n"
-                f"WHERE score >= {threshold}\n"
-                f"QUALIFY ROW_NUMBER() OVER (PARTITION BY maude_mfr ORDER BY score DESC) = 1"
-            ),
+            'query': f"""\
+                SELECT target_mfr, source_mfr, score
+                FROM cross_matched
+                WHERE score >= {threshold}
+                QUALIFY ROW_NUMBER() OVER (PARTITION BY target_mfr ORDER BY score DESC) = 1""",
         },
     ]
 
     return build_cte_sql(
         ctes=ctes,
-        from_clause=f"{maude_table} t",
+        from_clause=f"{target} t",
         table_alias='t',
-        replace_cols=[f"COALESCE(b.udi_mfr, t.{maude_col}) AS {maude_col}"],
-        joins=[f"LEFT JOIN best_match b ON t.{maude_col} = b.maude_mfr"],
-    ) + "\n;"
+        replace_cols=[f"COALESCE(b.source_mfr, t.{mfr_col}) AS {mfr_col}"],
+        joins=[f"LEFT JOIN best_match b ON t.{mfr_col} = b.target_mfr"],
+    )
 
 
 if __name__ == '__main__':
-    print("-- mdr_text combine")
-    print(build_combine_mdr_text_sql("EVENT"))
-    print()
-    print("-- primary_udi_di")
-    print(build_primary_udi_di_sql("UDI_STAGE_02", "public_device_record_key"))
-    print()
-    print("-- extract udi_di")
-    print(build_extract_udi_di_sql("UDI_STAGE_03"))
-    print()
-    print("-- company alias")
-    print(build_apply_company_alias_sql("EVENT_STAGE_06", "MANUFACTURER_NAME"))
-    print()
-    print("-- manufacturer fuzzy match")
-    print(build_manufacturer_fuzzy_match_sql(
-        "EVENT_STAGE_06", "UDI_STAGE_05",
-        "MANUFACTURER_NAME", "MANUFACTURER_NAME",
-        "UDF", threshold=0.85
-    ))
+    pass

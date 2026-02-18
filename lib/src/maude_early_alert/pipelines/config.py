@@ -91,6 +91,7 @@ class SilverConfig:
         self._columns = load_config('preprocess/columns')
         self._cleaning = load_config('preprocess/cleaning')
         self._flatten = load_config('preprocess/flatten')
+        self._transform = load_config('preprocess/transform')
         self._storage = load_config('storage')
 
     @property
@@ -113,6 +114,14 @@ class SilverConfig:
     def get_snowflake_enabled(self) -> bool:
         """Snowflake 사용 여부"""
         return self._storage['snowflake']['enabled']
+    
+    def get_snowflake_load_database(self) -> str:
+        """Silver load 데이터베이스"""
+        return self._storage['snowflake']['load']['database']
+
+    def get_snowflake_load_schema(self) -> str:
+        """Silver load 스키마"""
+        return self._storage['snowflake']['load']['schema']
 
     def get_snowflake_transform_database(self) -> str:
         """Silver transform 데이터베이스"""
@@ -121,6 +130,52 @@ class SilverConfig:
     def get_snowflake_transform_schema(self) -> str:
         """Silver transform 스키마"""
         return self._storage['snowflake']['transform']['schema']
+
+    def get_snowflake_udf_database(self) -> str:
+        """Silver transform 데이터베이스"""
+        return self._storage['snowflake']['transform']['database']
+
+    def get_snowflake_udf_schema(self) -> str:
+        """Silver transform 스키마"""
+        return self._storage['snowflake']['transform']['schema']
+
+    # ==================== transform 설정 ====================
+
+    def get_combine_category(self) -> str:
+        return self._transform['combine']['category']
+
+    def get_combine_columns(self) -> dict:
+        return self._transform['combine']['columns']
+
+    def get_primary_category(self) -> str:
+        return self._transform['primary']['category']
+
+    def get_primary_columns(self) -> dict:
+        return self._transform['primary']['columns']
+
+    def get_extract_udi_di_category(self) -> str:
+        return self._transform['extract_udi_di']['category']
+
+    def get_extract_udi_di_columns(self) -> dict:
+        return self._transform['extract_udi_di']['columns']
+
+    def get_fuzzy_match_threshold(self) -> float:
+        return self._transform['fuzzy_match']['threshold']
+
+    def get_fuzzy_match_source_category(self) -> str:
+        return self._transform['fuzzy_match']['source_category']
+
+    def get_fuzzy_match_target_category(self) -> str:
+        return self._transform['fuzzy_match']['target_category']
+
+    def get_fuzzy_match_mfr_col(self) -> str:
+        return self._transform['fuzzy_match']['mfr_col']
+
+    def get_ma_company_col(self) -> str:
+        return self._transform['M&A']['company_col']
+
+    def get_ma_aliases(self) -> dict:
+        return self._transform['M&A']['aliases']
 
     # ==================== flatten 설정 ====================
 

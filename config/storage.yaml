@@ -28,6 +28,9 @@ snowflake:
   aggregate:
     database: MAUDE
     schema: SILVER
+  udf:
+    database: MAUDE
+    schema: UDF
 
 
 # 경로 설정
