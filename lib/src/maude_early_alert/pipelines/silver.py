@@ -24,6 +24,7 @@ from maude_early_alert.preprocessors.imputation import build_mode_fill_sql
 from maude_early_alert.preprocessors.type_cast import build_type_cast_sql
 from maude_early_alert.preprocessors.value_clean import build_clean_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
+from maude_early_alert.preprocessors.udi_match import build_matching_sql
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -194,6 +195,16 @@ class SilverPipeline(SnowflakeBase):
             )
             self._create_next_stage(cursor, category, sql)
 
+    @with_context
+    def match_udi(self, cursor: SnowflakeCursor):
+        target_cat = self.cfg.get_matching_target_category()
+        source_cat = self.cfg.get_matching_source_category()
+        sql = build_matching_sql(
+            target=self._stage_table(target_cat),
+            source=self._stage_table(source_cat),
+            **self.cfg.get_matching_kwargs(),
+        )
+        self._create_next_stage(cursor, target_cat, sql)
 
 if __name__=='__main__':
     import snowflake.connector

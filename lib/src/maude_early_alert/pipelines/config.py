@@ -93,6 +93,7 @@ class SilverConfig:
         self._flatten = load_config('preprocess/flatten')
         self._transform = load_config('preprocess/transform')
         self._imputation = load_config('preprocess/imputation')
+        self._matching = load_config('preprocess/matching')
         self._storage = load_config('storage')
 
     @property
@@ -228,6 +229,27 @@ class SilverConfig:
     def get_cleaning_config(self, category: str) -> dict:
         """카테고리별 cleaning 설정 반환"""
         return self._cleaning['categories'][category]
+
+    # ==================== matching 설정 ====================
+
+    def get_matching_target_category(self) -> str:
+        """매칭 결과가 기록되는 카테고리 반환 (e.g. 'event')"""
+        return self._matching['categories']['target']
+
+    def get_matching_source_category(self) -> str:
+        """UDI 참조 데이터 카테고리 반환 (e.g. 'udi')"""
+        return self._matching['categories']['source']
+
+    def get_matching_kwargs(self) -> dict:
+        """build_matching_sql에 **spread할 인자 dict 반환"""
+        m = self._matching
+        return {
+            **m['columns'],
+            'udi_col_prefix':   m['udi_col_prefix'],
+            'status':           m['status'],
+            'confidence':       m['confidence'],
+            'min_device_match': m['thresholds']['min_device_match'],
+        }
 
     # ==================== imputation 설정 ====================
 
