@@ -182,4 +182,27 @@ def build_flatten_sql(
 # ============================================================
 
 if __name__ == "__main__":
-    pass
+    print("=== build_top_keys_sql ===")
+    print(build_top_keys_sql("my_table"))
+
+    print("\n=== build_array_keys_sql ===")
+    print(build_array_keys_sql("my_table", "items"))
+
+    print("\n=== parse_array_keys_result ===")
+    rows = [
+        ("[0].name", "name", "VARCHAR"),
+        ("[0].meta.code", "code", "VARCHAR"),
+        ("[0][1].skip", "skip", "VARCHAR"),  # 중첩 배열 → 제외
+    ]
+    print(parse_array_keys_result(rows))
+    # 예상: {'name': 'VARCHAR', 'meta': {'code': 'VARCHAR'}}
+
+    print("\n=== build_flatten_sql ===")
+    sql = build_flatten_sql(
+        table_name="my_table",
+        scalar_keys={"id": "VARCHAR", "created_at": "DATE"},
+        first_element_keys={"patient": {"age": "VARCHAR", "gender": "VARCHAR"}},
+        transform_keys={"notes": {"text": "VARCHAR", "type": "VARCHAR"}},
+        flatten_keys={"devices": {"brand": "VARCHAR", "info": {"model": "VARCHAR"}}},
+    )
+    print(sql)

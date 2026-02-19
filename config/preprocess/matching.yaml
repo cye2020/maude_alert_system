@@ -1,0 +1,47 @@
+# ============================================
+# UDI 매칭 파이프라인 설정
+# ============================================
+
+# 입력 카테고리 (runtime에서 _stage_table(category)로 해석)
+categories:
+  target: event   # 매칭 결과가 기록되는 카테고리
+  source: udi     # UDI 참조 데이터 카테고리
+
+# 컬럼 설정 (키 이름 = build_matching_sql 파라미터명)
+columns:
+  device_cols:
+    - BRAND_NAME
+    - MODEL_NUMBER
+    - CATALOG_NUMBER
+  target_date_cols:       # target 대표 날짜 (COALESCE 우선순위 순)
+    - DATE_OCCURRED
+    - DATE_RECEIVED
+  source_date_cols:       # source 대표 날짜 (COALESCE 우선순위 순)
+    - PUBLISH_DATE
+    - PUBLIC_VERSION_DATE
+  udi_di:           UDI_DI
+  primary_udi_di:   PRIMARY_UDI_DI
+  manufacturer:     MANUFACTURER_NAME
+  match_status_col: MATCH_STATUS
+  confidence_col:   CONFIDENCE
+
+# JOIN 시 source 테이블 컬럼 alias prefix
+udi_col_prefix: "UDI_"
+
+# 매칭 상태 레이블
+status:
+  udi_success:  "UDI SUCCESS"
+  meta_success: "META SUCCESS"
+  udi_failed:   "UDI FAILED"
+  no_udi:       "NO UDI"
+
+# 신뢰도 매핑 (status → confidence)
+confidence:
+  "UDI SUCCESS": HIGH
+  "META SUCCESS": MEDIUM
+  "UDI FAILED":  LOW
+  "NO UDI":      VERY LOW
+
+# 메타 매칭 임계값
+thresholds:
+  min_device_match: 1   # 기기 컬럼 최소 일치 개수 (>=)

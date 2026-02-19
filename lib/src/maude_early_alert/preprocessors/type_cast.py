@@ -84,28 +84,15 @@ def _parse_boolean_mapping(col: Dict) -> tuple:
 
 
 if __name__ == "__main__":
-    from maude_early_alert.logging_config import configure_logging
-    from maude_early_alert.utils.config_loader import load_config
+    columns = [
+        {'name': 'id', 'alias': 'id', 'type': 'VARCHAR'},
+        {'name': 'created_at', 'alias': 'created_at', 'type': 'DATE'},
+        {'name': 'count', 'alias': 'count', 'type': 'INTEGER'},
+        {'name': 'is_active', 'alias': 'is_active', 'type': 'BOOLEAN', 'true_value': 'Y', 'false_value': 'N'},
+    ]
 
-    configure_logging()
+    print("=== build_type_cast_sql ===")
+    print(build_type_cast_sql(columns=columns, input_table='my_table'))
 
-    print("=" * 80)
-    print("타입 변환 SQL 테스트")
-    print("=" * 80)
-
-    columns_config = load_config('preprocess/columns')
-    event_columns = columns_config['event']['cols']
-    udi_columns = columns_config['udi']['cols']
-
-    sql = build_type_cast_sql(
-        columns=event_columns,
-        input_table="EVENT_STAGE_07",
-    )
-    print(sql)
-    
-    sql = build_type_cast_sql(
-        columns=udi_columns,
-        input_table="UDI_STAGE_05",
-    )
-    print(sql)
-
+    print("\n=== build_type_cast_sql (빈 컬럼 리스트) ===")
+    print(build_type_cast_sql(columns=[], input_table='my_table'))

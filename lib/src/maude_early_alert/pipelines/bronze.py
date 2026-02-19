@@ -3,7 +3,7 @@ import pendulum
 from typing import Any, Dict, List, Union
 from snowflake.connector.cursor import SnowflakeCursor
 
-from maude_early_alert.loaders.snowflake_base import SnowflakeBase
+from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
 from maude_early_alert.loaders.snowflake_load import (
     SnowflakeLoader,
     get_staging_table_name,
@@ -112,6 +112,7 @@ class BronzePipeline(SnowflakeBase):
             'total_rows': total_count,
         }
 
+    @with_context
     def load_all(
         self, cursor: SnowflakeCursor,
         batch_id: str,
@@ -122,7 +123,6 @@ class BronzePipeline(SnowflakeBase):
             cursor: Snowflake cursor
             batch_id: 배치 식별자
         """
-        self._set_context(cursor)
 
         tables = self.cfg.get_snowflake_load_tables()
         stage = self.cfg.get_snowflake_load_stage()

@@ -3,6 +3,7 @@
 # ======================
 from typing import List, Tuple
 from contextlib import contextmanager
+import functools
 
 # ======================
 # 서드파티 라이브러리
@@ -17,6 +18,15 @@ from snowflake.connector.errors import DatabaseError, ProgrammingError
 from maude_early_alert.utils.helpers import validate_identifier
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+
+def with_context(method):
+    """첫 번째 인자(cursor)로 Snowflake 세션 컨텍스트를 자동 설정하는 데코레이터"""
+    @functools.wraps(method)
+    def wrapper(self, cursor, *args, **kwargs):
+        self._set_context(cursor)
+        return method(self, cursor, *args, **kwargs)
+    return wrapper
 
 
 class SnowflakeBase:

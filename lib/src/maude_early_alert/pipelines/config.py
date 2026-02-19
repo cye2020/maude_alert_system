@@ -92,6 +92,8 @@ class SilverConfig:
         self._cleaning = load_config('preprocess/cleaning')
         self._flatten = load_config('preprocess/flatten')
         self._transform = load_config('preprocess/transform')
+        self._imputation = load_config('preprocess/imputation')
+        self._matching = load_config('preprocess/matching')
         self._storage = load_config('storage')
 
     @property
@@ -176,6 +178,92 @@ class SilverConfig:
 
     def get_ma_aliases(self) -> dict:
         return self._transform['M&A']['aliases']
+
+    # ==================== columns 설정 ====================
+
+    def get_column_categories(self) -> List[str]:
+        """columns.yaml에 정의된 카테고리 목록 반환 (e.g. ['event', 'udi'])"""
+        return list(self._columns.keys())
+
+    def get_final_categories(self) -> List[str]:
+        """final 스테이지가 있는 카테고리만 반환 (e.g. ['event'])"""
+        return [cat for cat in self._columns if self.get_final_cols(cat) is not None]
+
+    def get_column_cols(self, category: str) -> List[dict]:
+        """카테고리별 cols 목록 반환
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            [{'name': ..., 'type': ..., 'alias': ..., ...}, ...]
+        """
+        return self._columns.get(category, {}).get('cols', [])
+
+    def get_final_cols(self, category: str) -> Optional[List[dict]]:
+        """카테고리의 final 컬럼 목록 반환 (name → alias로 교체)
+
+        final 필드가 정의되지 않은 카테고리(e.g. udi)는 None 반환.
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            final=True인 컬럼 리스트 (name이 alias로 교체됨), 또는 None
+        """
+        cols = self.get_column_cols(category)
+        if not cols or not any('final' in d for d in cols):
+            return None
+        return [
+            {**d, 'name': d['alias']}
+            for d in cols
+            if d.get('final', False)
+        ]
+
+    # ==================== cleaning 설정 ====================
+
+    def get_cleaning_categories(self) -> List[str]:
+        """cleaning 처리 대상 카테고리 목록 반환"""
+        return list(self._cleaning['categories'].keys())
+
+    def get_cleaning_config(self, category: str) -> dict:
+        """카테고리별 cleaning 설정 반환"""
+        return self._cleaning['categories'][category]
+
+    # ==================== matching 설정 ====================
+
+    def get_matching_target_category(self) -> str:
+        """매칭 결과가 기록되는 카테고리 반환 (e.g. 'event')"""
+        return self._matching['categories']['target']
+
+    def get_matching_source_category(self) -> str:
+        """UDI 참조 데이터 카테고리 반환 (e.g. 'udi')"""
+        return self._matching['categories']['source']
+
+    def get_matching_kwargs(self) -> dict:
+        """build_matching_sql에 **spread할 인자 dict 반환"""
+        m = self._matching
+        return {
+            **m['columns'],
+            'udi_col_prefix':   m['udi_col_prefix'],
+            'status':           m['status'],
+            'confidence':       m['confidence'],
+            'min_device_match': m['thresholds']['min_device_match'],
+        }
+
+    # ==================== imputation 설정 ====================
+
+    def get_imputation_categories(self) -> List[str]:
+        """결측치 처리 대상 카테고리 목록 반환"""
+        return list(self._imputation.keys())
+
+    def get_imputation_alias(self, category: str) -> str:
+        """카테고리의 테이블 alias 반환"""
+        return self._imputation[category]['alias']
+
+    def get_imputation_mode(self, category: str) -> Dict[str, str]:
+        """카테고리의 {group_col: target_col} 매핑 반환"""
+        return {item['group']: item['target'] for item in self._imputation[category]['mode']}
 
     # ==================== flatten 설정 ====================
 

@@ -154,19 +154,24 @@ def build_clean_sql(table_name: str, config: dict, udf_schema: str = None) -> st
     )
 
 
-if __name__=='__main__':
-    from maude_early_alert.utils.config_loader import load_config
+if __name__ == '__main__':
+    udf_schema = 'my_udf'
 
-    udf_schema = 'UDF'
-    cleaning_config = load_config('preprocess/cleaning')
+    print("=== SQLCleanBuilder 직접 사용 ===")
+    builder = SQLCleanBuilder(udf_schema=udf_schema)
+    builder.column('name').remove_patterns([r'\(.*?\)']).clean_default()
+    builder.column('description').delete_patterns([r'^N/A$']).keep_patterns([r'^\w+'])
+    for i, step in enumerate(builder.build_steps(), 1):
+        print(f"  step {i}: {step}")
 
-    maude_clean = cleaning_config['maude']
-    udi_clean = cleaning_config['udi']
-
-    print("=== MAUDE 클리닝 SQL ===")
-    sql = build_clean_sql("EVENT_STAGE_05", maude_clean, udf_schema=udf_schema)
-    print(sql)
-
-    print("\n=== UDI 클리닝 SQL ===")
-    sql = build_clean_sql("UDI_STAGE_05", udi_clean, udf_schema=udf_schema)
-    print(sql)
+    print("\n=== build_clean_sql ===")
+    config = {
+        'name': [
+            {'op_type': 'remove', 'patterns': [r'\(.*?\)', r'\[.*?\]']},
+            {'op_type': 'clean_default'},
+        ],
+        'tags': [
+            {'op_type': 'filter_array', 'patterns': [r'(?i)^n/a$']},
+        ],
+    }
+    print(build_clean_sql(table_name='my_table', config=config, udf_schema=udf_schema))

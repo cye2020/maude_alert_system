@@ -7,7 +7,7 @@ UDI 매칭 SQL 생성 모듈 (Snowflake)
 - Snowflake 연결은 이 모듈에서 하지 않음
 
 매칭 흐름:
-  1. 대표 날짜 컬럼 생성 (EVENT_DATE, UDI_DATE)
+  1. 대표 날짜 컬럼 생성 (TARGET_DATE, SOURCE_DATE)
   2. UDI_DI 유무로 분기
   3. 1단계: UDI_DI → PRIMARY_UDI_DI (고유 시 UDI SUCCESS)
   4. 2단계: MANUFACTURER_NAME + device_cols 기반 메타 매칭 (고유 시 META SUCCESS)
@@ -20,6 +20,7 @@ MATCH_STATUS / CONFIDENCE:
   - NO UDI       → VERY LOW  (UDI_DI 없고 매칭 실패)
 """
 import structlog
+
 from maude_early_alert.utils.sql_builder import build_cte_sql
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -46,109 +47,142 @@ def _device_match_count(
     return " + ".join(parts)
 
 
+def _build_confidence_case(
+    confidence: dict,
+    confidence_col: str,
+    coalesce_expr: str,
+) -> str:
+    when_lines = "\n                    ".join(
+        f"WHEN '{s}' THEN '{c}'"
+        for s, c in confidence.items()
+    )
+    return (
+        f"CASE {coalesce_expr}\n"
+        f"                    {when_lines}\n"
+        f"                END AS {confidence_col}"
+    )
+
+
 # ==================== 단계별 CTE 빌더 ====================
 
-def _date_ctes(event_table, udi_table, ev_date, udi_date):
+def _date_ctes(
+    target: str, source: str,
+    target_date: str, source_date: str,
+) -> list:
     """1. 대표 날짜 컬럼 생성"""
     return [
-        {'name': 'event_base', 'query':
-            f"SELECT *, {ev_date} FROM {event_table}"},
-        {'name': 'udi_base', 'query':
-            f"SELECT *, {udi_date} FROM {udi_table}"},
+        {'name': 'target_base', 'query':
+            f"SELECT *, {target_date} FROM {target}"},
+        {'name': 'source_base', 'query':
+            f"SELECT *, {source_date} FROM {source}"},
     ]
 
 
-def _split_ctes():
+def _split_ctes(udi_di: str) -> list:
     """2. UDI_DI 유무 분기"""
     return [
         {'name': 'has_udi', 'query':
-            "SELECT * FROM event_base WHERE UDI_DI IS NOT NULL"},
+            f"SELECT * FROM target_base WHERE {udi_di} IS NOT NULL"},
         {'name': 'no_udi', 'query':
-            "SELECT * FROM event_base WHERE UDI_DI IS NULL"},
+            f"SELECT * FROM target_base WHERE {udi_di} IS NULL"},
     ]
 
 
-def _primary_match_ctes(udi_sel):
+def _primary_match_ctes(
+    sel: str,
+    udi_di: str, primary_udi_di: str,
+    source_date_alias: str,
+    status_udi_success: str, match_status_col: str,
+) -> list:
     """3. 1단계: UDI_DI 직접 매칭"""
     return [
         {'name': 'step1_joined', 'query': f"""\
             SELECT
                 h.*,
-                {udi_sel},
-                u.UDI_DATE,
-                COUNT(DISTINCT u.PRIMARY_UDI_DI) OVER (PARTITION BY h.UDI_DI) AS N_PRIMARY
+                {sel},
+                u.{source_date_alias},
+                COUNT(DISTINCT u.{primary_udi_di}) OVER (PARTITION BY h.{udi_di}) AS N_PRIMARY
             FROM has_udi h
-            INNER JOIN udi_base u ON h.UDI_DI = u.UDI_DI"""},
+            INNER JOIN source_base u ON h.{udi_di} = u.{udi_di}"""},
 
-        {'name': 'udi_success', 'query': """\
-            SELECT *, 'UDI SUCCESS' AS MATCH_STATUS
+        {'name': 'udi_success', 'query': f"""\
+            SELECT *, '{status_udi_success}' AS {match_status_col}
             FROM step1_joined
             WHERE N_PRIMARY = 1
             QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY UDI_DI ORDER BY UDI_DATE DESC NULLS LAST
+                PARTITION BY {udi_di} ORDER BY {source_date_alias} DESC NULLS LAST
             ) = 1"""},
     ]
 
 
-def _meta_match_ctes(udi_sel, dm_cte, dm_join, part_no_udi):
+def _meta_match_ctes(
+    sel: str,
+    dm_cte: str, dm_join: str,
+    part_no_udi: str,
+    manufacturer: str, source_manufacturer: str,
+    target_date_alias: str, source_date_alias: str,
+    udi_di: str, primary_udi_di: str,
+    min_device_match: int,
+    status_meta_success: str, match_status_col: str,
+) -> list:
     """4. 2단계: 메타데이터 매칭"""
-    # 4a. UDI_DI 있으나 PRIMARY_UDI_DI 비고유 → 후보: 매칭된 UDI 행
+    # 4a. UDI_DI 있으나 PRIMARY_UDI_DI 비고유 → 후보: 매칭된 source 행
     from_udi = [
         {'name': 'step2_udi_filtered', 'query': f"""\
             SELECT *
             FROM step1_joined
             WHERE N_PRIMARY > 1
-              AND MANUFACTURER_NAME = UDI_MANUFACTURER_NAME
-              AND EVENT_DATE > UDI_DATE
-              AND ({dm_cte}) >= 1"""},
+              AND {manufacturer} = {source_manufacturer}
+              AND {target_date_alias} > {source_date_alias}
+              AND ({dm_cte}) >= {min_device_match}"""},
 
-        {'name': 'step2_udi_counted', 'query': """\
+        {'name': 'step2_udi_counted', 'query': f"""\
             SELECT *,
-                COUNT(DISTINCT PRIMARY_UDI_DI) OVER (PARTITION BY UDI_DI) AS N_PRIMARY_META
+                COUNT(DISTINCT {primary_udi_di}) OVER (PARTITION BY {udi_di}) AS N_PRIMARY_META
             FROM step2_udi_filtered"""},
 
-        {'name': 'meta_from_udi', 'query': """\
-            SELECT *, 'META SUCCESS' AS MATCH_STATUS
+        {'name': 'meta_from_udi', 'query': f"""\
+            SELECT *, '{status_meta_success}' AS {match_status_col}
             FROM step2_udi_counted
             WHERE N_PRIMARY_META = 1
             QUALIFY ROW_NUMBER() OVER (
-                PARTITION BY UDI_DI ORDER BY UDI_DATE DESC NULLS LAST
+                PARTITION BY {udi_di} ORDER BY {source_date_alias} DESC NULLS LAST
             ) = 1"""},
     ]
 
-    # 4b. UDI_DI 없음 → 후보: UDI 전체
+    # 4b. UDI_DI 없음 → 후보: source 전체
     from_no_udi = [
         {'name': 'step2_no_udi_joined', 'query': f"""\
             SELECT
                 n.*,
-                {udi_sel},
-                u.UDI_DATE
+                {sel},
+                u.{source_date_alias}
             FROM no_udi n
-            INNER JOIN udi_base u ON n.MANUFACTURER_NAME = u.MANUFACTURER_NAME
-            WHERE n.EVENT_DATE > u.UDI_DATE
-              AND ({dm_join}) >= 1"""},
+            INNER JOIN source_base u ON n.{manufacturer} = u.{manufacturer}
+            WHERE n.{target_date_alias} > u.{source_date_alias}
+              AND ({dm_join}) >= {min_device_match}"""},
 
         {'name': 'step2_no_udi_counted', 'query': f"""\
             SELECT *,
-                COUNT(DISTINCT PRIMARY_UDI_DI) OVER (
+                COUNT(DISTINCT {primary_udi_di}) OVER (
                     PARTITION BY {part_no_udi}
                 ) AS N_PRIMARY_META
             FROM step2_no_udi_joined"""},
 
         {'name': 'meta_from_no_udi', 'query': f"""\
-            SELECT *, 'META SUCCESS' AS MATCH_STATUS
+            SELECT *, '{status_meta_success}' AS {match_status_col}
             FROM step2_no_udi_counted
             WHERE N_PRIMARY_META = 1
             QUALIFY ROW_NUMBER() OVER (
                 PARTITION BY {part_no_udi}
-                ORDER BY UDI_DATE DESC NULLS LAST
+                ORDER BY {source_date_alias} DESC NULLS LAST
             ) = 1"""},
     ]
 
     return from_udi + from_no_udi
 
 
-def _mapping_ctes(map_cols, noudi_map_cols):
+def _mapping_ctes(map_cols: str, noudi_map_cols: str) -> list:
     """5. 매핑 통합"""
     return [
         {'name': 'udi_mapping', 'query': f"""\
@@ -167,7 +201,14 @@ def _mapping_ctes(map_cols, noudi_map_cols):
     ]
 
 
-def _settlement_ctes(excl, repl_udi, repl_mfr, repl_dev, noudi_orig, noudi_join):
+def _settlement_ctes(
+    excl: str,
+    repl_udi: str, repl_mfr: str, repl_dev: str,
+    noudi_orig: str, noudi_join: str,
+    udi_di: str, match_status_col: str,
+    status_udi_failed: str, status_no_udi: str,
+    has_udi_conf: str, no_udi_conf: str,
+) -> list:
     """6. 정산"""
     return [
         {'name': 'result_has_udi', 'query': f"""\
@@ -176,24 +217,17 @@ def _settlement_ctes(excl, repl_udi, repl_mfr, repl_dev, noudi_orig, noudi_join)
                 {repl_udi},
                 {repl_mfr},
                 {repl_dev},
-                COALESCE(m.MATCH_STATUS, 'UDI FAILED') AS MATCH_STATUS,
-                CASE COALESCE(m.MATCH_STATUS, 'UDI FAILED')
-                    WHEN 'UDI SUCCESS' THEN 'HIGH'
-                    WHEN 'META SUCCESS' THEN 'MEDIUM'
-                    ELSE 'LOW'
-                END AS CONFIDENCE
+                COALESCE(m.{match_status_col}, '{status_udi_failed}') AS {match_status_col},
+                {has_udi_conf}
             FROM has_udi e
-            LEFT JOIN udi_mapping m ON e.UDI_DI = m.UDI_DI"""},
+            LEFT JOIN udi_mapping m ON e.{udi_di} = m.{udi_di}"""},
 
         {'name': 'result_no_udi', 'query': f"""\
             SELECT
                 e.* EXCLUDE ({excl}),
                 {noudi_orig},
-                COALESCE(m_no.MATCH_STATUS, 'NO UDI') AS MATCH_STATUS,
-                CASE COALESCE(m_no.MATCH_STATUS, 'NO UDI')
-                    WHEN 'META SUCCESS' THEN 'MEDIUM'
-                    ELSE 'VERY LOW'
-                END AS CONFIDENCE
+                COALESCE(m_no.{match_status_col}, '{status_no_udi}') AS {match_status_col},
+                {no_udi_conf}
             FROM no_udi e
             LEFT JOIN no_udi_mapping m_no ON {noudi_join}"""},
     ]
@@ -201,77 +235,126 @@ def _settlement_ctes(excl, repl_udi, repl_mfr, repl_dev, noudi_orig, noudi_join)
 
 # ==================== 전체 파이프라인 ====================
 
-def sql_full_matching_pipeline(
-    event_table_name: str,
-    udi_table_name: str,
+def build_matching_sql(
+    target: str,
+    source: str,
     device_cols: list[str],
-    event_date_cols: list[str],
-    udi_date_cols: list[str],
+    target_date_cols: list[str],
+    source_date_cols: list[str],
+    udi_di: str,
+    primary_udi_di: str,
+    manufacturer: str,
+    match_status_col: str,
+    confidence_col: str,
+    udi_col_prefix: str,
+    status: dict,
+    confidence: dict,
+    min_device_match: int,
 ) -> str:
     """
-    전체 UDI 매칭 파이프라인 (단일 CTE 체인)
+    전체 UDI 매칭 파이프라인 SQL 생성 (단일 CTE 체인)
 
     Args:
-        event_table_name: EVENT 테이블 이름
-        udi_table_name: UDI 테이블 이름
-        device_cols: 기기 정보 컬럼 리스트 (e.g. ['BRAND_NAME', 'MODEL_NUMBER', 'CATALOG_NUMBER'])
-        event_date_cols: EVENT 날짜 컬럼들
-        udi_date_cols: UDI 날짜 컬럼들
+        target: 매칭 대상 테이블 (event)
+        source: 참조 데이터 테이블 (udi)
+        device_cols: 기기 메타데이터 컬럼 리스트
+        target_date_cols: target 대표 날짜 컬럼들 (COALESCE 순서)
+        source_date_cols: source 대표 날짜 컬럼들 (COALESCE 순서)
+        udi_di: UDI Device Identifier 컬럼명
+        primary_udi_di: 정규화된 Primary UDI_DI 컬럼명
+        manufacturer: 제조사명 컬럼명
+        match_status_col: 매칭 상태 출력 컬럼명
+        confidence_col: 신뢰도 출력 컬럼명
+        udi_col_prefix: source 컬럼 alias prefix
+        status: 매칭 상태 레이블 dict
+        confidence: 신뢰도 매핑 dict (status → confidence)
+        min_device_match: 기기 컬럼 최소 일치 개수
     """
-    # --- 공통 표현식 ---
-    ev_date = _coalesce_expr(event_date_cols, "EVENT_DATE")
-    udi_date = _coalesce_expr(udi_date_cols, "UDI_DATE")
+    # --- 파생 값 ---
+    target_date_alias  = "TARGET_DATE"
+    source_date_alias  = "SOURCE_DATE"
+    source_manufacturer = f"{udi_col_prefix}{manufacturer}"
 
-    udi_sel = ",\n                ".join(
-        ["u.PRIMARY_UDI_DI", "u.MANUFACTURER_NAME AS UDI_MANUFACTURER_NAME"]
-        + [f"u.{c} AS UDI_{c}" for c in device_cols]
+    # --- 공통 표현식 ---
+    target_date = _coalesce_expr(target_date_cols, target_date_alias)
+    source_date = _coalesce_expr(source_date_cols, source_date_alias)
+
+    sel = ",\n                ".join(
+        [f"u.{primary_udi_di}", f"u.{manufacturer} AS {source_manufacturer}"]
+        + [f"u.{c} AS {udi_col_prefix}{c}" for c in device_cols]
     )
-    dm_cte = _device_match_count(device_cols, "", "UDI_")
+    dm_cte  = _device_match_count(device_cols, "", udi_col_prefix)
     dm_join = _device_match_count(device_cols, "n.", "u.")
-    part_no_udi = ", ".join(["MANUFACTURER_NAME"] + list(device_cols))
-    excl = ", ".join(["UDI_DI", "MANUFACTURER_NAME"] + list(device_cols))
+
+    part_no_udi = ", ".join([manufacturer] + list(device_cols))
+    excl        = ", ".join([udi_di, manufacturer] + list(device_cols))
 
     map_cols = ",\n                ".join(
-        ["UDI_DI", "PRIMARY_UDI_DI", "UDI_MANUFACTURER_NAME"]
-        + [f"UDI_{c}" for c in device_cols]
-        + ["MATCH_STATUS"]
+        [udi_di, primary_udi_di, source_manufacturer]
+        + [f"{udi_col_prefix}{c}" for c in device_cols]
+        + [match_status_col]
     )
     noudi_map_cols = ",\n                ".join(
-        ["MANUFACTURER_NAME"] + list(device_cols)
-        + ["PRIMARY_UDI_DI", "UDI_MANUFACTURER_NAME"]
-        + [f"UDI_{c}" for c in device_cols]
-        + ["MATCH_STATUS"]
+        [manufacturer] + list(device_cols)
+        + [primary_udi_di, source_manufacturer]
+        + [f"{udi_col_prefix}{c}" for c in device_cols]
+        + [match_status_col]
     )
 
     repl_udi = (
-        "CASE WHEN m.MATCH_STATUS = 'UDI SUCCESS' "
-        "THEN m.PRIMARY_UDI_DI ELSE e.UDI_DI END AS UDI_DI"
+        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"THEN m.{primary_udi_di} ELSE e.{udi_di} END AS {udi_di}"
     )
     repl_mfr = (
-        "CASE WHEN m.MATCH_STATUS = 'UDI SUCCESS' "
-        "THEN m.UDI_MANUFACTURER_NAME ELSE e.MANUFACTURER_NAME END AS MANUFACTURER_NAME"
+        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"THEN m.{source_manufacturer} ELSE e.{manufacturer} END AS {manufacturer}"
     )
     repl_dev = ",\n                ".join(
-        f"CASE WHEN m.MATCH_STATUS = 'UDI SUCCESS' "
-        f"THEN m.UDI_{c} ELSE e.{c} END AS {c}"
+        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"THEN m.{udi_col_prefix}{c} ELSE e.{c} END AS {c}"
         for c in device_cols
     )
+    noudi_orig = ",\n                ".join(
+        [f"e.{udi_di}", f"e.{manufacturer}"] + [f"e.{c}" for c in device_cols]
+    )
     noudi_join = " AND ".join(
-        ["e.MANUFACTURER_NAME = m_no.MANUFACTURER_NAME"]
+        [f"e.{manufacturer} = m_no.{manufacturer}"]
         + [f"e.{c} IS NOT DISTINCT FROM m_no.{c}" for c in device_cols]
     )
-    noudi_orig = ",\n                ".join(
-        ["e.UDI_DI", "e.MANUFACTURER_NAME"] + [f"e.{c}" for c in device_cols]
+    has_udi_conf = _build_confidence_case(
+        confidence, confidence_col,
+        f"COALESCE(m.{match_status_col}, '{status['udi_failed']}')",
+    )
+    no_udi_conf = _build_confidence_case(
+        confidence, confidence_col,
+        f"COALESCE(m_no.{match_status_col}, '{status['no_udi']}')",
     )
 
     # --- CTE 조립 ---
     ctes = (
-        _date_ctes(event_table_name, udi_table_name, ev_date, udi_date)
-        + _split_ctes()
-        + _primary_match_ctes(udi_sel)
-        + _meta_match_ctes(udi_sel, dm_cte, dm_join, part_no_udi)
+        _date_ctes(target, source, target_date, source_date)
+        + _split_ctes(udi_di)
+        + _primary_match_ctes(
+            sel, udi_di, primary_udi_di,
+            source_date_alias,
+            status['udi_success'], match_status_col,
+        )
+        + _meta_match_ctes(
+            sel, dm_cte, dm_join, part_no_udi,
+            manufacturer, source_manufacturer,
+            target_date_alias, source_date_alias,
+            udi_di, primary_udi_di,
+            min_device_match,
+            status['meta_success'], match_status_col,
+        )
         + _mapping_ctes(map_cols, noudi_map_cols)
-        + _settlement_ctes(excl, repl_udi, repl_mfr, repl_dev, noudi_orig, noudi_join)
+        + _settlement_ctes(
+            excl, repl_udi, repl_mfr, repl_dev,
+            noudi_orig, noudi_join,
+            udi_di, match_status_col,
+            status['udi_failed'], status['no_udi'],
+            has_udi_conf, no_udi_conf,
+        )
     )
 
     return build_cte_sql(
@@ -286,18 +369,31 @@ def sql_full_matching_pipeline(
 # ==================== 테스트 ====================
 
 if __name__ == "__main__":
-    from maude_early_alert.logging_config import configure_logging
-
-    configure_logging('DEBUG', 'temp.log')
-
-    sql = sql_full_matching_pipeline(
-        event_table_name="EVENT_STAGE_09",
-        udi_table_name="UDI_STAGE_06",
-        device_cols=["BRAND_NAME", "MODEL_NUMBER", "CATALOG_NUMBER"],
-        event_date_cols=["DATE_OCCURRED", "DATE_RECEIVED"],
-        udi_date_cols=["PUBLISH_DATE", "PUBLIC_VERSION_DATE"],
+    print("=== build_matching_sql ===")
+    sql = build_matching_sql(
+        target='target_table',
+        source='source_table',
+        device_cols=['brand_name', 'generic_name'],
+        target_date_cols=['date_received', 'date_of_event'],
+        source_date_cols=['publish_date', 'version_date'],
+        udi_di='udi_di',
+        primary_udi_di='primary_udi_di',
+        manufacturer='manufacturer_name',
+        match_status_col='match_status',
+        confidence_col='confidence',
+        udi_col_prefix='udi_',
+        status={
+            'udi_success': 'UDI SUCCESS',
+            'meta_success': 'META SUCCESS',
+            'udi_failed': 'UDI FAILED',
+            'no_udi': 'NO UDI',
+        },
+        confidence={
+            'UDI SUCCESS': 'HIGH',
+            'META SUCCESS': 'MEDIUM',
+            'UDI FAILED': 'LOW',
+            'NO UDI': 'VERY LOW',
+        },
+        min_device_match=1,
     )
-
-    logger.debug("전체 파이프라인 SQL")
     print(sql)
-    logger.debug("테스트 완료!")

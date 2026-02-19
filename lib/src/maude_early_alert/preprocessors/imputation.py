@@ -10,7 +10,7 @@ import structlog
 from maude_early_alert.utils import build_cte_sql
 
 
-logger = structlog.get_logger()
+logger: structlog.stdlib.BoundLogger = structlog.get_logger()
 
 
 def build_mode_fill_sql(
@@ -89,20 +89,16 @@ def build_mode_fill_sql(
 
 
 if __name__ == '__main__':
-    from maude_early_alert.logging_config import configure_logging
-    
-    configure_logging()
-    
-    print("=" * 80)
-    print("Missing Value 처리 SQL 테스트")
-    print("=" * 80)
+    print("=== build_mode_fill_sql (단일 매핑) ===")
+    print(build_mode_fill_sql(
+        group_to_target={'category': 'label'},
+        table_name='my_table',
+        table_alias='t',
+    ))
 
-    sql = build_mode_fill_sql(
-        group_to_target={
-            'PRODUCT_CODE': 'PRODUCT_NAME',
-            'MANUFACTURER_POSTAL_CODE': 'MANUFACTURER_NAME'
-        },
-        table_name="MAUDE.SILVER.EVENT_STAGE_04",
-        table_alias='t'
-    )
-    print(sql)
+    print("\n=== build_mode_fill_sql (복수 매핑) ===")
+    print(build_mode_fill_sql(
+        group_to_target={'category': 'label', 'region': 'city'},
+        table_name='my_table',
+        table_alias='t',
+    ))
