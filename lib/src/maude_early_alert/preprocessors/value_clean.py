@@ -155,18 +155,4 @@ def build_clean_sql(table_name: str, config: dict, udf_schema: str = None) -> st
 
 
 if __name__=='__main__':
-    from maude_early_alert.utils.config_loader import load_config
-
     udf_schema = 'UDF'
-    cleaning_config = load_config('preprocess/cleaning')
-
-    maude_clean = cleaning_config['maude']
-    udi_clean = cleaning_config['udi']
-
-    print("=== MAUDE 클리닝 SQL ===")
-    sql = build_clean_sql("EVENT_STAGE_05", maude_clean, udf_schema=udf_schema)
-    print(sql)
-
-    print("\n=== UDI 클리닝 SQL ===")
-    sql = build_clean_sql("UDI_STAGE_05", udi_clean, udf_schema=udf_schema)
-    print(sql)

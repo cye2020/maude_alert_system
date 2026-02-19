@@ -219,6 +219,16 @@ class SilverConfig:
             if d.get('final', False)
         ]
 
+    # ==================== cleaning 설정 ====================
+
+    def get_cleaning_categories(self) -> List[str]:
+        """cleaning 처리 대상 카테고리 목록 반환"""
+        return list(self._cleaning['categories'].keys())
+
+    def get_cleaning_config(self, category: str) -> dict:
+        """카테고리별 cleaning 설정 반환"""
+        return self._cleaning['categories'][category]
+
     # ==================== imputation 설정 ====================
 
     def get_imputation_categories(self) -> List[str]:

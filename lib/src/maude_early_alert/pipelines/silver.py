@@ -21,6 +21,7 @@ from maude_early_alert.preprocessors.flatten import (
     parse_array_keys_result
 )
 from maude_early_alert.preprocessors.imputation import build_mode_fill_sql
+from maude_early_alert.preprocessors.value_clean import build_clean_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -172,6 +173,16 @@ class SilverPipeline(SnowflakeBase):
             )
             self._create_next_stage(cursor, category, sql)
 
+    @with_context
+    def clean_values(self, cursor: SnowflakeCursor):
+        udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
+        for category in self.cfg.get_cleaning_categories():
+            sql = build_clean_sql(
+                table_name=self._stage_table(category),
+                config=self.cfg.get_cleaning_config(category),
+                udf_schema=udf_schema,
+            )
+            self._create_next_stage(cursor, category, sql)
 
 
 

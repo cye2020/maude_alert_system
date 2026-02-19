@@ -47,353 +47,351 @@ null_flavor: &null_flavor
     - '^UNC$'            # Un-encoded
     - '^DER$'            # Derived
 
-# ============================================
-# MAUDE 데이터의 정제 패턴
-# ============================================
-maude:
-  MDR_TEXT:
-    - op_type: remove
-      patterns:
-        - '[0-9]+'                         # 모든 숫자 제거
-    - op_type: clean_default
+categories:
+  event:
+    MDR_TEXT:
+      - op_type: remove
+        patterns:
+          - '[0-9]+'                         # 모든 숫자 제거
+      - op_type: clean_default
 
-  UDI_DI:
-    - op_type: remove
-      patterns:
-        - '^\\(\\d{2}\\)'                  # GS1 AI 제거
-        - '\\(\\d{2}\\).*'                 # (01) 같은 GS1 AI 뒤 내용 제거
-        - '^\\d*\\+'                       # 시작 부분의 숫자+플러스 제거
-        - '[^a-zA-Z0-9]'                   # 영숫자 외 모든 문자 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                             # 빈 문자열
-        - '^0+$'                           # 0만 있는 문자열
-        - '^N$'                            # 단일 'N'
-        - '^X+$'                           # X만 반복
-        - '^.{2,3}$'                       # 2-3자 너무 짧은 DI
-        - '^.{31,}$'                       # 31자 이상 너무 긴 DI
+    UDI_DI:
+      - op_type: remove
+        patterns:
+          - '^\\(\\d{2}\\)'                  # GS1 AI 제거
+          - '\\(\\d{2}\\).*'                 # (01) 같은 GS1 AI 뒤 내용 제거
+          - '^\\d*\\+'                       # 시작 부분의 숫자+플러스 제거
+          - '[^a-zA-Z0-9]'                   # 영숫자 외 모든 문자 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                             # 빈 문자열
+          - '^0+$'                           # 0만 있는 문자열
+          - '^N$'                            # 단일 'N'
+          - '^X+$'                           # X만 반복
+          - '^.{2,3}$'                       # 2-3자 너무 짧은 DI
+          - '^.{31,}$'                       # 31자 이상 너무 긴 DI
 
-  EVENT_TYPE:
-    - op_type: delete
-      patterns:
-        - 'No answer provided'
+    EVENT_TYPE:
+      - op_type: delete
+        patterns:
+          - 'No answer provided'
 
-  PREVIOUS_USE_FLAG:
-    - op_type: delete
-      patterns:
-        - '[^IR]'
+    PREVIOUS_USE_FLAG:
+      - op_type: delete
+        patterns:
+          - '[^IR]'
 
-  REPROCESSED_AND_REUSED_FLAG:
-    - op_type: delete
-      patterns:
-        - '[^YN]'
+    REPROCESSED_AND_REUSED_FLAG:
+      - op_type: delete
+        patterns:
+          - '[^YN]'
 
-  SINGLE_USE_FLAG:
-    - op_type: delete
-      patterns:
-        - '[^YN]'
+    SINGLE_USE_FLAG:
+      - op_type: delete
+        patterns:
+          - '[^YN]'
 
-  PRODUCT_PROBLEMS:
-    - op_type: filter_array
-      patterns:
-        - 'Appropriate Term/Code Not Available'
-        - 'Adverse Event Without Identified Device or Use Problem'
-        - 'Unclear Information'
-        - 'Unable to Obtain Readings'
+    PRODUCT_PROBLEMS:
+      - op_type: filter_array
+        patterns:
+          - 'Appropriate Term/Code Not Available'
+          - 'Adverse Event Without Identified Device or Use Problem'
+          - 'Unclear Information'
+          - 'Unable to Obtain Readings'
 
-  BRAND_NAME:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                          # 3개 이상 따옴표 제거
-        - '^\\d{2}/\\d{2}/\\d{4}'          # 날짜 정보 제거
-        - 'Â+[¿¢]*'                        # 인코딩 오류 문자 제거
-        - '^"+|"+$'                        # 앞뒤 따옴표 제거
-        - '^[#*.\\-]+\\s*'                 # 시작 부분 특수문자 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                             # 빈 문자열
-        - '^0$'                            # 단일 0
-        - '^\\*$'                          # 단일 *
-        - '^\\.$'                          # 단일 .
-        - '^-$'                            # 단일 -
-        - '^[0-9]+$'                       # 숫자만 있는 항목 (바코드 등)
+    BRAND_NAME:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                          # 3개 이상 따옴표 제거
+          - '^\\d{2}/\\d{2}/\\d{4}'          # 날짜 정보 제거
+          - 'Â+[¿¢]*'                        # 인코딩 오류 문자 제거
+          - '^"+|"+$'                        # 앞뒤 따옴표 제거
+          - '^[#*.\\-]+\\s*'                 # 시작 부분 특수문자 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                             # 빈 문자열
+          - '^0$'                            # 단일 0
+          - '^\\*$'                          # 단일 *
+          - '^\\.$'                          # 단일 .
+          - '^-$'                            # 단일 -
+          - '^[0-9]+$'                       # 숫자만 있는 항목 (바코드 등)
 
-  CATALOG_NUMBER:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                          # 3개 이상 따옴표 제거
-        - '^"+'
-        - '"+$'                            # 앞뒤 따옴표 제거
-        - '^(REF|LOT)\\s*[#:\\-]?\\s*'     # REF, LOT 접두어 제거
-        - '^\\(\\d+\\)'                    # GS1 AI 괄호 제거
-        - '^0\\s'                          # 앞의 "0 " 제거
-        - '^\\*'                           # 앞의 단독 * 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                             # 빈 문자열
-        - '^-$'                            # 단일 -
-        - '^\\*$'                          # 단일 *
-        - '^\\.$'                          # 단일 .
-        - '^#$'                            # 단일 #
-        - '^0{10,}.*'                      # 10개 이상 연속 0으로 시작
+    CATALOG_NUMBER:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                          # 3개 이상 따옴표 제거
+          - '^"+'
+          - '"+$'                            # 앞뒤 따옴표 제거
+          - '^(REF|LOT)\\s*[#:\\-]?\\s*'     # REF, LOT 접두어 제거
+          - '^\\(\\d+\\)'                    # GS1 AI 괄호 제거
+          - '^0\\s'                          # 앞의 "0 " 제거
+          - '^\\*'                           # 앞의 단독 * 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                             # 빈 문자열
+          - '^-$'                            # 단일 -
+          - '^\\*$'                          # 단일 *
+          - '^\\.$'                          # 단일 .
+          - '^#$'                            # 단일 #
+          - '^0{10,}.*'                      # 10개 이상 연속 0으로 시작
 
-  LOT_NUMBER:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                                    # 3개 이상 따옴표 제거
-        - '^"+'
-        - '"+$'                            # 앞뒤 따옴표 제거            
-        - ',.*$'                                     # 콤마 이후 제거
-        - '^\\(\\d+\\)\\s*:?\\s*'                    # GS1 AI 괄호 제거
-        - '^(LOT|BATCH|REF|REV)\\s*[#:\\-]?\\s*'     # 접두어 제거
-        - '\\s+(EXPIRY|EXP\\.?DATE|EXP)[\\s:\\-].*$' # 만료일 정보 제거
-        - '^[#$*]+\\s*'                              # 앞의 특수문자 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                                       # 빈 문자열
-        - '^-$'                                      # 단일 -
-        - '^\\.$'                                    # 단일 .
-        - '^\\*$'                                    # 단일 *
-        - '^#$'                                      # 단일 #
-        - '^/NA$'                                    # /NA
-        - '^0+$'                                     # 0만 있는 문자열
-        - '.*\\bPROTOTYPE\\b.*'                      # PROTOTYPE 포함
-        - '.*\\bBATCH\\s+CODE\\b.*'                  # BATCH CODE 포함
+    LOT_NUMBER:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                                    # 3개 이상 따옴표 제거
+          - '^"+'
+          - '"+$'                            # 앞뒤 따옴표 제거            
+          - ',.*$'                                     # 콤마 이후 제거
+          - '^\\(\\d+\\)\\s*:?\\s*'                    # GS1 AI 괄호 제거
+          - '^(LOT|BATCH|REF|REV)\\s*[#:\\-]?\\s*'     # 접두어 제거
+          - '\\s+(EXPIRY|EXP\\.?DATE|EXP)[\\s:\\-].*$' # 만료일 정보 제거
+          - '^[#$*]+\\s*'                              # 앞의 특수문자 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                                       # 빈 문자열
+          - '^-$'                                      # 단일 -
+          - '^\\.$'                                    # 단일 .
+          - '^\\*$'                                    # 단일 *
+          - '^#$'                                      # 단일 #
+          - '^/NA$'                                    # /NA
+          - '^0+$'                                     # 0만 있는 문자열
+          - '.*\\bPROTOTYPE\\b.*'                      # PROTOTYPE 포함
+          - '.*\\bBATCH\\s+CODE\\b.*'                  # BATCH CODE 포함
 
-  # 순서: 전처리(세미콜론/슬래시) → 국가명 제거 → NULL Flavor → 기본 정제 → 접미사 → 삭제
-  MANUFACTURER_NAME:
-    # 전처리: 세미콜론/슬래시 분리 (NULL Flavor 체크 전에 수행)
-    - op_type: remove
-      patterns:
-        - 'AMP;'                                 # &AMP; → &
-        - ';.*$'                                 # 세미콜론 이후 제거
-        - '\\s*/\\s*.*$'                         # 슬래시 이후 제거
-    # 국가명 제거
-    - op_type: remove_country
-    # NULL Flavor 삭제
-    - *null_flavor
-    # 기본 정제
-    - op_type: remove
-      patterns:
-        - '"{3,}'                                # 3개 이상 따옴표 제거
-        - '^"+|"+$'                              # 앞뒤 따옴표 제거                      
-        - '\\s+D/B/A\\s+.*$'                     # D/B/A 이후 제거
-        - '\\s+DBA\\s+.*$'                       # DBA 이후 제거
-        - '^[?\\.\\(]+\\s*'                      # 시작 특수문자 제거
-        - '\\\\+$'                               # 끝 백슬래시 제거
-        - '/+$'                                  # 끝 슬래시 제거
-        - '[\\s\\.]+$'                           # 끝 공백/마침표 제거
-    # 회사 접미사 제거
-    - op_type: remove
-      patterns:
-        - '\\b(INC\\.?|INCORPORATED)\\b'
-        - '\\b(CO\\.?|COMPANY)\\b'
-        - '\\b(CORP\\.?|CORPORATION)\\b'
-        - '\\b(LTD\\.?|LIMITED)\\b'
-        - '\\b(LLC\\.?|L\\.L\\.C\\.?)\\b'
-        - '\\b(PLC\\.?)\\b'
-        - '\\b(S\\.A\\.?)\\b'
-        - '\\b(GMBH\\.?)\\b'
-        - '\\b(AG\\.?)\\b'
-        - '\\b(PTY\\.?)\\b'
-        - '\\b(PVT\\.?)\\b'
-        - '\\b(OPERATIONS)\\b'
-        - '\\bMANUFACTURING\\b'
-        - '\\bMEDICAL\\s+SYSTEMS\\b'
-        - '\\bMEDICAL\\b'
-        - '^THE\\b\\s*'                          # 시작의 THE 제거
-        - '[^a-zA-Z0-9\\s&]'                     # 허용된 문자 외 제거
-    # 쓰레기 패턴 삭제
-    - op_type: delete
-      patterns:
-        - '^$'                                   # 빈 문자열
-        - '^\\.$'                                # 단일 .
-        - '^-$'                                  # 단일 -
-        - '^\\?$'                                # 단일 ?
-        - '.*\\bMANUFACTURER\\s+(UNKNOWN|UNK)\\b.*'
-        - '^[0-9]+\\s+[A-Za-z\\s]+(WAY|DR|STREET|AVE|PARKWAY)$'  # 주소만
-        - '^\\(.*\\)$'                           # 괄호로 둘러싸인 값
-        - '^\\d+\\.\\s+MANUFACTURER'             # 메타데이터
-        - '^ESTABLISHMENT\\s+NAME'               # 메타데이터
-        - '^EMAIL\\s+ADDRESS'                    # 이메일 관련 쓰레기
-        - '^MFG\\s+SITE\\s+NAME'                 # 메타데이터
+    # 순서: 전처리(세미콜론/슬래시) → 국가명 제거 → NULL Flavor → 기본 정제 → 접미사 → 삭제
+    MANUFACTURER_NAME:
+      # 전처리: 세미콜론/슬래시 분리 (NULL Flavor 체크 전에 수행)
+      - op_type: remove
+        patterns:
+          - 'AMP;'                                 # &AMP; → &
+          - ';.*$'                                 # 세미콜론 이후 제거
+          - '\\s*/\\s*.*$'                         # 슬래시 이후 제거
+      # 국가명 제거
+      - op_type: remove_country
+      # NULL Flavor 삭제
+      - *null_flavor
+      # 기본 정제
+      - op_type: remove
+        patterns:
+          - '"{3,}'                                # 3개 이상 따옴표 제거
+          - '^"+|"+$'                              # 앞뒤 따옴표 제거                      
+          - '\\s+D/B/A\\s+.*$'                     # D/B/A 이후 제거
+          - '\\s+DBA\\s+.*$'                       # DBA 이후 제거
+          - '^[?\\.\\(]+\\s*'                      # 시작 특수문자 제거
+          - '\\\\+$'                               # 끝 백슬래시 제거
+          - '/+$'                                  # 끝 슬래시 제거
+          - '[\\s\\.]+$'                           # 끝 공백/마침표 제거
+      # 회사 접미사 제거
+      - op_type: remove
+        patterns:
+          - '\\b(INC\\.?|INCORPORATED)\\b'
+          - '\\b(CO\\.?|COMPANY)\\b'
+          - '\\b(CORP\\.?|CORPORATION)\\b'
+          - '\\b(LTD\\.?|LIMITED)\\b'
+          - '\\b(LLC\\.?|L\\.L\\.C\\.?)\\b'
+          - '\\b(PLC\\.?)\\b'
+          - '\\b(S\\.A\\.?)\\b'
+          - '\\b(GMBH\\.?)\\b'
+          - '\\b(AG\\.?)\\b'
+          - '\\b(PTY\\.?)\\b'
+          - '\\b(PVT\\.?)\\b'
+          - '\\b(OPERATIONS)\\b'
+          - '\\bMANUFACTURING\\b'
+          - '\\bMEDICAL\\s+SYSTEMS\\b'
+          - '\\bMEDICAL\\b'
+          - '^THE\\b\\s*'                          # 시작의 THE 제거
+          - '[^a-zA-Z0-9\\s&]'                     # 허용된 문자 외 제거
+      # 쓰레기 패턴 삭제
+      - op_type: delete
+        patterns:
+          - '^$'                                   # 빈 문자열
+          - '^\\.$'                                # 단일 .
+          - '^-$'                                  # 단일 -
+          - '^\\?$'                                # 단일 ?
+          - '.*\\bMANUFACTURER\\s+(UNKNOWN|UNK)\\b.*'
+          - '^[0-9]+\\s+[A-Za-z\\s]+(WAY|DR|STREET|AVE|PARKWAY)$'  # 주소만
+          - '^\\(.*\\)$'                           # 괄호로 둘러싸인 값
+          - '^\\d+\\.\\s+MANUFACTURER'             # 메타데이터
+          - '^ESTABLISHMENT\\s+NAME'               # 메타데이터
+          - '^EMAIL\\s+ADDRESS'                    # 이메일 관련 쓰레기
+          - '^MFG\\s+SITE\\s+NAME'                 # 메타데이터
 
-  MODEL_NUMBER:
-    # 전처리: 따옴표, 기록자 코멘트, GS1 바코드, 특수문자 제거
-    - op_type: remove
-      patterns:
-        - '"{3,}'                                # 3개 이상 따옴표 제거
-        - '^"+|"+$'                              # 앞뒤 따옴표 제거                 
-        - '\\(.*?TRIED.*?\\)'                    # 기록자 코멘트 제거
-        - '\\(.*?MAGNIFY.*?\\)'                  # 기록자 코멘트 제거
-        - '\\(.*?UNABLE.*?\\)'                   # 기록자 코멘트 제거
-        - '\\(GTIN\\)\\s*'                       # GTIN 태그 제거
-        - '\\(\\d+\\)[^\\(]*'                    # GS1 AI 정보 제거
-        - '^[*]+\\s*'                            # 앞의 * 제거
-        - '^\\.+'                                # 앞의 . 제거
-        - '\\\\+$'                               # 끝 백슬래시 제거
-    # NULL Flavor 삭제
-    - *null_flavor
-    # 쓰레기 패턴 삭제
-    - op_type: delete
-      patterns:
-        - '^$'                                   # 빈 문자열
-        - '^-$'                                  # 단일 -
-        - '^\\.$'                                # 단일 .
-        - '^\\*$'                                # 단일 *
-        - '^N\\s*/\\s*A$'                        # N / A
-        - '^[A-Z]$'                              # 대문자 한 글자
-        - '^0{10,}.*'                            # 10개 이상 연속 0으로 시작
+    MODEL_NUMBER:
+      # 전처리: 따옴표, 기록자 코멘트, GS1 바코드, 특수문자 제거
+      - op_type: remove
+        patterns:
+          - '"{3,}'                                # 3개 이상 따옴표 제거
+          - '^"+|"+$'                              # 앞뒤 따옴표 제거                 
+          - '\\(.*?TRIED.*?\\)'                    # 기록자 코멘트 제거
+          - '\\(.*?MAGNIFY.*?\\)'                  # 기록자 코멘트 제거
+          - '\\(.*?UNABLE.*?\\)'                   # 기록자 코멘트 제거
+          - '\\(GTIN\\)\\s*'                       # GTIN 태그 제거
+          - '\\(\\d+\\)[^\\(]*'                    # GS1 AI 정보 제거
+          - '^[*]+\\s*'                            # 앞의 * 제거
+          - '^\\.+'                                # 앞의 . 제거
+          - '\\\\+$'                               # 끝 백슬래시 제거
+      # NULL Flavor 삭제
+      - *null_flavor
+      # 쓰레기 패턴 삭제
+      - op_type: delete
+        patterns:
+          - '^$'                                   # 빈 문자열
+          - '^-$'                                  # 단일 -
+          - '^\\.$'                                # 단일 .
+          - '^\\*$'                                # 단일 *
+          - '^N\\s*/\\s*A$'                        # N / A
+          - '^[A-Z]$'                              # 대문자 한 글자
+          - '^0{10,}.*'                            # 10개 이상 연속 0으로 시작
 
-  UDI_PUBLIC:
-    - op_type: keep
-      patterns:
-        - '^\\+[A-Za-z0-9]{7,}.*'                 # +로 시작, 특문 전 7자 이상
-        - '^\\(01\\)[0-9]{14,}.*'                  # (01)로 시작, 숫자 14자리 이상
-        - '^[a-zA-Z].*'                          # 영문자로 시작
-    - op_type: delete
-      patterns:
-        - '^\\(01\\)0{14,}.*'                         # (01) 뒤 0만 있는 경우 제외
+    UDI_PUBLIC:
+      - op_type: keep
+        patterns:
+          - '^\\+[A-Za-z0-9]{7,}.*'                 # +로 시작, 특문 전 7자 이상
+          - '^\\(01\\)[0-9]{14,}.*'                  # (01)로 시작, 숫자 14자리 이상
+          - '^[a-zA-Z].*'                          # 영문자로 시작
+      - op_type: delete
+        patterns:
+          - '^\\(01\\)0{14,}.*'                         # (01) 뒤 0만 있는 경우 제외
 
-# ============================================
-# UDI 데이터의 정제 패턴
-# ============================================
-udi:
-  UDI_DI:
-    - op_type: remove
-      patterns:
-        - '^\\(\\d{2}\\)'
-        - '\\(\\d{2}\\).*'
-        - '^\\d*\\+'
-        - '[^a-zA-Z0-9]'
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'
-        - '^0+$'
-        - '^N$'
-        - '^X+$'
-        - '^.{2,3}$'
-        - '^.{31,}$'
+  # ============================================
+  # UDI 데이터의 정제 패턴
+  # ============================================
+  udi:
+    UDI_DI:
+      - op_type: remove
+        patterns:
+          - '^\\(\\d{2}\\)'
+          - '\\(\\d{2}\\).*'
+          - '^\\d*\\+'
+          - '[^a-zA-Z0-9]'
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'
+          - '^0+$'
+          - '^N$'
+          - '^X+$'
+          - '^.{2,3}$'
+          - '^.{31,}$'
 
-  BRAND_NAME:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                          # 3개 이상 따옴표 제거
-        - '^\\d{2}/\\d{2}/\\d{4}'          # 날짜 정보 제거
-        - 'Â+[¿¢]*'                        # 인코딩 오류 문자 제거
-        - '^"+|"+$'                        # 앞뒤 따옴표 제거
-        - '^[#*.\\-]+\\s*'                 # 시작 부분 특수문자 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                             # 빈 문자열
-        - '^0$'                            # 단일 0
-        - '^\\*$'                          # 단일 *
-        - '^\\.$'                          # 단일 .
-        - '^-$'                            # 단일 -
-        - '^[0-9]+$'                       # 숫자만 있는 항목 (바코드 등)
+    BRAND_NAME:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                          # 3개 이상 따옴표 제거
+          - '^\\d{2}/\\d{2}/\\d{4}'          # 날짜 정보 제거
+          - 'Â+[¿¢]*'                        # 인코딩 오류 문자 제거
+          - '^"+|"+$'                        # 앞뒤 따옴표 제거
+          - '^[#*.\\-]+\\s*'                 # 시작 부분 특수문자 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                             # 빈 문자열
+          - '^0$'                            # 단일 0
+          - '^\\*$'                          # 단일 *
+          - '^\\.$'                          # 단일 .
+          - '^-$'                            # 단일 -
+          - '^[0-9]+$'                       # 숫자만 있는 항목 (바코드 등)
 
-  CATALOG_NUMBER:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                          # 3개 이상 따옴표 제거
-        - '^"+|"+$'                        # 앞뒤 따옴표 제거
-        - '^(REF|LOT)\\s*[#:\\-]?\\s*'     # REF, LOT 접두어 제거
-        - '^\\(\\d+\\)'                    # GS1 AI 괄호 제거
-        - '^0\\s'                          # 앞의 "0 " 제거
-        - '^\\*'                           # 앞의 단독 * 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                             # 빈 문자열
-        - '^-$'                            # 단일 -
-        - '^\\*$'                          # 단일 *
-        - '^\\.$'                          # 단일 .
-        - '^#$'                            # 단일 #
-        - '^0{10,}.*'                      # 10개 이상 연속 0으로 시작
+    CATALOG_NUMBER:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                          # 3개 이상 따옴표 제거
+          - '^"+|"+$'                        # 앞뒤 따옴표 제거
+          - '^(REF|LOT)\\s*[#:\\-]?\\s*'     # REF, LOT 접두어 제거
+          - '^\\(\\d+\\)'                    # GS1 AI 괄호 제거
+          - '^0\\s'                          # 앞의 "0 " 제거
+          - '^\\*'                           # 앞의 단독 * 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                             # 빈 문자열
+          - '^-$'                            # 단일 -
+          - '^\\*$'                          # 단일 *
+          - '^\\.$'                          # 단일 .
+          - '^#$'                            # 단일 #
+          - '^0{10,}.*'                      # 10개 이상 연속 0으로 시작
 
-  MANUFACTURER_NAME:
-    # 전처리: 세미콜론/슬래시 분리
-    - op_type: remove
-      patterns:
-        - 'AMP;'                                 # &AMP; → &
-        - ';.*$'                                 # 세미콜론 이후 제거
-        - '\\s*/\\s*.*$'                         # 슬래시 이후 제거
-    # 국가명 제거
-    - op_type: remove_country
-    # NULL Flavor 삭제
-    - *null_flavor
-    # 기본 정제
-    - op_type: remove
-      patterns:
-        - '"{3,}'                                # 3개 이상 따옴표 제거
-        - '^"+|"+$'                              # 앞뒤 따옴표 제거
-        - '\\s+D/B/A\\s+.*$'                     # D/B/A 이후 제거
-        - '\\s+DBA\\s+.*$'                       # DBA 이후 제거
-        - '^[?\\.\\(]+\\s*'                      # 시작 특수문자 제거
-        - '\\\\+$'                               # 끝 백슬래시 제거
-        - '/+$'                                  # 끝 슬래시 제거
-        - '[\\s\\.]+$'                           # 끝 공백/마침표 제거
-    # 회사 접미사 제거
-    - op_type: remove
-      patterns:
-        - '\\b(INC\\.?|INCORPORATED)\\b'
-        - '\\b(CO\\.?|COMPANY)\\b'
-        - '\\b(CORP\\.?|CORPORATION)\\b'
-        - '\\b(LTD\\.?|LIMITED)\\b'
-        - '\\b(LLC\\.?|L\\.L\\.C\\.?)\\b'
-        - '\\b(PLC\\.?)\\b'
-        - '\\b(S\\.A\\.?)\\b'
-        - '\\b(GMBH\\.?)\\b'
-        - '\\b(AG\\.?)\\b'
-        - '\\b(PTY\\.?)\\b'
-        - '\\b(PVT\\.?)\\b'
-        - '\\b(OPERATIONS)\\b'
-        - '\\bMANUFACTURING\\b'
-        - '\\bMEDICAL\\s+SYSTEMS\\b'
-        - '\\bMEDICAL\\b'
-        - '^THE\\b\\s*'                          # 시작의 THE 제거
-        - '[^a-zA-Z0-9\\s&]'                     # 허용된 문자 외 제거
-    # 쓰레기 패턴 삭제
-    - op_type: delete
-      patterns:
-        - '^$'                                   # 빈 문자열
-        - '^\\.$'                                # 단일 .
-        - '^-$'                                  # 단일 -
-        - '^\\?$'                                # 단일 ?
-        - '.*\\bMANUFACTURER\\s+(UNKNOWN|UNK)\\b.*'
-        - '^[0-9]+\\s+[A-Za-z\\s]+(WAY|DR|STREET|AVE|PARKWAY)$'  # 주소만
-        - '^\\(.*\\)$'                           # 괄호로 둘러싸인 값
-        - '^\\d+\\.\\s+MANUFACTURER'             # 메타데이터
-        - '^ESTABLISHMENT\\s+NAME'               # 메타데이터
-        - '^EMAIL\\s+ADDRESS'                    # 이메일 관련 쓰레기
-        - '^MFG\\s+SITE\\s+NAME'                 # 메타데이터
+    MANUFACTURER_NAME:
+      # 전처리: 세미콜론/슬래시 분리
+      - op_type: remove
+        patterns:
+          - 'AMP;'                                 # &AMP; → &
+          - ';.*$'                                 # 세미콜론 이후 제거
+          - '\\s*/\\s*.*$'                         # 슬래시 이후 제거
+      # 국가명 제거
+      - op_type: remove_country
+      # NULL Flavor 삭제
+      - *null_flavor
+      # 기본 정제
+      - op_type: remove
+        patterns:
+          - '"{3,}'                                # 3개 이상 따옴표 제거
+          - '^"+|"+$'                              # 앞뒤 따옴표 제거
+          - '\\s+D/B/A\\s+.*$'                     # D/B/A 이후 제거
+          - '\\s+DBA\\s+.*$'                       # DBA 이후 제거
+          - '^[?\\.\\(]+\\s*'                      # 시작 특수문자 제거
+          - '\\\\+$'                               # 끝 백슬래시 제거
+          - '/+$'                                  # 끝 슬래시 제거
+          - '[\\s\\.]+$'                           # 끝 공백/마침표 제거
+      # 회사 접미사 제거
+      - op_type: remove
+        patterns:
+          - '\\b(INC\\.?|INCORPORATED)\\b'
+          - '\\b(CO\\.?|COMPANY)\\b'
+          - '\\b(CORP\\.?|CORPORATION)\\b'
+          - '\\b(LTD\\.?|LIMITED)\\b'
+          - '\\b(LLC\\.?|L\\.L\\.C\\.?)\\b'
+          - '\\b(PLC\\.?)\\b'
+          - '\\b(S\\.A\\.?)\\b'
+          - '\\b(GMBH\\.?)\\b'
+          - '\\b(AG\\.?)\\b'
+          - '\\b(PTY\\.?)\\b'
+          - '\\b(PVT\\.?)\\b'
+          - '\\b(OPERATIONS)\\b'
+          - '\\bMANUFACTURING\\b'
+          - '\\bMEDICAL\\s+SYSTEMS\\b'
+          - '\\bMEDICAL\\b'
+          - '^THE\\b\\s*'                          # 시작의 THE 제거
+          - '[^a-zA-Z0-9\\s&]'                     # 허용된 문자 외 제거
+      # 쓰레기 패턴 삭제
+      - op_type: delete
+        patterns:
+          - '^$'                                   # 빈 문자열
+          - '^\\.$'                                # 단일 .
+          - '^-$'                                  # 단일 -
+          - '^\\?$'                                # 단일 ?
+          - '.*\\bMANUFACTURER\\s+(UNKNOWN|UNK)\\b.*'
+          - '^[0-9]+\\s+[A-Za-z\\s]+(WAY|DR|STREET|AVE|PARKWAY)$'  # 주소만
+          - '^\\(.*\\)$'                           # 괄호로 둘러싸인 값
+          - '^\\d+\\.\\s+MANUFACTURER'             # 메타데이터
+          - '^ESTABLISHMENT\\s+NAME'               # 메타데이터
+          - '^EMAIL\\s+ADDRESS'                    # 이메일 관련 쓰레기
+          - '^MFG\\s+SITE\\s+NAME'                 # 메타데이터
 
-  MODEL_NUMBER:
-    - op_type: remove
-      patterns:
-        - '"{3,}'                                # 3개 이상 따옴표 제거
-        - '^"+|"+$'                              # 앞뒤 따옴표 제거
-        - '\\(.*?TRIED.*?\\)'                    # 기록자 코멘트 제거
-        - '\\(.*?MAGNIFY.*?\\)'                  # 기록자 코멘트 제거
-        - '\\(.*?UNABLE.*?\\)'                   # 기록자 코멘트 제거
-        - '\\(GTIN\\)\\s*'                       # GTIN 태그 제거
-        - '\\(\\d+\\)[^\\(]*'                    # GS1 AI 정보 제거
-        - '^[*]+\\s*'                            # 앞의 * 제거
-        - '^\\.+'                                # 앞의 . 제거
-        - '\\\\+$'                               # 끝 백슬래시 제거
-    - *null_flavor
-    - op_type: delete
-      patterns:
-        - '^$'                                   # 빈 문자열
-        - '^-$'                                  # 단일 -
-        - '^\\.$'                                # 단일 .
-        - '^\\*$'                                # 단일 *
-        - '^N\\s*/\\s*A$'                        # N / A
-        - '^[A-Z]$'                              # 대문자 한 글자
-        - '^0{10,}.*'                            # 10개 이상 연속 0으로 시작
+    MODEL_NUMBER:
+      - op_type: remove
+        patterns:
+          - '"{3,}'                                # 3개 이상 따옴표 제거
+          - '^"+|"+$'                              # 앞뒤 따옴표 제거
+          - '\\(.*?TRIED.*?\\)'                    # 기록자 코멘트 제거
+          - '\\(.*?MAGNIFY.*?\\)'                  # 기록자 코멘트 제거
+          - '\\(.*?UNABLE.*?\\)'                   # 기록자 코멘트 제거
+          - '\\(GTIN\\)\\s*'                       # GTIN 태그 제거
+          - '\\(\\d+\\)[^\\(]*'                    # GS1 AI 정보 제거
+          - '^[*]+\\s*'                            # 앞의 * 제거
+          - '^\\.+'                                # 앞의 . 제거
+          - '\\\\+$'                               # 끝 백슬래시 제거
+      - *null_flavor
+      - op_type: delete
+        patterns:
+          - '^$'                                   # 빈 문자열
+          - '^-$'                                  # 단일 -
+          - '^\\.$'                                # 단일 .
+          - '^\\*$'                                # 단일 *
+          - '^N\\s*/\\s*A$'                        # N / A
+          - '^[A-Z]$'                              # 대문자 한 글자
+          - '^0{10,}.*'                            # 10개 이상 연속 0으로 시작
