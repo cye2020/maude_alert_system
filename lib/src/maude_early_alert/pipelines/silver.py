@@ -6,6 +6,7 @@ from snowflake.connector.cursor import SnowflakeCursor
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase
 from maude_early_alert.pipelines.config import get_config
+from maude_early_alert.preprocessors.column_select import build_select_columns_sql
 from maude_early_alert.preprocessors.custom_transform import (
     build_combine_mdr_text_sql,
     build_primary_udi_di_sql,
@@ -111,21 +112,25 @@ class SilverPipeline(SnowflakeBase):
             self._create_next_stage(cursor, category, flatten_sql)
 
     def combine_mdr_text(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         category = self.cfg.get_combine_category()
         sql = build_combine_mdr_text_sql(self._stage_table(category), **self.cfg.get_combine_columns())
         self._create_next_stage(cursor, category, sql)
 
     def extract_primary_udi_di(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         category = self.cfg.get_primary_category()
         sql = build_primary_udi_di_sql(self._stage_table(category), **self.cfg.get_primary_columns())
         self._create_next_stage(cursor, category, sql)
 
     def extract_udi_di(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         category = self.cfg.get_extract_udi_di_category()
         sql = build_extract_udi_di_sql(self._stage_table(category), **self.cfg.get_extract_udi_di_columns())
         self._create_next_stage(cursor, category, sql)
 
     def apply_company_alias(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         sql = build_apply_company_alias_sql(
             source=self._stage_table('event'),
             company_col=self.cfg.get_ma_company_col(),
@@ -134,6 +139,7 @@ class SilverPipeline(SnowflakeBase):
         self._create_next_stage(cursor, 'event', sql)
 
     def fuzzy_match_manufacturer(self, cursor: SnowflakeCursor):
+        self._set_context(cursor)
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
         target_category = self.cfg.get_fuzzy_match_target_category()
         sql = build_manufacturer_fuzzy_match_sql(
@@ -144,6 +150,16 @@ class SilverPipeline(SnowflakeBase):
             threshold=self.cfg.get_fuzzy_match_threshold(),
         )
         self._create_next_stage(cursor, target_category, sql)
+
+    def select_columns(self, cursor: SnowflakeCursor, final: bool = False):
+        self._set_context(cursor)
+        categories = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
+        get_cols = self.cfg.get_final_cols if final else self.cfg.get_column_cols
+        for category in categories:
+            sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
+            self._create_next_stage(cursor, category, sql)
+
+
 
 
 if __name__=='__main__':

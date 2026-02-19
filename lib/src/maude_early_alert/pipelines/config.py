@@ -177,6 +177,47 @@ class SilverConfig:
     def get_ma_aliases(self) -> dict:
         return self._transform['M&A']['aliases']
 
+    # ==================== columns 설정 ====================
+
+    def get_column_categories(self) -> List[str]:
+        """columns.yaml에 정의된 카테고리 목록 반환 (e.g. ['event', 'udi'])"""
+        return list(self._columns.keys())
+
+    def get_final_categories(self) -> List[str]:
+        """final 스테이지가 있는 카테고리만 반환 (e.g. ['event'])"""
+        return [cat for cat in self._columns if self.get_final_cols(cat) is not None]
+
+    def get_column_cols(self, category: str) -> List[dict]:
+        """카테고리별 cols 목록 반환
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            [{'name': ..., 'type': ..., 'alias': ..., ...}, ...]
+        """
+        return self._columns.get(category, {}).get('cols', [])
+
+    def get_final_cols(self, category: str) -> Optional[List[dict]]:
+        """카테고리의 final 컬럼 목록 반환 (name → alias로 교체)
+
+        final 필드가 정의되지 않은 카테고리(e.g. udi)는 None 반환.
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            final=True인 컬럼 리스트 (name이 alias로 교체됨), 또는 None
+        """
+        cols = self.get_column_cols(category)
+        if not cols or not any('final' in d for d in cols):
+            return None
+        return [
+            {**d, 'name': d['alias']}
+            for d in cols
+            if d.get('final', False)
+        ]
+
     # ==================== flatten 설정 ====================
 
     def get_flatten_categories(self) -> List[str]:
