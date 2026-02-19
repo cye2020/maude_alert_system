@@ -1,0 +1,7 @@
+event:
+  alias: t
+  mode:
+    - group: PRODUCT_CODE
+      target: PRODUCT_NAME
+    - group: MANUFACTURER_POSTAL_CODE
+      target: MANUFACTURER_NAME

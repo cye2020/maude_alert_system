@@ -92,6 +92,7 @@ class SilverConfig:
         self._cleaning = load_config('preprocess/cleaning')
         self._flatten = load_config('preprocess/flatten')
         self._transform = load_config('preprocess/transform')
+        self._imputation = load_config('preprocess/imputation')
         self._storage = load_config('storage')
 
     @property
@@ -217,6 +218,20 @@ class SilverConfig:
             for d in cols
             if d.get('final', False)
         ]
+
+    # ==================== imputation 설정 ====================
+
+    def get_imputation_categories(self) -> List[str]:
+        """결측치 처리 대상 카테고리 목록 반환"""
+        return list(self._imputation.keys())
+
+    def get_imputation_alias(self, category: str) -> str:
+        """카테고리의 테이블 alias 반환"""
+        return self._imputation[category]['alias']
+
+    def get_imputation_mode(self, category: str) -> Dict[str, str]:
+        """카테고리의 {group_col: target_col} 매핑 반환"""
+        return {item['group']: item['target'] for item in self._imputation[category]['mode']}
 
     # ==================== flatten 설정 ====================
 

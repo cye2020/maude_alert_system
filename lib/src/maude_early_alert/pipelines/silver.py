@@ -4,7 +4,7 @@ import structlog
 
 from snowflake.connector.cursor import SnowflakeCursor
 
-from maude_early_alert.loaders.snowflake_base import SnowflakeBase
+from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
 from maude_early_alert.pipelines.config import get_config
 from maude_early_alert.preprocessors.column_select import build_select_columns_sql
 from maude_early_alert.preprocessors.custom_transform import (
@@ -20,6 +20,7 @@ from maude_early_alert.preprocessors.flatten import (
     build_top_keys_sql,
     parse_array_keys_result
 )
+from maude_early_alert.preprocessors.imputation import build_mode_fill_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -54,7 +55,6 @@ class SilverPipeline(SnowflakeBase):
 
     def _filter_step(self, key: str, cursor: SnowflakeCursor):
         """filtering.yaml의 key에 해당하는 스텝을 category별로 실행"""
-        self._set_context(cursor)
         for category, step in self.cfg.get_filtering_step(key).items():
             source = self._stage_table(category)
             if step['type'] == 'standalone':
@@ -63,12 +63,15 @@ class SilverPipeline(SnowflakeBase):
                 sql = build_filter_pipeline(source, step['ctes'], step['final'])
             self._create_next_stage(cursor, category, sql)
 
+    @with_context
     def filter_dedup_rows(self, cursor: SnowflakeCursor):
         self._filter_step('DEDUP', cursor)
 
+    @with_context
     def filter_scoping(self, cursor: SnowflakeCursor):
         self._filter_step('SCOPING', cursor)
 
+    @with_context
     def filter_quality(self, cursor: SnowflakeCursor):
         self._filter_step('QUALITY_FILTER', cursor)
 
@@ -85,8 +88,8 @@ class SilverPipeline(SnowflakeBase):
 
         return top, array_schemas
 
+    @with_context
     def flatten(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         for category in self.cfg.get_flatten_categories():
             table_name = self._stage_table(category)
             flatten_cfg = self.cfg.get_flatten_config(category)
@@ -111,26 +114,26 @@ class SilverPipeline(SnowflakeBase):
             print(flatten_sql)
             self._create_next_stage(cursor, category, flatten_sql)
 
+    @with_context
     def combine_mdr_text(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         category = self.cfg.get_combine_category()
         sql = build_combine_mdr_text_sql(self._stage_table(category), **self.cfg.get_combine_columns())
         self._create_next_stage(cursor, category, sql)
 
+    @with_context
     def extract_primary_udi_di(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         category = self.cfg.get_primary_category()
         sql = build_primary_udi_di_sql(self._stage_table(category), **self.cfg.get_primary_columns())
         self._create_next_stage(cursor, category, sql)
 
+    @with_context
     def extract_udi_di(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         category = self.cfg.get_extract_udi_di_category()
         sql = build_extract_udi_di_sql(self._stage_table(category), **self.cfg.get_extract_udi_di_columns())
         self._create_next_stage(cursor, category, sql)
 
+    @with_context
     def apply_company_alias(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         sql = build_apply_company_alias_sql(
             source=self._stage_table('event'),
             company_col=self.cfg.get_ma_company_col(),
@@ -138,8 +141,8 @@ class SilverPipeline(SnowflakeBase):
         )
         self._create_next_stage(cursor, 'event', sql)
 
+    @with_context
     def fuzzy_match_manufacturer(self, cursor: SnowflakeCursor):
-        self._set_context(cursor)
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
         target_category = self.cfg.get_fuzzy_match_target_category()
         sql = build_manufacturer_fuzzy_match_sql(
@@ -151,12 +154,22 @@ class SilverPipeline(SnowflakeBase):
         )
         self._create_next_stage(cursor, target_category, sql)
 
+    @with_context
     def select_columns(self, cursor: SnowflakeCursor, final: bool = False):
-        self._set_context(cursor)
         categories = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
         get_cols = self.cfg.get_final_cols if final else self.cfg.get_column_cols
         for category in categories:
             sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
+            self._create_next_stage(cursor, category, sql)
+
+    @with_context
+    def impute_missing_values(self, cursor: SnowflakeCursor):
+        for category in self.cfg.get_imputation_categories():
+            sql = build_mode_fill_sql(
+                group_to_target=self.cfg.get_imputation_mode(category),
+                table_name=self._stage_table(category),
+                table_alias=self.cfg.get_imputation_alias(category),
+            )
             self._create_next_stage(cursor, category, sql)
 
 
