@@ -69,25 +69,21 @@ def build_filter_pipeline(source: str, ctes: List[dict], final: str, alias: str 
 
 
 if __name__ == '__main__':
-    from maude_early_alert.utils.config_loader import load_config
+    print("=== build_filter_sql (WHERE) ===")
+    print(build_filter_sql(
+        source='my_table',
+        where=["col_a IS NOT NULL", "col_b > 0"],
+    ))
 
-    cfg = load_config('preprocess/filtering')
+    print("\n=== build_filter_sql (QUALIFY 중복 제거) ===")
+    print(build_filter_sql(
+        source='my_table',
+        qualify=["ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) = 1"],
+    ))
 
-    # standalone: event DEDUP
-    event_dedup = cfg['event']['DEDUP']
-    sql_dedup = build_filter_sql(
-        'EVENT_STAGE_00',
-        qualify=event_dedup.get('qualify'),
-    )
-    print("=== EVENT DEDUP (standalone) ===")
-    print(sql_dedup)
-
-    # chain: event QUALITY_FILTER
-    qf = cfg['event']['QUALITY_FILTER']
-    sql_chain = build_filter_pipeline(
-        source='EVENT_STAGE_02',
-        ctes=qf['ctes'],
-        final=qf['final'],
-    )
-    print("\n=== EVENT QUALITY_FILTER (chain) ===")
-    print(sql_chain)
+    print("\n=== build_filter_pipeline (CTE 체인) ===")
+    ctes = [
+        {'name': 'step1', 'from': 'source', 'qualify': ["ROW_NUMBER() OVER (PARTITION BY id ORDER BY created_at DESC) = 1"]},
+        {'name': 'step2', 'from': 'step1', 'where': ["status IS NOT NULL"]},
+    ]
+    print(build_filter_pipeline(source='my_table', ctes=ctes, final='step2'))

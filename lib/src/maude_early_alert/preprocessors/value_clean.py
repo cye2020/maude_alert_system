@@ -154,5 +154,24 @@ def build_clean_sql(table_name: str, config: dict, udf_schema: str = None) -> st
     )
 
 
-if __name__=='__main__':
-    udf_schema = 'UDF'
+if __name__ == '__main__':
+    udf_schema = 'my_udf'
+
+    print("=== SQLCleanBuilder 직접 사용 ===")
+    builder = SQLCleanBuilder(udf_schema=udf_schema)
+    builder.column('name').remove_patterns([r'\(.*?\)']).clean_default()
+    builder.column('description').delete_patterns([r'^N/A$']).keep_patterns([r'^\w+'])
+    for i, step in enumerate(builder.build_steps(), 1):
+        print(f"  step {i}: {step}")
+
+    print("\n=== build_clean_sql ===")
+    config = {
+        'name': [
+            {'op_type': 'remove', 'patterns': [r'\(.*?\)', r'\[.*?\]']},
+            {'op_type': 'clean_default'},
+        ],
+        'tags': [
+            {'op_type': 'filter_array', 'patterns': [r'(?i)^n/a$']},
+        ],
+    }
+    print(build_clean_sql(table_name='my_table', config=config, udf_schema=udf_schema))

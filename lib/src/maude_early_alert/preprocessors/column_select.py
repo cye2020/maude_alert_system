@@ -48,12 +48,14 @@ def build_select_columns_sql(cols: List[str], table_name: str) -> str:
 
 
 if __name__ == '__main__':
-    from maude_early_alert.logging_config import configure_logging
-    configure_logging()
+    print("=== build_select_columns_sql (빈 리스트 → SELECT *) ===")
+    print(build_select_columns_sql([], 'my_table'))
 
-    print("=" * 80)
-    print("컬럼 필터링 SQL 테스트")
-    print("=" * 80)
-
-    pass
+    print("\n=== build_select_columns_sql (컬럼 선택) ===")
+    cols = [
+        {'name': 'id', 'alias': 'id'},
+        {'name': 'created_at', 'alias': 'created_at'},
+        {'name': 'status', 'alias': 'status'},
+    ]
+    print(build_select_columns_sql(cols, 'my_table'))
 

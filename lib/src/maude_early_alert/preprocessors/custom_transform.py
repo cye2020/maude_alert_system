@@ -218,4 +218,45 @@ def build_manufacturer_fuzzy_match_sql(
 
 
 if __name__ == '__main__':
-    pass
+    print("=== build_combine_mdr_text_sql ===")
+    print(build_combine_mdr_text_sql(
+        source='my_table',
+        text_col='texts',
+        type_col='text_types',
+        combine_col='combined_text',
+    ))
+
+    print("\n=== build_primary_udi_di_sql ===")
+    print(build_primary_udi_di_sql(
+        source='my_table',
+        partition_key='record_key',
+        id_col='identifier_id',
+        type_col='identifier_type',
+        primary_col='primary_id',
+    ))
+
+    print("\n=== build_apply_company_alias_sql ===")
+    print(build_apply_company_alias_sql(
+        source='my_table',
+        company_col='company_name',
+        aliases={
+            'OLD CORP': 'NEW CORP',
+            'LEGACY INC': 'NEW CORP',
+        },
+    ))
+
+    print("\n=== build_extract_udi_di_sql ===")
+    print(build_extract_udi_di_sql(
+        source='my_table',
+        public_col='udi_public',
+        target_col='udi_di',
+    ))
+
+    print("\n=== build_manufacturer_fuzzy_match_sql ===")
+    print(build_manufacturer_fuzzy_match_sql(
+        target='target_table',
+        source='source_table',
+        mfr_col='company_name',
+        udf_schema='my_schema',
+        threshold=0.8,
+    ))

@@ -369,5 +369,31 @@ def build_matching_sql(
 # ==================== 테스트 ====================
 
 if __name__ == "__main__":
-    from maude_early_alert.logging_config import configure_logging
-    configure_logging('DEBUG', 'temp.log')
+    print("=== build_matching_sql ===")
+    sql = build_matching_sql(
+        target='target_table',
+        source='source_table',
+        device_cols=['brand_name', 'generic_name'],
+        target_date_cols=['date_received', 'date_of_event'],
+        source_date_cols=['publish_date', 'version_date'],
+        udi_di='udi_di',
+        primary_udi_di='primary_udi_di',
+        manufacturer='manufacturer_name',
+        match_status_col='match_status',
+        confidence_col='confidence',
+        udi_col_prefix='udi_',
+        status={
+            'udi_success': 'UDI SUCCESS',
+            'meta_success': 'META SUCCESS',
+            'udi_failed': 'UDI FAILED',
+            'no_udi': 'NO UDI',
+        },
+        confidence={
+            'UDI SUCCESS': 'HIGH',
+            'META SUCCESS': 'MEDIUM',
+            'UDI FAILED': 'LOW',
+            'NO UDI': 'VERY LOW',
+        },
+        min_device_match=1,
+    )
+    print(sql)
