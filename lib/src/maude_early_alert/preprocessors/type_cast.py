@@ -92,20 +92,3 @@ if __name__ == "__main__":
     print("=" * 80)
     print("타입 변환 SQL 테스트")
     print("=" * 80)
-
-    columns_config = load_config('preprocess/columns')
-    event_columns = columns_config['event']['cols']
-    udi_columns = columns_config['udi']['cols']
-
-    sql = build_type_cast_sql(
-        columns=event_columns,
-        input_table="EVENT_STAGE_07",
-    )
-    print(sql)
-    
-    sql = build_type_cast_sql(
-        columns=udi_columns,
-        input_table="UDI_STAGE_05",
-    )
-    print(sql)
-

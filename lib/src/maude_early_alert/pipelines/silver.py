@@ -21,6 +21,7 @@ from maude_early_alert.preprocessors.flatten import (
     parse_array_keys_result
 )
 from maude_early_alert.preprocessors.imputation import build_mode_fill_sql
+from maude_early_alert.preprocessors.type_cast import build_type_cast_sql
 from maude_early_alert.preprocessors.value_clean import build_clean_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
 
@@ -184,6 +185,14 @@ class SilverPipeline(SnowflakeBase):
             )
             self._create_next_stage(cursor, category, sql)
 
+    @with_context
+    def cast_types(self, cursor: SnowflakeCursor):
+        for category in self.cfg.get_column_categories():
+            sql = build_type_cast_sql(
+                columns=self.cfg.get_column_cols(category),
+                input_table=self._stage_table(category),
+            )
+            self._create_next_stage(cursor, category, sql)
 
 
 if __name__=='__main__':
