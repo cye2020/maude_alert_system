@@ -29,24 +29,24 @@ from vllm.sampling_params import StructuredOutputsParams
 # ======================
 # 내부 라이브러리
 # ======================
-from maude_early_alert.analyze.prompt import Prompt, GeneralPrompt
+from maude_early_alert.preprocessors.prompt import Prompt, GeneralPrompt
 
 
 class MAUDEExtractor:
     def __init__(
         self,
-        model_path: str = 'Qwen/Qwen3-8B',
-        tensor_parallel_size: int = 1,
-        gpu_memory_utilization: float = 0.85,
-        max_model_len: int = 8192,
-        max_num_batched_tokens: int = 16384,
-        max_num_seqs: int = 256,
-        max_retries: int = 2,
-        enable_prefix_caching: bool = True,
+        model_path: str,
+        tensor_parallel_size: int,
+        gpu_memory_utilization: float,
+        max_model_len: int,
+        max_num_batched_tokens: int,
+        max_num_seqs: int,
+        max_retries: int,
+        enable_prefix_caching: bool,
+        sampling_config: dict,
         prompt: Prompt = None,
     ):
-        """
-        vLLM 최적화 배치 추출기 (Qwen3-8B)
+        """vLLM 최적화 배치 추출기
 
         Args:
             model_path: 모델 경로
@@ -57,11 +57,11 @@ class MAUDEExtractor:
             max_num_seqs: 동시 처리 시퀀스 수
             max_retries: 실패 시 재시도 횟수
             enable_prefix_caching: 반복 프롬프트 캐싱 활성화
-            prompt: 사용할 Prompt 인스턴스 (기본: 기본 Prompt 클래스)
+            sampling_config: 샘플링 파라미터 dict (temperature, max_tokens, top_p)
+            prompt: 사용할 Prompt 인스턴스 (None이면 GeneralPrompt)
         """
         self.max_retries = max_retries
         self.model_path = model_path
-        # None이면 기본 Prompt 사용 (mutable default argument 방지)
         self.prompt = prompt if prompt is not None else GeneralPrompt()
         self.extraction_model = self.prompt.get_extraction_model()
 
@@ -76,36 +76,32 @@ class MAUDEExtractor:
         print(f"  - Prefix Caching:         {enable_prefix_caching}")
         print(f"  - Max Retries:            {max_retries}")
 
-        # vLLM 모델 초기화
         self.llm = LLM(
             model=model_path,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
             max_model_len=max_model_len,
-            max_num_batched_tokens=max_num_batched_tokens,  # Chunked prefill: GPU 활용률 극대화
-            max_num_seqs=max_num_seqs,                      # 동시 처리 시퀀스 수
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
             trust_remote_code=True,
-            enforce_eager=False,                            # CUDA graph 사용 (추론 속도 향상)
-            enable_prefix_caching=enable_prefix_caching,    # 동일 시스템 프롬프트 캐싱
+            enforce_eager=False,
+            enable_prefix_caching=enable_prefix_caching,
             disable_log_stats=False,
-            swap_space=4,                                   # Preemption 발생 시 CPU로 swap
+            swap_space=4,
         )
 
-        # Tokenizer 로드 (chat template 적용에 사용)
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             trust_remote_code=True,
         )
 
-        print(f"\n✓ Model loaded successfully!\n")
+        print(f"\n Model loaded successfully!\n")
 
-        # JSON 스키마 기반 structured output 설정
-        # → LLM이 항상 지정한 JSON 형식으로만 응답하도록 강제
         self.json_schema = self.extraction_model.model_json_schema()
         self.sampling_params = SamplingParams(
-            temperature=0.1,       # 낮을수록 결정적 출력 (분류 태스크에 적합)
-            max_tokens=512,
-            top_p=0.95,
+            temperature=sampling_config['temperature'],
+            max_tokens=sampling_config['max_tokens'],
+            top_p=sampling_config['top_p'],
             structured_outputs=StructuredOutputsParams(json=self.json_schema),
         )
 
@@ -391,48 +387,26 @@ if __name__ == "__main__":
         os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     warnings.filterwarnings('ignore')
 
-    import snowflake.connector
-    from maude_early_alert.utils.secrets import get_secret
-    from maude_early_alert.loaders.text_extract import (
-        MDRExtractor,
-        build_mdr_text_extract_sql,
-    )
-    from maude_early_alert.loaders.snowflake_load import SnowflakeLoader
-    from maude_early_alert.loaders.snowflake_base import SnowflakeBase
-    # ------------------------------------------------------------------
-    # 1. Snowflake 연결
-    # ------------------------------------------------------------------
-    secret = get_secret('snowflake/silver/credentials')
-    conn = snowflake.connector.connect(
-        user=secret['user'],
-        password=secret['password'],
-        account=secret['account'],
-        warehouse=secret['warehouse'],
-        database=secret['database'],
-        schema=secret['schema'],
-    )
-    cursor = conn.cursor()
+    SAMPLE_RECORDS = [
+        {
+            'mdr_text': "Patient reported that the device failed to deliver the correct insulin dose. "
+                        "The pump displayed an error code E3. No patient harm was observed.",
+            'product_problems': "Incorrect dose delivered",
+        },
+        {
+            'mdr_text': "The catheter tip broke off during insertion and was retrieved endoscopically. "
+                        "Patient experienced minor bleeding. Defect confirmed by manufacturer.",
+            'product_problems': "Device breakage",
+        },
+        {
+            'mdr_text': "Software malfunction caused the ventilator to stop cycling. "
+                        "Nurse intervened manually. Patient required additional oxygen therapy.",
+            'product_problems': "Software failure",
+        },
+    ]
 
-    # ------------------------------------------------------------------
-    # 2. MDR_TEXT 추출 SQL 빌드 및 실행 (파이프라인과 동일한 코드)
-    # ------------------------------------------------------------------
-    sql = build_mdr_text_extract_sql(table_name="EVENT_STAGE_12", limit=100)
-    print("=== MDR_TEXT 추출 SQL ===")
-    print(sql)
-    print()
-
-    # 아래 3줄이 파이프라인에서 실행되는 코드입니다
-    result = cursor.execute(sql)
-    mdr_text = result.fetchall()
-    unique_mdr_text = list(set(r[0] for r in mdr_text if r[0]))
-
-    print(f"Fetched {len(mdr_text)} rows → {len(unique_mdr_text)} unique MDR texts")
-
-    # ------------------------------------------------------------------
-    # 3. MDRExtractor(파사드)로 배치 처리
-    # ------------------------------------------------------------------
-    extractor = MDRExtractor(
-        model_path='Qwen/Qwen3-14B-AWQ',
+    extractor = MAUDEExtractor(
+        model_path="Qwen/Qwen3-14B-AWQ",
         tensor_parallel_size=1,
         gpu_memory_utilization=0.80,
         max_model_len=16384,
@@ -440,54 +414,19 @@ if __name__ == "__main__":
         max_num_seqs=128,
         max_retries=2,
         enable_prefix_caching=True,
+        sampling_config={"temperature": 0.1, "max_tokens": 512, "top_p": 0.95},
     )
+
     results = extractor.process_batch(
-        unique_mdr_text,
-        checkpoint_dir='./checkpoints',
-        checkpoint_interval=5000,
-        checkpoint_prefix='maude',
+        SAMPLE_RECORDS,
+        checkpoint_dir="./checkpoints",
+        checkpoint_interval=1000,
+        checkpoint_prefix="test",
     )
 
-    # ------------------------------------------------------------------
-    # 4. Snowflake 적재 (EVENT_STAGE_12_EXTRACTED 에 MERGE)
-    # ------------------------------------------------------------------
-    import time
+    print("\n=== 결과 ===")
+    for record, result in zip(SAMPLE_RECORDS, results):
+        print(f"\n[입력] {record['mdr_text'][:80]}...")
+        print(f"[출력] {result}")
 
-    base_table_name = 'EVENT_STAGE_12'
-    extracted_table = f"{base_table_name}_EXTRACTED"
-    insert_data = SnowflakeLoader.prepare_insert_data(results)
-
-    if not insert_data:
-        print('적재할 데이터가 없습니다')
-    else:
-        base = SnowflakeBase(secret['database'], secret['schema'])
-
-        # 추출 테이블 생성
-        cursor.execute(SnowflakeLoader.build_ensure_extracted_table_sql(extracted_table))
-
-        temp_table = f"{extracted_table}_STG_{int(time.time())}"
-        try:
-            with base.transaction(cursor):
-                cursor.execute(SnowflakeLoader.build_create_extract_temp_sql(temp_table))
-                stage_insert_sql = SnowflakeLoader.build_extract_stage_insert_sql(temp_table)
-                cursor.executemany(stage_insert_sql, insert_data)
-                cursor.execute(SnowflakeLoader.build_extract_merge_sql(extracted_table, temp_table))
-            print(f"\n최종 적재 완료: {len(insert_data):,}건")
-        finally:
-            try:
-                cursor.execute(f"DROP TABLE IF EXISTS {temp_table}")
-            except Exception:
-                pass
-
-    # ------------------------------------------------------------------
-    # 5. JOIN SQL 확인 (EVENT_STAGE_12 LEFT JOIN EVENT_STAGE_12_EXTRACTED)
-    # ------------------------------------------------------------------
-    join_sql = SnowflakeLoader.build_extracted_join_sql(base_table_name=base_table_name)
-    print("\n=== 조회용 JOIN SQL ===")
-    print(join_sql)
-
-    # vLLM 엔진을 명시적으로 먼저 종료 (GC 순서 문제로 인한 spurious 에러 방지)
     del extractor
-
-    cursor.close()
-    conn.close()

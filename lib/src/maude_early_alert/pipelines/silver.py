@@ -1,4 +1,5 @@
-from typing import Dict
+from typing import Dict, List
+
 import pendulum
 import structlog
 
@@ -25,6 +26,17 @@ from maude_early_alert.preprocessors.type_cast import build_type_cast_sql
 from maude_early_alert.preprocessors.value_clean import build_clean_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
 from maude_early_alert.preprocessors.udi_match import build_matching_sql
+from maude_early_alert.preprocessors.text_extract import (
+    build_mdr_text_extract_sql,
+    build_ensure_extracted_table_sql,
+    build_create_extract_temp_sql,
+    build_extract_stage_insert_sql,
+    build_extract_merge_sql,
+    build_extracted_join_sql,
+    prepare_insert_data,
+    MDRExtractor,
+)
+from maude_early_alert.preprocessors.prompt import get_prompt
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -206,7 +218,94 @@ class SilverPipeline(SnowflakeBase):
         )
         self._create_next_stage(cursor, target_cat, sql)
 
-if __name__=='__main__':
+    # ==================== LLM extraction (별도 단계) ====================
+
+    @with_context
+    def extract_mdr_text(self, cursor: SnowflakeCursor) -> List[Dict]:
+        """source 테이블에서 MDR_TEXT 추출 + unique 처리, dict 리스트 반환"""
+        category = self.cfg.get_llm_source_category()
+        sql = build_mdr_text_extract_sql(
+            table_name=self._stage_table(category),
+            columns=self.cfg.get_llm_source_columns(),
+            where=self.cfg.get_llm_source_where(),
+        )
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+        seen = {}
+        for r in rows:
+            if r[0] and r[0] not in seen:
+                seen[r[0]] = {'mdr_text': r[0], 'product_problems': r[1] or ''}
+        unique_records = list(seen.values())
+        logger.info('MDR_TEXT 추출 완료', total=len(rows), unique=len(unique_records))
+        return unique_records
+
+    def run_llm_extraction(self, records: List) -> List[dict]:
+        """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
+        model_cfg = self.cfg.get_llm_model_config()
+        sampling_cfg = self.cfg.get_llm_sampling_config()
+        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
+        prompt = get_prompt(self.cfg.get_llm_prompt_mode())
+
+        extractor = MDRExtractor(
+            **model_cfg,
+            sampling_config=sampling_cfg,
+            prompt=prompt,
+        )
+        return extractor.process_batch(
+            records,
+            checkpoint_dir=checkpoint_cfg['dir'],
+            checkpoint_interval=checkpoint_cfg['interval'],
+            checkpoint_prefix=checkpoint_cfg['prefix'],
+        )
+
+    @with_context
+    def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
+        """추출 결과를 Snowflake에 적재 (temp table -> MERGE)"""
+        columns = self.cfg.get_llm_extracted_columns()
+        pk_col = self.cfg.get_llm_extracted_pk_column()
+        non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
+
+        category = self.cfg.get_llm_source_category()
+        extracted_table = f"{self._stage_table(category)}{self.cfg.get_llm_extracted_suffix()}"
+
+        insert_data = prepare_insert_data(results, columns)
+        if not insert_data:
+            logger.warning('적재할 추출 데이터가 없습니다')
+            return
+
+        cursor.execute(build_ensure_extracted_table_sql(extracted_table, columns))
+
+        temp_table = f"{extracted_table}_STG_{self.logical_date.strftime('%Y%m%d')}"
+        cursor.execute(build_create_extract_temp_sql(temp_table, columns))
+        stage_insert_sql = build_extract_stage_insert_sql(temp_table, columns)
+        cursor.executemany(stage_insert_sql, insert_data)
+        cursor.execute(build_extract_merge_sql(extracted_table, temp_table, pk_col, non_pk_cols))
+        logger.info('추출 결과 적재 완료', count=len(insert_data))
+
+    @with_context
+    def join_extraction(self, cursor: SnowflakeCursor):
+        """원본 EVENT + 추출 결과 LEFT JOIN -> 최종 stage 생성"""
+        category = self.cfg.get_llm_source_category()
+        pk_col = self.cfg.get_llm_extracted_pk_column()
+        non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
+
+        sql = build_extracted_join_sql(
+            base_table=self._stage_table(category),
+            extracted_suffix=self.cfg.get_llm_extracted_suffix(),
+            non_pk_columns=non_pk_cols,
+            pk_column=pk_col,
+        )
+        self._create_next_stage(cursor, category, sql)
+
+    def _cleanup_stages(self, cursor: SnowflakeCursor):
+        """중간 stage 테이블 전부 삭제"""
+        for category, current in self.stage.items():
+            for i in range(1, current + 1):
+                table = f'{category}_stage_{i:02d}'.upper()
+                cursor.execute(f'DROP TABLE IF EXISTS {table}')
+
+
+if __name__ == '__main__':
     import snowflake.connector
     from maude_early_alert.utils.secrets import get_secret
 
@@ -219,17 +318,32 @@ if __name__=='__main__':
         warehouse=secret['warehouse'],
     )
 
-    stage = {
-        'event': 0,
-        'udi': 0
-    }
-    pipeline = SilverPipeline(stage, pendulum.now())
+    pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now())
 
     try:
         cursor = conn.cursor()
+
+        # ── Silver 14단계 ──────────────────────────────────────────────
         pipeline.filter_dedup_rows(cursor)
         pipeline.flatten(cursor)
         pipeline.filter_scoping(cursor)
+        pipeline.combine_mdr_text(cursor)
+        pipeline.extract_primary_udi_di(cursor)
+        pipeline.select_columns(cursor)
+        pipeline.impute_missing_values(cursor)
+        pipeline.clean_values(cursor)
+        pipeline.apply_company_alias(cursor)
+        pipeline.fuzzy_match_manufacturer(cursor)
+        pipeline.cast_types(cursor)
+        pipeline.extract_udi_di(cursor)
+        pipeline.match_udi(cursor)
+        pipeline.select_columns(cursor, final=True)
+
+        # ── LLM 추출 4단계 ────────────────────────────────────────────
+        records = pipeline.extract_mdr_text(cursor)
+        results = pipeline.run_llm_extraction(records)
+        pipeline.load_extraction_results(cursor, results)
+        pipeline.join_extraction(cursor)
 
     finally:
         cursor.close()

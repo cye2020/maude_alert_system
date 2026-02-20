@@ -94,6 +94,7 @@ class SilverConfig:
         self._transform = load_config('preprocess/transform')
         self._imputation = load_config('preprocess/imputation')
         self._matching = load_config('preprocess/matching')
+        self._llm_extraction = load_config('preprocess/llm_extraction')
         self._storage = load_config('storage')
 
     @property
@@ -325,6 +326,59 @@ class SilverConfig:
                     **{k: v for k, v in step.items() if k in ('where', 'qualify')},
                 }
         return result
+
+    # ==================== llm_extraction 설정 ====================
+
+    def get_llm_model_config(self) -> dict:
+        """LLM 모델 설정 반환 (path, tensor_parallel_size, ...)"""
+        return self._llm_extraction['model']
+
+    def get_llm_sampling_config(self) -> dict:
+        """LLM 샘플링 파라미터 반환 (temperature, max_tokens, top_p)"""
+        return self._llm_extraction['sampling']
+
+    def get_llm_prompt_mode(self) -> str:
+        """프롬프트 모드 반환 (general | sample)"""
+        return self._llm_extraction['prompt_mode']
+
+    def get_llm_checkpoint_config(self) -> dict:
+        """체크포인트 설정 반환 (interval, prefix)"""
+        return self._llm_extraction['checkpoint']
+
+    def get_llm_source_category(self) -> str:
+        """LLM 추출 대상 카테고리 반환 (e.g. 'event')"""
+        return self._llm_extraction['source']['category']
+
+    def get_llm_source_columns(self) -> List[str]:
+        """추출 대상 컬럼 목록 반환 (e.g. ['MDR_TEXT', 'PRODUCT_PROBLEMS'])"""
+        return self._llm_extraction['source']['columns']
+
+    def get_llm_source_where(self) -> Optional[str]:
+        """추출 WHERE 절 반환 (없으면 None)"""
+        return self._llm_extraction['source'].get('where')
+
+    def get_llm_extracted_suffix(self) -> str:
+        """추출 결과 테이블 suffix 반환 (e.g. '_EXTRACTED')"""
+        return self._llm_extraction['extracted']['suffix']
+
+    def get_llm_extracted_columns(self) -> List[dict]:
+        """추출 결과 테이블 컬럼 스키마 반환"""
+        return self._llm_extraction['extracted']['columns']
+
+    def get_llm_extracted_pk_column(self) -> str:
+        """추출 결과 테이블의 primary key 컬럼명 반환"""
+        for col in self._llm_extraction['extracted']['columns']:
+            if col.get('primary_key'):
+                return col['name']
+        raise ValueError("llm_extraction.yaml: extracted.columns에 primary_key가 없습니다")
+
+    def get_llm_extracted_non_pk_columns(self) -> List[str]:
+        """추출 결과 테이블의 pk 외 컬럼명 목록 반환"""
+        return [
+            col['name']
+            for col in self._llm_extraction['extracted']['columns']
+            if not col.get('primary_key')
+        ]
 
 
 # ==================== ConfigManager (싱글톤 패턴) ====================
