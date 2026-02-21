@@ -53,6 +53,7 @@ class SilverPipeline(SnowflakeBase):
         database = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
         super().__init__(database, schema)
+        logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
 
     def _stage_table(self, category: str) -> str:
         """현재 stage 테이블명 반환 (e.g. 'EVENT_STAGE_01')"""
@@ -66,12 +67,16 @@ class SilverPipeline(SnowflakeBase):
         """다음 stage 테이블 생성 후 self.stage 업데이트"""
         self.stage[category] += 1
         next_table = self._stage_table(category)
-        cursor.execute(f'CREATE OR REPLACE TABLE {next_table} AS\n{sql}')
+        logger.debug('stage 테이블 생성 중', table=next_table)
+        full_sql = f'CREATE OR REPLACE TABLE {next_table} AS\n{sql}'
+        cursor.execute(full_sql)
+        logger.info(f'{category}stage 테이블 생성 완료', table=next_table)
 
     def _filter_step(self, key: str, cursor: SnowflakeCursor):
         """filtering.yaml의 key에 해당하는 스텝을 category별로 실행"""
         for category, step in self.cfg.get_filtering_step(key).items():
             source = self._stage_table(category)
+            logger.info('필터 스텝 실행', key=key, category=category, type=step['type'], source=source)
             if step['type'] == 'standalone':
                 sql = build_filter_sql(source, **{k: v for k, v in step.items() if k in ('where', 'qualify')})
             else:  # chain
@@ -80,18 +85,22 @@ class SilverPipeline(SnowflakeBase):
 
     @with_context
     def filter_dedup_rows(self, cursor: SnowflakeCursor):
+        logger.info('중복 행 필터링 시작')
         self._filter_step('DEDUP', cursor)
 
     @with_context
     def filter_scoping(self, cursor: SnowflakeCursor):
+        logger.info('스코핑 필터링 시작')
         self._filter_step('SCOPING', cursor)
 
     @with_context
     def filter_quality(self, cursor: SnowflakeCursor):
+        logger.info('품질 필터링 시작')
         self._filter_step('QUALITY_FILTER', cursor)
 
     def _fetch_schema(self, cursor: SnowflakeCursor, table_name: str):
         """top-level 키/타입 + 배열별 nested 스키마 조회"""
+        logger.debug('스키마 조회 중', table=table_name)
         cursor.execute(build_top_keys_sql(table_name))
         top = {str(k): str(t) for k, t in cursor.fetchall() if k is not None}
 
@@ -101,12 +110,14 @@ class SilverPipeline(SnowflakeBase):
                 cursor.execute(build_array_keys_sql(table_name, name))
                 array_schemas[name] = parse_array_keys_result(cursor.fetchall())
 
+        logger.debug('스키마 조회 완료', table=table_name, top_keys=len(top), array_keys=len(array_schemas))
         return top, array_schemas
 
     @with_context
     def flatten(self, cursor: SnowflakeCursor):
         for category in self.cfg.get_flatten_categories():
             table_name = self._stage_table(category)
+            logger.info('flatten 시작', category=category, source=table_name)
             flatten_cfg = self.cfg.get_flatten_config(category)
             top, array_schemas = self._fetch_schema(cursor, table_name)
 
@@ -126,29 +137,33 @@ class SilverPipeline(SnowflakeBase):
                 scalar_keys=scalar_keys,
                 **strategy_keys,
             )
-            print(flatten_sql)
+            logger.debug('flatten SQL 생성 완료', category=category, sql=flatten_sql)
             self._create_next_stage(cursor, category, flatten_sql)
 
     @with_context
     def combine_mdr_text(self, cursor: SnowflakeCursor):
         category = self.cfg.get_combine_category()
+        logger.info('MDR 텍스트 결합 시작', category=category, source=self._stage_table(category))
         sql = build_combine_mdr_text_sql(self._stage_table(category), **self.cfg.get_combine_columns())
         self._create_next_stage(cursor, category, sql)
 
     @with_context
     def extract_primary_udi_di(self, cursor: SnowflakeCursor):
         category = self.cfg.get_primary_category()
+        logger.info('primary UDI-DI 추출 시작', category=category, source=self._stage_table(category))
         sql = build_primary_udi_di_sql(self._stage_table(category), **self.cfg.get_primary_columns())
         self._create_next_stage(cursor, category, sql)
 
     @with_context
     def extract_udi_di(self, cursor: SnowflakeCursor):
         category = self.cfg.get_extract_udi_di_category()
+        logger.info('UDI-DI 추출 시작', category=category, source=self._stage_table(category))
         sql = build_extract_udi_di_sql(self._stage_table(category), **self.cfg.get_extract_udi_di_columns())
         self._create_next_stage(cursor, category, sql)
 
     @with_context
     def apply_company_alias(self, cursor: SnowflakeCursor):
+        logger.info('회사 별칭 적용 시작', source=self._stage_table('event'))
         sql = build_apply_company_alias_sql(
             source=self._stage_table('event'),
             company_col=self.cfg.get_ma_company_col(),
@@ -160,12 +175,14 @@ class SilverPipeline(SnowflakeBase):
     def fuzzy_match_manufacturer(self, cursor: SnowflakeCursor):
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
         target_category = self.cfg.get_fuzzy_match_target_category()
+        threshold = self.cfg.get_fuzzy_match_threshold()
+        logger.info('제조사 퍼지 매칭 시작', target=target_category, threshold=threshold)
         sql = build_manufacturer_fuzzy_match_sql(
             target=self._stage_table(target_category),
             source=self._stage_table(self.cfg.get_fuzzy_match_source_category()),
             mfr_col=self.cfg.get_fuzzy_match_mfr_col(),
             udf_schema=udf_schema,
-            threshold=self.cfg.get_fuzzy_match_threshold(),
+            threshold=threshold,
         )
         self._create_next_stage(cursor, target_category, sql)
 
@@ -173,6 +190,7 @@ class SilverPipeline(SnowflakeBase):
     def select_columns(self, cursor: SnowflakeCursor, final: bool = False):
         categories = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
         get_cols = self.cfg.get_final_cols if final else self.cfg.get_column_cols
+        logger.info('컬럼 선택 시작', final=final, categories=categories)
         for category in categories:
             sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
             self._create_next_stage(cursor, category, sql)
@@ -180,6 +198,7 @@ class SilverPipeline(SnowflakeBase):
     @with_context
     def impute_missing_values(self, cursor: SnowflakeCursor):
         for category in self.cfg.get_imputation_categories():
+            logger.info('결측값 대체 시작', category=category, source=self._stage_table(category))
             sql = build_mode_fill_sql(
                 group_to_target=self.cfg.get_imputation_mode(category),
                 table_name=self._stage_table(category),
@@ -191,6 +210,7 @@ class SilverPipeline(SnowflakeBase):
     def clean_values(self, cursor: SnowflakeCursor):
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
         for category in self.cfg.get_cleaning_categories():
+            logger.info('값 정제 시작', category=category, source=self._stage_table(category))
             sql = build_clean_sql(
                 table_name=self._stage_table(category),
                 config=self.cfg.get_cleaning_config(category),
@@ -201,6 +221,7 @@ class SilverPipeline(SnowflakeBase):
     @with_context
     def cast_types(self, cursor: SnowflakeCursor):
         for category in self.cfg.get_column_categories():
+            logger.info('타입 캐스팅 시작', category=category, source=self._stage_table(category))
             sql = build_type_cast_sql(
                 columns=self.cfg.get_column_cols(category),
                 input_table=self._stage_table(category),
@@ -211,6 +232,7 @@ class SilverPipeline(SnowflakeBase):
     def match_udi(self, cursor: SnowflakeCursor):
         target_cat = self.cfg.get_matching_target_category()
         source_cat = self.cfg.get_matching_source_category()
+        logger.info('UDI 매칭 시작', target=target_cat, source=source_cat)
         sql = build_matching_sql(
             target=self._stage_table(target_cat),
             source=self._stage_table(source_cat),
@@ -224,6 +246,7 @@ class SilverPipeline(SnowflakeBase):
     def extract_mdr_text(self, cursor: SnowflakeCursor) -> List[Dict]:
         """source 테이블에서 MDR_TEXT 추출 + unique 처리, dict 리스트 반환"""
         category = self.cfg.get_llm_source_category()
+        logger.info('MDR_TEXT 추출 시작', category=category, source=self._stage_table(category))
         sql = build_mdr_text_extract_sql(
             table_name=self._stage_table(category),
             columns=self.cfg.get_llm_source_columns(),
@@ -241,22 +264,26 @@ class SilverPipeline(SnowflakeBase):
 
     def run_llm_extraction(self, records: List) -> List[dict]:
         """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
+        logger.info('LLM 추출 시작', record_count=len(records))
         model_cfg = self.cfg.get_llm_model_config()
         sampling_cfg = self.cfg.get_llm_sampling_config()
         checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
         prompt = get_prompt(self.cfg.get_llm_prompt_mode())
 
+        logger.debug('LLM 모델 설정', model_cfg=model_cfg, checkpoint_dir=checkpoint_cfg['dir'])
         extractor = MDRExtractor(
             **model_cfg,
             sampling_config=sampling_cfg,
             prompt=prompt,
         )
-        return extractor.process_batch(
+        results = extractor.process_batch(
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_prefix=checkpoint_cfg['prefix'],
         )
+        logger.info('LLM 추출 완료', result_count=len(results))
+        return results
 
     @with_context
     def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
@@ -273,9 +300,11 @@ class SilverPipeline(SnowflakeBase):
             logger.warning('적재할 추출 데이터가 없습니다')
             return
 
+        logger.info('추출 결과 적재 시작', extracted_table=extracted_table, count=len(insert_data))
         cursor.execute(build_ensure_extracted_table_sql(extracted_table, columns))
 
         temp_table = f"{extracted_table}_STG_{self.logical_date.strftime('%Y%m%d')}"
+        logger.debug('임시 스테이징 테이블 생성', temp_table=temp_table)
         cursor.execute(build_create_extract_temp_sql(temp_table, columns))
         stage_insert_sql = build_extract_stage_insert_sql(temp_table, columns)
         cursor.executemany(stage_insert_sql, insert_data)
@@ -286,6 +315,7 @@ class SilverPipeline(SnowflakeBase):
     def join_extraction(self, cursor: SnowflakeCursor):
         """원본 EVENT + 추출 결과 LEFT JOIN -> 최종 stage 생성"""
         category = self.cfg.get_llm_source_category()
+        logger.info('추출 결과 JOIN 시작', category=category, source=self._stage_table(category))
         pk_col = self.cfg.get_llm_extracted_pk_column()
         non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
 
@@ -299,15 +329,21 @@ class SilverPipeline(SnowflakeBase):
 
     def _cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
+        logger.info('중간 stage 테이블 정리 시작', stage=dict(self.stage))
         for category, current in self.stage.items():
             for i in range(1, current + 1):
                 table = f'{category}_stage_{i:02d}'.upper()
+                logger.debug('stage 테이블 삭제', table=table)
                 cursor.execute(f'DROP TABLE IF EXISTS {table}')
+        logger.info('중간 stage 테이블 정리 완료')
 
 
 if __name__ == '__main__':
     import snowflake.connector
     from maude_early_alert.utils.secrets import get_secret
+    from maude_early_alert.logging_config import configure_logging
+
+    configure_logging(level='INFO', log_file='silver.log')
 
     secret = get_secret('snowflake/de')
 
@@ -318,17 +354,17 @@ if __name__ == '__main__':
         warehouse=secret['warehouse'],
     )
 
-    pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now())
+    pipeline = SilverPipeline(stage={'event': 4, 'udi': 4}, logical_date=pendulum.now())
 
+    cursor = conn.cursor()
     try:
-        cursor = conn.cursor()
-
+        logger.info('Silver 파이프라인 시작')
         # ── Silver 14단계 ──────────────────────────────────────────────
-        pipeline.filter_dedup_rows(cursor)
-        pipeline.flatten(cursor)
-        pipeline.filter_scoping(cursor)
-        pipeline.combine_mdr_text(cursor)
-        pipeline.extract_primary_udi_di(cursor)
+        # pipeline.filter_dedup_rows(cursor)
+        # pipeline.flatten(cursor)
+        # pipeline.filter_scoping(cursor)
+        # pipeline.combine_mdr_text(cursor)
+        # pipeline.extract_primary_udi_di(cursor)
         pipeline.select_columns(cursor)
         pipeline.impute_missing_values(cursor)
         pipeline.clean_values(cursor)
@@ -338,13 +374,20 @@ if __name__ == '__main__':
         pipeline.extract_udi_di(cursor)
         pipeline.match_udi(cursor)
         pipeline.select_columns(cursor, final=True)
+        logger.info('Silver 14단계 완료')
 
         # ── LLM 추출 4단계 ────────────────────────────────────────────
+        logger.info('LLM 추출 단계 시작')
         records = pipeline.extract_mdr_text(cursor)
         results = pipeline.run_llm_extraction(records)
         pipeline.load_extraction_results(cursor, results)
         pipeline.join_extraction(cursor)
 
+        logger.info('Silver 파이프라인 완료')
+
+    except Exception:
+        logger.error('Silver 파이프라인 실패', exc_info=True)
+        raise
     finally:
         cursor.close()
         conn.close()

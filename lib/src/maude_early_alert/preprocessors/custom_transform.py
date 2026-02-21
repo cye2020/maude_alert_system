@@ -9,7 +9,7 @@ _INDENT = '    '  # 4-space indent
 
 
 def build_combine_mdr_text_sql(source: str, text_col: str, type_col: str, combine_col: str) -> str:
-    """mdr_text_text_type_codes와 mdr_text_texts 배열을 결합하여 mdr_text 컬럼 생성
+    """MDR_TEXT_TEXT_TYPE_CODE와 MDR_TEXT_TEXT 배열을 결합하여 MDR_TEXT 컬럼 생성
 
     결과 형식:
         [code1]

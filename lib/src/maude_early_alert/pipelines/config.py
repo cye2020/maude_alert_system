@@ -135,12 +135,12 @@ class SilverConfig:
         return self._storage['snowflake']['transform']['schema']
 
     def get_snowflake_udf_database(self) -> str:
-        """Silver transform 데이터베이스"""
-        return self._storage['snowflake']['transform']['database']
+        """UDF 데이터베이스"""
+        return self._storage['snowflake']['udf']['database']
 
     def get_snowflake_udf_schema(self) -> str:
-        """Silver transform 스키마"""
-        return self._storage['snowflake']['transform']['schema']
+        """UDF 스키마"""
+        return self._storage['snowflake']['udf']['schema']
 
     # ==================== transform 설정 ====================
 

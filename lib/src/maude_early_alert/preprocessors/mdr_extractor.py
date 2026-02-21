@@ -87,7 +87,6 @@ class MAUDEExtractor:
             enforce_eager=False,
             enable_prefix_caching=enable_prefix_caching,
             disable_log_stats=False,
-            swap_space=4,
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -125,7 +124,7 @@ class MAUDEExtractor:
                 messages,
                 tokenize=False,
                 add_generation_prompt=True,
-                enable_thinking=True,   # Qwen3 thinking mode 활성화
+                enable_thinking=False,
             )
             prompts.append(formatted)
         return prompts

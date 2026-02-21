@@ -12,7 +12,7 @@ model:
 # === 샘플링 파라미터 ===
 sampling:
   temperature: 0.1
-  max_tokens: 512
+  max_tokens: 256
   top_p: 0.95
 
 # === 프롬프트 모드 (텍스트는 prompt.py에 유지) ===

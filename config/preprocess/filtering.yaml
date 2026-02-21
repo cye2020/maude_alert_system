@@ -14,7 +14,7 @@ event:
     type: standalone
     where:
       - "device_openfda_device_class = '3'"
-      - "ARRAY_SIZE(mdr_text_texts) > 0"
+      - "ARRAY_SIZE(MDR_TEXT_TEXT) > 0"
 
   QUALITY_FILTER:
     description: "품질 필터링 + 보고서 중복 제거 + 논리 일관성 (CTE 체인)"

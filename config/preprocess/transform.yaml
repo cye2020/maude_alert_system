@@ -1,8 +1,8 @@
 combine:
   category: event
   columns:
-    text_col: MDR_TEXT_TEXTS
-    type_col: MDR_TEXT_TEXT_TYPE_CODES
+    text_col: MDR_TEXT_TEXT
+    type_col: MDR_TEXT_TEXT_TYPE_CODE
     combine_col: MDR_TEXT
 
 primary:
@@ -14,7 +14,7 @@ primary:
     primary_col: PRIMARY_UDI_DI
 
 extract_udi_di:
-  category: udi
+  category: event
   columns:
     public_col: UDI_PUBLIC
     target_col: UDI_DI

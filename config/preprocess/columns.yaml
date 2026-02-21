@@ -134,3 +134,6 @@ udi:
     - name: VERSION_OR_MODEL_NUMBER
       type: VARCHAR
       alias: MODEL_NUMBER
+    - name: PRIMARY_UDI_DI
+      type: VARCHAR
+      alias: PRIMARY_UDI_DI
