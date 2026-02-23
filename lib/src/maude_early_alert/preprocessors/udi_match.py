@@ -301,21 +301,29 @@ def build_matching_sql(
         + [match_status_col]
     )
 
+    _repl_cond = f"m.{match_status_col} IN ('{status['udi_success']}', '{status['meta_success']}')"
     repl_udi = (
-        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"CASE WHEN {_repl_cond} "
         f"THEN m.{primary_udi_di} ELSE e.{udi_di} END AS {udi_di}"
     )
     repl_mfr = (
-        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"CASE WHEN {_repl_cond} "
         f"THEN m.{source_manufacturer} ELSE e.{manufacturer} END AS {manufacturer}"
     )
     repl_dev = ",\n                ".join(
-        f"CASE WHEN m.{match_status_col} = '{status['udi_success']}' "
+        f"CASE WHEN {_repl_cond} "
         f"THEN m.{udi_col_prefix}{c} ELSE e.{c} END AS {c}"
         for c in device_cols
     )
+    _noudi_cond = f"m_no.{match_status_col} = '{status['meta_success']}'"
     noudi_orig = ",\n                ".join(
-        [f"e.{udi_di}", f"e.{manufacturer}"] + [f"e.{c}" for c in device_cols]
+        [
+            f"CASE WHEN {_noudi_cond} THEN m_no.{primary_udi_di} ELSE e.{udi_di} END AS {udi_di}",
+            f"CASE WHEN {_noudi_cond} THEN m_no.{source_manufacturer} ELSE e.{manufacturer} END AS {manufacturer}",
+        ] + [
+            f"CASE WHEN {_noudi_cond} THEN m_no.{udi_col_prefix}{c} ELSE e.{c} END AS {c}"
+            for c in device_cols
+        ]
     )
     noudi_join = " AND ".join(
         [f"e.{manufacturer} = m_no.{manufacturer}"]

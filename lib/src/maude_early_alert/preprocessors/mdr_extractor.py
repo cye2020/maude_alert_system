@@ -5,6 +5,7 @@
 # Windows vllm-windows wheel 사용 시 PyTorch 소스 빌드 없이 쓰려면 필요 (libuv 미지원 빌드)
 import os
 os.environ.setdefault("USE_LIBUV", "0")
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # ======================
 # 표준 라이브러리
@@ -215,6 +216,42 @@ class MAUDEExtractor:
             tokens_per_sec=f"{tokens_per_sec:.0f} tokens/s",
         )
 
+    def _load_checkpoint_cache(
+        self,
+        checkpoint_dir: Path,
+        checkpoint_prefix: str,
+    ) -> Dict[str, dict]:
+        """기존 체크포인트 파일들을 mdr_text 기반 캐시 딕셔너리로 로드.
+
+        .json + .bak 파일을 모두 읽어 {mdr_text: result} 딕셔너리를 반환합니다.
+        .json 파일은 .bak으로 rename하여 다음 실행 시 위치 기반 resume을 방지합니다.
+        (데이터는 .bak으로 보존되어 캐시로 재활용 가능)
+        """
+        cache: Dict[str, dict] = {}
+        existing_json = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.json'))
+        existing_bak  = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.bak'))
+        existing      = existing_json + existing_bak
+
+        if not existing:
+            return cache
+
+        for ckpt_path in existing:
+            with open(ckpt_path, encoding='utf-8') as f:
+                for result in json.load(f):
+                    mdr = result.get('_mdr_text', '')
+                    if mdr:
+                        cache[mdr] = result
+
+        for ckpt_path in existing_json:
+            ckpt_path.rename(ckpt_path.with_suffix('.bak'))
+
+        logger.debug(
+            "Cache loaded from existing checkpoints",
+            cached_count=len(cache),
+            checkpoint_files=len(existing),
+        )
+        return cache
+
     # --------------------------------------------------------------------------
     # 공개 메서드
     # --------------------------------------------------------------------------
@@ -297,22 +334,11 @@ class MAUDEExtractor:
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # 기존 체크포인트 탐지 → resume
-        num_chunks = (len(mdr_records) - 1) // checkpoint_interval + 1
+        num_chunks  = (len(mdr_records) - 1) // checkpoint_interval + 1
         all_results: List[list] = []
-        resume_from = 0
 
-        existing = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.json'))
-        if existing:
-            for ckpt_path in existing:
-                with open(ckpt_path, encoding='utf-8') as f:
-                    all_results.append(json.load(f))
-            resume_from = len(all_results)
-            logger.debug(
-                "Resume: chunks loaded",
-                resume_from=resume_from,
-                last_checkpoint=existing[-1].name,
-            )
+        # 내용 기반 resume: 기존 체크포인트 → {mdr_text: result} 캐시
+        cache = self._load_checkpoint_cache(checkpoint_dir, checkpoint_prefix)
 
         logger.debug(
             "vLLM Batch Processing Started",
@@ -320,49 +346,59 @@ class MAUDEExtractor:
             num_chunks=num_chunks,
             checkpoint_interval=checkpoint_interval,
             max_retries=self.max_retries,
-            resuming_from_chunk=resume_from + 1 if resume_from else None,
+            cache_hits_available=len(cache),
         )
 
         overall_start = time.time()
+        infer_chunks  = 0  # 실제 LLM 추론이 발생한 청크 수 (ETA 계산용)
 
         try:
-            for chunk_idx in trange(num_chunks, desc="Processing chunks", initial=resume_from, total=num_chunks):
-                if chunk_idx < resume_from:
-                    continue
-
+            for chunk_idx in trange(num_chunks, desc="Processing chunks"):
                 start_idx = chunk_idx * checkpoint_interval
                 end_idx   = min((chunk_idx + 1) * checkpoint_interval, len(mdr_records))
                 chunk     = mdr_records[start_idx:end_idx]
 
-                logger.debug("Processing chunk", chunk=chunk_idx + 1, total=num_chunks, row_start=start_idx, row_end=end_idx - 1)
+                # 캐시 미스 레코드만 LLM 추론
+                to_infer = [r for r in chunk if r['mdr_text'] not in cache]
 
-                chunk_start  = time.time()
-                chunk_result = self.process_with_retry(chunk)
+                chunk_start = time.time()
+                if to_infer:
+                    new_results = self.process_with_retry(to_infer)
+                    for r, res in zip(to_infer, new_results):
+                        cache[r['mdr_text']] = res
+                    infer_chunks += 1
+
+                chunk_result = [cache[r['mdr_text']] for r in chunk]
                 all_results.append(chunk_result)
 
-                elapsed  = time.time() - chunk_start
-                success  = sum(1 for r in chunk_result if r.get('_success', False))
-                throughput = len(chunk) / elapsed if elapsed > 0 else 0
+                elapsed   = time.time() - chunk_start
+                success   = sum(1 for r in chunk_result if r.get('_success', False))
+                cache_hit = len(chunk) - len(to_infer)
 
-                chunks_done_this_session = chunk_idx + 1 - resume_from
                 elapsed_session = time.time() - overall_start
-                avg_per_chunk = elapsed_session / chunks_done_this_session
-                remaining_chunks = num_chunks - chunk_idx - 1
-                eta_seconds = avg_per_chunk * remaining_chunks
-                eta_kst = pendulum.now("Asia/Seoul").add(seconds=int(eta_seconds))
+                if infer_chunks > 0:
+                    avg_infer     = elapsed_session / infer_chunks
+                    remaining     = num_chunks - chunk_idx - 1
+                    eta_seconds   = avg_infer * remaining
+                    eta_kst       = pendulum.now("Asia/Seoul").add(seconds=int(eta_seconds))
+                    remaining_str = f"{eta_seconds / 3600:.1f}h"
+                    eta_str       = eta_kst.format("MM-DD HH:mm")
+                else:
+                    remaining_str = "N/A"
+                    eta_str       = "N/A"
 
                 logger.debug(
                     "Chunk completed",
                     chunk=chunk_idx + 1,
+                    total_chunks=num_chunks,
                     success=success,
-                    total=len(chunk),
+                    cache_hit=cache_hit,
+                    inferred=len(to_infer),
                     success_rate=f"{100 * success / len(chunk):.1f}%",
                     elapsed=f"{elapsed:.1f}s",
-                    throughput=f"{throughput:.2f} samples/s",
                     elapsed_session=f"{elapsed_session / 3600:.2f}h",
-                    remaining_chunks=remaining_chunks,
-                    remaining_time=f"{eta_seconds / 3600:.1f}h",
-                    eta_kst=eta_kst.format("MM-DD HH:mm"),
+                    remaining_time=remaining_str,
+                    eta_kst=eta_str,
                 )
 
                 # 청크 결과를 JSON으로 저장 (장애 발생 시 복구 가능)

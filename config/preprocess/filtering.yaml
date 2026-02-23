@@ -47,6 +47,8 @@ event:
         from: dedup_clean
         where:
           - "adverse_event_flag = (event_type IN ('Death', 'Injury'))"
+        qualify:
+          - "ROW_NUMBER() OVER (PARTITION BY MDR_REPORT_KEY, UDI_DI ORDER BY MDR_REPORT_KEY) = 1"
     final: logical
 
 udi:

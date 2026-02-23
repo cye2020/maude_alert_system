@@ -354,7 +354,7 @@ if __name__ == '__main__':
         warehouse=secret['warehouse'],
     )
 
-    pipeline = SilverPipeline(stage={'event': 12, 'udi': 7}, logical_date=pendulum.now())
+    pipeline = SilverPipeline(stage={'event': 14, 'udi': 7}, logical_date=pendulum.now())
 
     cursor = conn.cursor()
     try:
