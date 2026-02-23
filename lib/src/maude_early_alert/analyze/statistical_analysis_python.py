@@ -10,8 +10,10 @@ from statsmodels.stats.multitest import multipletests
 from typing import Optional, Dict, Any
 from snowflake.connector.cursor import SnowflakeCursor
 
+from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
 
-class StatisticalAnalysisPython:
+
+class StatisticalAnalysisPython(SnowflakeBase):
     """
     Python 기반 통계 분석
     - scipy.stats.chi2_contingency → 정확한 카이제곱 검정
@@ -19,9 +21,13 @@ class StatisticalAnalysisPython:
     - statsmodels.multipletests → 정확한 FDR 보정 (Benjamini-Hochberg)
     """
 
+    def __init__(self, database: str, schema: str):
+        super().__init__(database, schema)
+
     # ──────────────────────────────────────────────
     # 1. Snowflake에서 분할표 읽기
     # ──────────────────────────────────────────────
+    @with_context
     def fetch_contingency(
         self,
         cursor: SnowflakeCursor,
@@ -197,6 +203,7 @@ class StatisticalAnalysisPython:
     # ──────────────────────────────────────────────
     # 5. 결과 Snowflake 적재
     # ──────────────────────────────────────────────
+    @with_context
     def write_to_snowflake(
         self,
         cursor: SnowflakeCursor,
@@ -322,18 +329,12 @@ if __name__ == "__main__":
     cursor = conn.cursor()
 
     # ------------------------------------------------------------------
-    # 1-1. Snowflake 컨텍스트 설정 (파이프라인과 동일)
-    # ------------------------------------------------------------------
-    cursor.execute("USE DATABASE MAUDE")
-    cursor.execute("USE SCHEMA SILVER")
-
-    # ------------------------------------------------------------------
     # 2. 통계 분석 실행
     #    - EVENT_STAGE_12_COMBINED 에서 PRODUCT_CODE, DEFECT_TYPE 가져옴
     #    - Python(scipy/statsmodels)으로 chi2, 오즈비, FDR 계산
     # ------------------------------------------------------------------
     try:
-        analyzer = StatisticalAnalysisPython()
+        analyzer = StatisticalAnalysisPython(database="MAUDE", schema="SILVER")
         result = analyzer.run(
             cursor=cursor,
             source_table="EVENT_STAGE_12_COMBINED",
