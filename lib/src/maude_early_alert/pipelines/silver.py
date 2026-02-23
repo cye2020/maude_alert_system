@@ -373,6 +373,7 @@ if __name__ == '__main__':
         # pipeline.cast_types(cursor)
         # pipeline.extract_udi_di(cursor)
         # pipeline.match_udi(cursor)
+        # pipeline.filter_quality(cursor)
         # pipeline.select_columns(cursor, final=True)
         logger.info('Silver 14단계 완료')
 
