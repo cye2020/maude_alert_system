@@ -343,7 +343,7 @@ if __name__ == '__main__':
     from maude_early_alert.utils.secrets import get_secret
     from maude_early_alert.logging_config import configure_logging
 
-    configure_logging(level='INFO', log_file='silver.log')
+    configure_logging(level='DEBUG', log_file='silver.log')
 
     secret = get_secret('snowflake/de')
 
@@ -354,7 +354,7 @@ if __name__ == '__main__':
         warehouse=secret['warehouse'],
     )
 
-    pipeline = SilverPipeline(stage={'event': 4, 'udi': 4}, logical_date=pendulum.now())
+    pipeline = SilverPipeline(stage={'event': 12, 'udi': 7}, logical_date=pendulum.now())
 
     cursor = conn.cursor()
     try:
@@ -365,15 +365,15 @@ if __name__ == '__main__':
         # pipeline.filter_scoping(cursor)
         # pipeline.combine_mdr_text(cursor)
         # pipeline.extract_primary_udi_di(cursor)
-        pipeline.select_columns(cursor)
-        pipeline.impute_missing_values(cursor)
-        pipeline.clean_values(cursor)
-        pipeline.apply_company_alias(cursor)
-        pipeline.fuzzy_match_manufacturer(cursor)
-        pipeline.cast_types(cursor)
-        pipeline.extract_udi_di(cursor)
-        pipeline.match_udi(cursor)
-        pipeline.select_columns(cursor, final=True)
+        # pipeline.select_columns(cursor)
+        # pipeline.impute_missing_values(cursor)
+        # pipeline.clean_values(cursor)
+        # pipeline.apply_company_alias(cursor)
+        # pipeline.fuzzy_match_manufacturer(cursor)
+        # pipeline.cast_types(cursor)
+        # pipeline.extract_udi_di(cursor)
+        # pipeline.match_udi(cursor)
+        # pipeline.select_columns(cursor, final=True)
         logger.info('Silver 14단계 완료')
 
         # ── LLM 추출 4단계 ────────────────────────────────────────────

@@ -31,7 +31,7 @@ class ConfigLoader:
         
         # 2. config + dags 디렉토리
         for parent in current.parents:
-            if (parent / 'config').exists() and (parent / 'dags').exists():
+            if (parent / 'config').exists():
                 return parent
         
         # 3. Fallback

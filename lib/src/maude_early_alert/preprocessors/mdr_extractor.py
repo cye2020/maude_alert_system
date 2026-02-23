@@ -14,6 +14,9 @@ import json
 import shutil
 import time
 from functools import partial
+import structlog
+
+import pendulum
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -31,6 +34,7 @@ from vllm.sampling_params import StructuredOutputsParams
 # ======================
 from maude_early_alert.preprocessors.prompt import Prompt, GeneralPrompt
 
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 class MAUDEExtractor:
     def __init__(
@@ -65,16 +69,17 @@ class MAUDEExtractor:
         self.prompt = prompt if prompt is not None else GeneralPrompt()
         self.extraction_model = self.prompt.get_extraction_model()
 
-        print("=" * 70)
-        print(f"Loading vLLM model: {model_path}")
-        print("=" * 70)
-        print(f"  - Tensor Parallel Size:  {tensor_parallel_size}")
-        print(f"  - GPU Memory Utilization: {gpu_memory_utilization}")
-        print(f"  - Max Model Length:       {max_model_len}")
-        print(f"  - Max Batched Tokens:     {max_num_batched_tokens}")
-        print(f"  - Max Num Seqs:           {max_num_seqs}")
-        print(f"  - Prefix Caching:         {enable_prefix_caching}")
-        print(f"  - Max Retries:            {max_retries}")
+        logger.debug(
+            "Loading vLLM model",
+            model_path=model_path,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            max_model_len=max_model_len,
+            max_num_batched_tokens=max_num_batched_tokens,
+            max_num_seqs=max_num_seqs,
+            enable_prefix_caching=enable_prefix_caching,
+            max_retries=max_retries,
+        )
 
         self.llm = LLM(
             model=model_path,
@@ -86,7 +91,7 @@ class MAUDEExtractor:
             trust_remote_code=True,
             enforce_eager=False,
             enable_prefix_caching=enable_prefix_caching,
-            disable_log_stats=False,
+            disable_log_stats=True,
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -94,7 +99,7 @@ class MAUDEExtractor:
             trust_remote_code=True,
         )
 
-        print(f"\n Model loaded successfully!\n")
+        logger.debug("Model loaded successfully")
 
         self.json_schema = self.extraction_model.model_json_schema()
         self.sampling_params = SamplingParams(
@@ -102,6 +107,7 @@ class MAUDEExtractor:
             max_tokens=sampling_config['max_tokens'],
             top_p=sampling_config['top_p'],
             structured_outputs=StructuredOutputsParams(json=self.json_schema),
+            truncate_prompt_tokens=max_model_len - sampling_config['max_tokens'],
         )
 
     # --------------------------------------------------------------------------
@@ -197,15 +203,16 @@ class MAUDEExtractor:
         return results, stats
 
     def _print_batch_stats(self, stats: dict):
-        """배치 처리 통계 한 줄 출력."""
-        throughput  = stats['num_samples'] / stats['batch_time'] if stats['batch_time'] > 0 else 0
+        """배치 처리 통계 출력."""
+        throughput   = stats['num_samples'] / stats['batch_time'] if stats['batch_time'] > 0 else 0
         total_tokens = stats['total_input_tokens'] + stats['total_output_tokens']
         tokens_per_sec = total_tokens / stats['batch_time'] if stats['batch_time'] > 0 else 0
-        print(
-            f"  Batch: {stats['num_samples']:4d} samples | "
-            f"Time: {stats['batch_time']:6.2f}s | "
-            f"Throughput: {throughput:5.1f} samples/s | "
-            f"{tokens_per_sec:6.0f} tokens/s"
+        logger.debug(
+            "Batch stats",
+            num_samples=stats['num_samples'],
+            batch_time=f"{stats['batch_time']:.2f}s",
+            throughput=f"{throughput:.1f} samples/s",
+            tokens_per_sec=f"{tokens_per_sec:.0f} tokens/s",
         )
 
     # --------------------------------------------------------------------------
@@ -234,7 +241,7 @@ class MAUDEExtractor:
 
         while pending and attempt <= self.max_retries:
             if attempt > 1:
-                print(f"\n  Retry attempt {attempt}: {len(pending)} failed samples")
+                logger.debug("Retry attempt", attempt=attempt, pending_count=len(pending))
 
             results, stats = self._generate_and_parse(pending)
             self._print_batch_stats(stats)
@@ -287,29 +294,47 @@ class MAUDEExtractor:
         Returns:
             전체 추출 결과 dict 리스트 (입력 순서 유지)
         """
-        print("=" * 70)
-        print("vLLM Batch Processing Started")
-        print("=" * 70)
-        print(f"  Total records:       {len(mdr_records):,}")
-        print(f"  Checkpoint interval: {checkpoint_interval:,} rows")
-        print(f"  Max retries/chunk:   {self.max_retries}")
-        print("=" * 70)
-
-        overall_start = time.time()
-        all_results: List[list] = []
-
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        try:
-            num_chunks = (len(mdr_records) - 1) // checkpoint_interval + 1
+        # 기존 체크포인트 탐지 → resume
+        num_chunks = (len(mdr_records) - 1) // checkpoint_interval + 1
+        all_results: List[list] = []
+        resume_from = 0
 
-            for chunk_idx in trange(num_chunks, desc="Processing chunks"):
+        existing = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.json'))
+        if existing:
+            for ckpt_path in existing:
+                with open(ckpt_path, encoding='utf-8') as f:
+                    all_results.append(json.load(f))
+            resume_from = len(all_results)
+            logger.debug(
+                "Resume: chunks loaded",
+                resume_from=resume_from,
+                last_checkpoint=existing[-1].name,
+            )
+
+        logger.debug(
+            "vLLM Batch Processing Started",
+            total_records=len(mdr_records),
+            num_chunks=num_chunks,
+            checkpoint_interval=checkpoint_interval,
+            max_retries=self.max_retries,
+            resuming_from_chunk=resume_from + 1 if resume_from else None,
+        )
+
+        overall_start = time.time()
+
+        try:
+            for chunk_idx in trange(num_chunks, desc="Processing chunks", initial=resume_from, total=num_chunks):
+                if chunk_idx < resume_from:
+                    continue
+
                 start_idx = chunk_idx * checkpoint_interval
                 end_idx   = min((chunk_idx + 1) * checkpoint_interval, len(mdr_records))
                 chunk     = mdr_records[start_idx:end_idx]
 
-                print(f"\nChunk {chunk_idx + 1}/{num_chunks} | Rows {start_idx:,}-{end_idx - 1:,}")
+                logger.debug("Processing chunk", chunk=chunk_idx + 1, total=num_chunks, row_start=start_idx, row_end=end_idx - 1)
 
                 chunk_start  = time.time()
                 chunk_result = self.process_with_retry(chunk)
@@ -319,10 +344,25 @@ class MAUDEExtractor:
                 success  = sum(1 for r in chunk_result if r.get('_success', False))
                 throughput = len(chunk) / elapsed if elapsed > 0 else 0
 
-                print(
-                    f"  Chunk completed: {success}/{len(chunk)} success "
-                    f"({100 * success / len(chunk):.1f}%) | "
-                    f"{elapsed:.1f}s | {throughput:.2f} samples/s"
+                chunks_done_this_session = chunk_idx + 1 - resume_from
+                elapsed_session = time.time() - overall_start
+                avg_per_chunk = elapsed_session / chunks_done_this_session
+                remaining_chunks = num_chunks - chunk_idx - 1
+                eta_seconds = avg_per_chunk * remaining_chunks
+                eta_kst = pendulum.now("Asia/Seoul").add(seconds=int(eta_seconds))
+
+                logger.debug(
+                    "Chunk completed",
+                    chunk=chunk_idx + 1,
+                    success=success,
+                    total=len(chunk),
+                    success_rate=f"{100 * success / len(chunk):.1f}%",
+                    elapsed=f"{elapsed:.1f}s",
+                    throughput=f"{throughput:.2f} samples/s",
+                    elapsed_session=f"{elapsed_session / 3600:.2f}h",
+                    remaining_chunks=remaining_chunks,
+                    remaining_time=f"{eta_seconds / 3600:.1f}h",
+                    eta_kst=eta_kst.format("MM-DD HH:mm"),
                 )
 
                 # 청크 결과를 JSON으로 저장 (장애 발생 시 복구 가능)
@@ -330,7 +370,7 @@ class MAUDEExtractor:
                 checkpoint_path = checkpoint_dir / checkpoint_file
                 with open(checkpoint_path, 'w', encoding='utf-8') as f:
                     json.dump(chunk_result, f, ensure_ascii=False, indent=2)
-                print(f"  Saved: {checkpoint_file}")
+                logger.debug("Checkpoint saved", checkpoint_file=checkpoint_file)
 
             # 청크 리스트를 단일 flat 리스트로 합치기
             flat_results = [r for chunk in all_results for r in chunk]
@@ -343,18 +383,18 @@ class MAUDEExtractor:
             avg_input     = sum(r.get('_input_tokens', 0) for r in successful) / max(success_count, 1)
             avg_output    = sum(r.get('_output_tokens', 0) for r in successful) / max(success_count, 1)
 
-            print(f"\n{'=' * 70}")
-            print("FINAL RESULTS")
-            print(f"{'=' * 70}")
-            print(f"  Total processed: {len(flat_results):,}")
-            print(f"  Success:         {success_count:,} ({100 * success_count / len(flat_results):.1f}%)")
-            print(f"  Failed:          {len(flat_results) - success_count:,}")
-            print(f"  Total time:      {total_time / 60:.1f} min ({total_time / 3600:.2f} hours)")
-            print(f"  Throughput:      {len(flat_results) / total_time:.2f} samples/s")
-            print(f"  Total tokens:    {total_tokens:,}")
-            print(f"  Avg input:       {avg_input:.1f} tokens")
-            print(f"  Avg output:      {avg_output:.1f} tokens")
-            print(f"{'=' * 70}")
+            logger.debug(
+                "Batch processing complete",
+                total_processed=len(flat_results),
+                success_count=success_count,
+                success_rate=f"{100 * success_count / len(flat_results):.1f}%",
+                failed_count=len(flat_results) - success_count,
+                total_time=f"{total_time / 60:.1f} min ({total_time / 3600:.2f} hours)",
+                throughput=f"{len(flat_results) / total_time:.2f} samples/s",
+                total_tokens=total_tokens,
+                avg_input_tokens=f"{avg_input:.1f}",
+                avg_output_tokens=f"{avg_output:.1f}",
+            )
 
             gc.collect()
             if torch.cuda.is_available():
@@ -368,8 +408,7 @@ class MAUDEExtractor:
             return flat_results
 
         except KeyboardInterrupt:
-            print("\n\n처리가 중단되었습니다.")
-            print(f"부분 결과는 체크포인트에 보존: {checkpoint_dir}")
+            logger.debug("Processing interrupted", checkpoint_dir=str(checkpoint_dir))
             if all_results:
                 return [r for chunk in all_results for r in chunk]
             raise
@@ -423,9 +462,8 @@ if __name__ == "__main__":
         checkpoint_prefix="test",
     )
 
-    print("\n=== 결과 ===")
+    logger.debug("Results")
     for record, result in zip(SAMPLE_RECORDS, results):
-        print(f"\n[입력] {record['mdr_text'][:80]}...")
-        print(f"[출력] {result}")
+        logger.debug("Result", input=record['mdr_text'][:80], output=result)
 
     del extractor

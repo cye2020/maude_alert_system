@@ -256,3 +256,6 @@ notebooks/**/.ipynb_checkpoints/
 
 # claude 확장
 .claude
+
+# 체크포인트
+checkpoint_*

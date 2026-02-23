@@ -1,11 +1,11 @@
 # === 모델 설정 ===
 model:
-  model_path: "Qwen/Qwen3-14B-AWQ"
+  model_path: "nvidia/Qwen3-8B-FP8"
   tensor_parallel_size: 1
-  gpu_memory_utilization: 0.80
+  gpu_memory_utilization: 0.90
   max_model_len: 16384
   max_num_batched_tokens: 32768
-  max_num_seqs: 128
+  max_num_seqs: 256
   max_retries: 2
   enable_prefix_caching: true
 
