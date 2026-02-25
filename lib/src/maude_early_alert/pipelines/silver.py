@@ -6,6 +6,7 @@ import structlog
 from snowflake.connector.cursor import SnowflakeCursor
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
+from maude_early_alert.loaders.snowflake_load import SnowflakeLoader, get_staging_table_name
 from maude_early_alert.pipelines.config import get_config
 from maude_early_alert.preprocessors.column_select import build_select_columns_sql
 from maude_early_alert.preprocessors.custom_transform import (
@@ -36,6 +37,7 @@ from maude_early_alert.preprocessors.text_extract import (
     prepare_insert_data,
     MDRExtractor,
 )
+from maude_early_alert.preprocessors.metadata_add import build_scd2_sql
 from maude_early_alert.preprocessors.prompt import get_prompt
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -265,6 +267,7 @@ class SilverPipeline(SnowflakeBase):
     def run_llm_extraction(self, records: List) -> List[dict]:
         """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
         logger.info('LLM 추출 시작', record_count=len(records))
+        category = self.cfg.get_llm_source_category()
         model_cfg = self.cfg.get_llm_model_config()
         sampling_cfg = self.cfg.get_llm_sampling_config()
         checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
@@ -280,7 +283,7 @@ class SilverPipeline(SnowflakeBase):
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
-            checkpoint_prefix=checkpoint_cfg['prefix'],
+            checkpoint_prefix=f"{checkpoint_cfg['prefix']}_{category}",
         )
         logger.info('LLM 추출 완료', result_count=len(results))
         return results
@@ -326,6 +329,54 @@ class SilverPipeline(SnowflakeBase):
             pk_column=pk_col,
         )
         self._create_next_stage(cursor, category, sql)
+
+    @with_context
+    def add_scd2_metadata(self, cursor: SnowflakeCursor):
+        """SCD2 메타데이터를 계산하여 {CATEGORY}_CURRENT 테이블에 MERGE 적재
+
+        각 카테고리의 현재 stage 테이블에서 SCD2 메타데이터를 계산한 뒤
+        staging 테이블을 경유하여 MAUDE.SILVER.{CATEGORY}_CURRENT에 MERGE합니다.
+
+        primary_key 기준:
+            MATCHED   → SCD2 메타데이터 컬럼 UPDATE (재처리 멱등성 보장)
+            NOT MATCHED → 신규 행 INSERT
+        """
+        db = self.cfg.get_snowflake_transform_database()
+        schema = self.cfg.get_snowflake_transform_schema()
+
+        for category in self.stage:
+            source = self._stage_table(category)
+            partition_by = self.cfg.get_silver_business_key(category)
+            pk_cols = self.cfg.get_silver_primary_key(category)
+            target = f'{db}.{schema}.{category}_CURRENT'.upper()
+            stg_table = get_staging_table_name(target)
+
+            logger.info(
+                'SCD2 메타데이터 추가 시작',
+                category=category, source=source,
+                partition_by=partition_by, target=target,
+            )
+
+            scd2_sql = build_scd2_sql(source, partition_by=partition_by)
+
+            # 1. staging 테이블 생성 (SCD2 계산 결과 임시 저장)
+            cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {stg_table} AS\n{scd2_sql}')
+
+            # 2. 컬럼 목록 조회 (MERGE INSERT 절 구성용)
+            cursor.execute(f'SELECT * FROM {stg_table} LIMIT 0')
+            all_cols = [desc[0] for desc in cursor.description]
+
+            # 3. 대상 테이블 없으면 구조만 복사해서 생성
+            cursor.execute(
+                f'CREATE TABLE IF NOT EXISTS {target} AS\n'
+                f'SELECT * FROM {stg_table} WHERE FALSE'
+            )
+
+            # 4. MERGE
+            merge_sql = SnowflakeLoader.build_merge_sql(target, stg_table, pk_cols, all_cols)
+            cursor.execute(merge_sql)
+
+            logger.info('SCD2 메타데이터 MERGE 완료', category=category, target=target)
 
     def _cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""

@@ -327,6 +327,39 @@ class SilverConfig:
                 }
         return result
 
+    # ==================== silver metadata 설정 ====================
+
+    def get_silver_primary_key(self, category: str) -> List[str]:
+        """Silver CURRENT 테이블의 MERGE primary key 컬럼 목록 반환
+
+        storage.yaml transform.tables.{CATEGORY}_CURRENT.primary_key 에서 읽습니다.
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            primary key 컬럼명 목록 (e.g. ['MDR_REPORT_KEY', 'UDI_DI', 'SOURCE_BATCH_ID'])
+        """
+        table = f'{category}_CURRENT'.upper()
+        pk = self._storage['snowflake']['transform']['tables'][table]['primary_key']
+        return [pk] if isinstance(pk, str) else list(pk)
+
+    def get_silver_business_key(self, category: str) -> Union[str, List[str]]:
+        """Silver CURRENT 테이블의 비즈니스 기준 키 컬럼명 반환
+
+        Silver 전처리 후 확정된 키를 사용합니다 (storage.yaml transform.tables).
+        Bronze의 business_primary_key와 다를 수 있습니다 (예: UDI_DI 추가 후 복합 키).
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            단일 키: str (e.g. 'mdr_report_key')
+            복합 키: List[str] (e.g. ['MDR_REPORT_KEY', 'UDI_DI'])
+        """
+        table = f'{category}_CURRENT'.upper()
+        return self._storage['snowflake']['transform']['tables'][table]['business_primary_key']
+
     # ==================== llm_extraction 설정 ====================
 
     def get_llm_model_config(self) -> dict:

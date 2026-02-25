@@ -13,6 +13,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import gc
 import json
 import shutil
+import sqlite3
 import time
 from functools import partial
 import structlog
@@ -216,41 +217,45 @@ class MAUDEExtractor:
             tokens_per_sec=f"{tokens_per_sec:.0f} tokens/s",
         )
 
-    def _load_checkpoint_cache(
+    def _open_cache_db(
         self,
         checkpoint_dir: Path,
         checkpoint_prefix: str,
-    ) -> Dict[str, dict]:
-        """기존 체크포인트 파일들을 mdr_text 기반 캐시 딕셔너리로 로드.
+    ) -> sqlite3.Connection:
+        """SQLite 캐시 DB를 열고 테이블을 초기화."""
+        db_path = checkpoint_dir / f'{checkpoint_prefix}.db'
+        conn = sqlite3.connect(str(db_path))
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS extraction_cache (
+                mdr_text TEXT PRIMARY KEY,
+                result   TEXT NOT NULL
+            )
+        ''')
+        conn.commit()
+        return conn
 
-        .json + .bak 파일을 모두 읽어 {mdr_text: result} 딕셔너리를 반환합니다.
-        .json 파일은 .bak으로 rename하여 다음 실행 시 위치 기반 resume을 방지합니다.
-        (데이터는 .bak으로 보존되어 캐시로 재활용 가능)
-        """
-        cache: Dict[str, dict] = {}
-        existing_json = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.json'))
-        existing_bak  = sorted(checkpoint_dir.glob(f'{checkpoint_prefix}_chunk*.bak'))
-        existing      = existing_json + existing_bak
-
-        if not existing:
-            return cache
-
-        for ckpt_path in existing:
-            with open(ckpt_path, encoding='utf-8') as f:
-                for result in json.load(f):
-                    mdr = result.get('_mdr_text', '')
-                    if mdr:
-                        cache[mdr] = result
-
-        for ckpt_path in existing_json:
-            ckpt_path.rename(ckpt_path.with_suffix('.bak'))
-
-        logger.debug(
-            "Cache loaded from existing checkpoints",
-            cached_count=len(cache),
-            checkpoint_files=len(existing),
-        )
+    def _load_cache_from_db(self, conn: sqlite3.Connection) -> Dict[str, dict]:
+        """DB에서 {mdr_text: result} 캐시 딕셔너리 로드."""
+        cache = {
+            mdr_text: json.loads(result_json)
+            for mdr_text, result_json in conn.execute(
+                'SELECT mdr_text, result FROM extraction_cache'
+            )
+        }
+        logger.debug("Cache loaded from DB", cached_count=len(cache))
         return cache
+
+    def _save_to_cache_db(self, conn: sqlite3.Connection, results: List[dict]) -> None:
+        """추론 결과를 DB에 upsert."""
+        conn.executemany(
+            'INSERT OR REPLACE INTO extraction_cache (mdr_text, result) VALUES (?, ?)',
+            [
+                (res['_mdr_text'], json.dumps(res, ensure_ascii=False))
+                for res in results
+                if res.get('_mdr_text')
+            ],
+        )
+        conn.commit()
 
     # --------------------------------------------------------------------------
     # 공개 메서드
@@ -319,14 +324,14 @@ class MAUDEExtractor:
         전체 레코드 배치 처리 (체크포인트 포함).
 
         대량 데이터를 checkpoint_interval 단위로 나눠 처리하고,
-        각 청크 결과를 JSON 파일로 저장합니다.
-        완료 후 체크포인트 디렉토리는 자동 삭제됩니다.
+        추론 결과를 SQLite DB({prefix}.db)에 mdr_text 기준으로 upsert합니다.
+        중단 후 재개 시 DB를 캐시로 재활용하며, 정상 완료 시 DB를 삭제합니다.
 
         Args:
             mdr_records: {'mdr_text': ..., 'product_problems': ...} dict 리스트
-            checkpoint_dir: 체크포인트 JSON 저장 디렉토리
+            checkpoint_dir: SQLite DB 저장 디렉토리
             checkpoint_interval: 한 청크당 레코드 수
-            checkpoint_prefix: 체크포인트 파일명 접두사
+            checkpoint_prefix: DB 파일명 접두사 ({prefix}.db)
 
         Returns:
             전체 추출 결과 dict 리스트 (입력 순서 유지)
@@ -334,11 +339,11 @@ class MAUDEExtractor:
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
+        conn = self._open_cache_db(checkpoint_dir, checkpoint_prefix)
+        cache = self._load_cache_from_db(conn)
+
         num_chunks  = (len(mdr_records) - 1) // checkpoint_interval + 1
         all_results: List[list] = []
-
-        # 내용 기반 resume: 기존 체크포인트 → {mdr_text: result} 캐시
-        cache = self._load_checkpoint_cache(checkpoint_dir, checkpoint_prefix)
 
         logger.debug(
             "vLLM Batch Processing Started",
@@ -364,6 +369,7 @@ class MAUDEExtractor:
                 chunk_start = time.time()
                 if to_infer:
                     new_results = self.process_with_retry(to_infer)
+                    self._save_to_cache_db(conn, new_results)
                     for r, res in zip(to_infer, new_results):
                         cache[r['mdr_text']] = res
                     infer_chunks += 1
@@ -401,13 +407,6 @@ class MAUDEExtractor:
                     eta_kst=eta_str,
                 )
 
-                # 청크 결과를 JSON으로 저장 (장애 발생 시 복구 가능)
-                checkpoint_file = f'{checkpoint_prefix}_chunk{chunk_idx + 1:03d}.json'
-                checkpoint_path = checkpoint_dir / checkpoint_file
-                with open(checkpoint_path, 'w', encoding='utf-8') as f:
-                    json.dump(chunk_result, f, ensure_ascii=False, indent=2)
-                logger.debug("Checkpoint saved", checkpoint_file=checkpoint_file)
-
             # 청크 리스트를 단일 flat 리스트로 합치기
             flat_results = [r for chunk in all_results for r in chunk]
 
@@ -436,15 +435,16 @@ class MAUDEExtractor:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            # 정상 완료 시에만 체크포인트 삭제
-            # (KeyboardInterrupt 등 비정상 종료 시 복구 가능하도록 보존)
+            # 정상 완료 시에만 DB/디렉토리 삭제
+            conn.close()
             if checkpoint_dir.exists():
                 shutil.rmtree(checkpoint_dir)
 
             return flat_results
 
         except KeyboardInterrupt:
-            logger.debug("Processing interrupted", checkpoint_dir=str(checkpoint_dir))
+            logger.debug("Processing interrupted, cache preserved in DB", checkpoint_dir=str(checkpoint_dir))
+            conn.close()
             if all_results:
                 return [r for chunk in all_results for r in chunk]
             raise

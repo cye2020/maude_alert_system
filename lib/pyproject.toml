@@ -45,7 +45,7 @@ udf = [
 airflow = [
     "apache-airflow",
     "apache-airflow-providers-snowflake",
-    "apache-airflow-providers-amazon
+    "apache-airflow-providers-amazon"
 ]
 all = [
     "maude-early-alert[llm,udf,airflow]",

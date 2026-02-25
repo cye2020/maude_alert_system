@@ -1,4 +1,4 @@
-from airflow.sdk import dag, task
+from airflow.sdk import dag, task, DAG
 from airflow.exceptions import AirflowException
 import pendulum
 import structlog
@@ -7,6 +7,7 @@ from typing import List
 
 from maude_early_alert.logging_config import configure_logging
 from maude_early_alert.pipelines.ingest import IngestPipeline
+from maude_early_alert.assets import MAUDE_S3_ASSET
 
 configure_logging(level='INFO', log_file='ingest.log')
 
@@ -29,8 +30,8 @@ def maude_ingest():
     """FDA MAUDE 데이터를 추출하여 S3에 적재하는 파이프라인"""
 
     @task
-    def extract(logical_date: pendulum.DateTime, run_id: str, dag_id: str) -> List[str]:
-        bind_contextvars(dag_id=dag_id, run_id=run_id)
+    def extract(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> List[str]:
+        bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
 
         try:
             import requests
@@ -46,9 +47,9 @@ def maude_ingest():
             logger.error('Extract failed', error=str(e), exc_info=True)
             raise AirflowException(f'추출 실패: {e}') from e
 
-    @task
-    def s3_load(data_urls: List[str], logical_date: pendulum.DateTime, run_id: str, dag_id: str) -> None:
-        bind_contextvars(dag_id=dag_id, run_id=run_id)
+    @task(outlets=[MAUDE_S3_ASSET])
+    def s3_load(data_urls: List[str], logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+        bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
 
         try:
             import requests

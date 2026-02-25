@@ -25,6 +25,13 @@ snowflake:
   transform:
     database: MAUDE
     schema: SILVER
+    tables:
+      EVENT_CURRENT:
+        primary_key: [MDR_REPORT_KEY, UDI_DI, SOURCE_BATCH_ID]
+        business_primary_key: [MDR_REPORT_KEY, UDI_DI]
+      UDI_CURRENT:
+        primary_key: [PRIMARY_UDI_DI, UDI_DI, SOURCE_BATCH_ID]
+        business_primary_key: [PRIMARY_UDI_DI, UDI_DI]
   aggregate:
     database: MAUDE
     schema: SILVER

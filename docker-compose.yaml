@@ -86,6 +86,8 @@ x-airflow-common:
     AWS_DEFAULT_REGION:
     AWS_ACCESS_KEY_ID:
     AWS_SECRET_ACCESS_KEY:
+    AIRFLOW_PROJ_DIR:
+    AIRFLOW_UID:
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs
