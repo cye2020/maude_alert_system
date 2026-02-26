@@ -27,6 +27,7 @@ checkpoint:
 # === 추출 대상 ===
 source:
   category: "event"
+  suffix: _CURRENT
   columns:
     - "MDR_TEXT"
     - "PRODUCT_PROBLEMS"
@@ -35,6 +36,7 @@ source:
 # === 추출 결과 테이블 스키마 ===
 extracted:
   suffix: "_EXTRACTED"
+  join_suffix: "_LLM_EXTRACTED"
   columns:
     - name: "MDR_TEXT"
       type: "VARCHAR(16777216)"
