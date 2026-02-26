@@ -9,6 +9,16 @@ model:
   max_retries: 2
   enable_prefix_caching: true
 
+failure:
+  model_path: "Qwen/Qwen3-14B-AWQ"
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.80
+  max_model_len: 16384
+  max_num_batched_tokens: 32768
+  max_num_seqs: 128
+  max_retries: 3
+  enable_prefix_caching: true
+
 # === 샘플링 파라미터 ===
 sampling:
   temperature: 0.1
