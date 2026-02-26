@@ -18,6 +18,10 @@ event:
       type: DATE
       alias: DATE_RECEIVED
       final: true
+    - name: DATE_CHANGED
+      type: DATE
+      alias: DATE_CHANGED
+      final: true
     - name: DEVICE_DATE_OF_MANUFACTURER
       type: DATE
       alias: DATE_MANUFACTURED

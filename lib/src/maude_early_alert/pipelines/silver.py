@@ -37,7 +37,11 @@ from maude_early_alert.preprocessors.text_extract import (
     prepare_insert_data,
     MDRExtractor,
 )
-from maude_early_alert.preprocessors.metadata_add import build_scd2_sql
+from maude_early_alert.preprocessors.metadata_add import (
+    add_incremental_metadata,
+    build_expire_old_records_sql,
+    build_extract_bronze_metadata_sql,
+)
 from maude_early_alert.preprocessors.prompt import get_prompt
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -332,51 +336,81 @@ class SilverPipeline(SnowflakeBase):
 
     @with_context
     def add_scd2_metadata(self, cursor: SnowflakeCursor):
-        """SCD2 메타데이터를 계산하여 {CATEGORY}_CURRENT 테이블에 MERGE 적재
+        """증분 SCD2 메타데이터 추가 및 {CATEGORY}_CURRENT 테이블 적재
 
-        각 카테고리의 현재 stage 테이블에서 SCD2 메타데이터를 계산한 뒤
-        staging 테이블을 경유하여 MAUDE.SILVER.{CATEGORY}_CURRENT에 MERGE합니다.
+        신규 배치 레코드에 Silver SCD2 메타데이터를 추가하고
+        MAUDE.SILVER.{CATEGORY}_CURRENT에 MERGE합니다.
+        MERGE 이후 동일 business_key의 이전 배치 레코드를 만료 처리합니다.
 
-        primary_key 기준:
-            MATCHED   → SCD2 메타데이터 컬럼 UPDATE (재처리 멱등성 보장)
-            NOT MATCHED → 신규 행 INSERT
+        알고리즘:
+            1. batch_id, source_system → 소스 테이블 컬럼 참조
+            2. is_current = TRUE (신규 적재는 항상 현재 유효)
+            3. effective_from = 카테고리별 컬럼
+                   event: DATE_CHANGED
+                   udi:   PUBLIC_VERSION_DATE
+            4. ingest_time(logical_date), is_current, effective_from,
+               source_batch_id(=batch_id), source_system 추가 후 MERGE
+               primary_key 기준:
+                   MATCHED     → SCD2 메타데이터 UPDATE (동일 배치 재처리 멱등성)
+                   NOT MATCHED → 신규 행 INSERT
+            5. 동일 business_key의 이전 배치 레코드 만료:
+                   is_current  → FALSE
+                   effective_to → 신규 effective_from - 1일
         """
         db = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
 
         for category in self.stage:
             source = self._stage_table(category)
-            partition_by = self.cfg.get_silver_business_key(category)
             pk_cols = self.cfg.get_silver_primary_key(category)
+            business_key = self.cfg.get_silver_business_key(category)
             target = f'{db}.{schema}.{category}_CURRENT'.upper()
             stg_table = get_staging_table_name(target)
 
             logger.info(
-                'SCD2 메타데이터 추가 시작',
-                category=category, source=source,
-                partition_by=partition_by, target=target,
+                'SCD2 메타데이터 추가 시작 (증분)',
+                category=category, source=source, target=target,
             )
 
-            scd2_sql = build_scd2_sql(source, partition_by=partition_by)
+            # 1-4. 메타데이터 추가 SQL 생성 (is_current=TRUE, effective_from=카테고리별 컬럼)
+            bronze_db = self.cfg.get_snowflake_load_database()
+            bronze_schema = self.cfg.get_snowflake_load_schema()
+            bronze_table = f'{bronze_db}.{bronze_schema}.{category}'.upper()
+            cursor.execute(build_extract_bronze_metadata_sql(bronze_table))
+            row = cursor.fetchone()
+            source_batch_id, source_system = row[0], row[1]
 
-            # 1. staging 테이블 생성 (SCD2 계산 결과 임시 저장)
-            cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {stg_table} AS\n{scd2_sql}')
+            effective_from_col = self.cfg.get_silver_effective_from_col(category)
+            meta_sql = add_incremental_metadata(
+                table_name=source,
+                ingest_time=self.logical_date,
+                effective_from_col=effective_from_col,
+                source_batch_id=source_batch_id,
+                source_system=source_system,
+            )
 
-            # 2. 컬럼 목록 조회 (MERGE INSERT 절 구성용)
+            # staging 테이블 생성
+            cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {stg_table} AS\n{meta_sql}')
+
+            # 컬럼 목록 조회 (MERGE INSERT 절 구성용)
             cursor.execute(f'SELECT * FROM {stg_table} LIMIT 0')
             all_cols = [desc[0] for desc in cursor.description]
 
-            # 3. 대상 테이블 없으면 구조만 복사해서 생성
+            # 대상 테이블 없으면 구조만 복사해서 생성
             cursor.execute(
                 f'CREATE TABLE IF NOT EXISTS {target} AS\n'
                 f'SELECT * FROM {stg_table} WHERE FALSE'
             )
 
-            # 4. MERGE
+            # MERGE: 동일 primary_key → UPDATE (멱등성), 신규 → INSERT
             merge_sql = SnowflakeLoader.build_merge_sql(target, stg_table, pk_cols, all_cols)
             cursor.execute(merge_sql)
 
-            logger.info('SCD2 메타데이터 MERGE 완료', category=category, target=target)
+            # 5. 동일 business_key의 이전 레코드 만료 처리 (is_current=FALSE, effective_to 채움)
+            expire_sql = build_expire_old_records_sql(target, business_key)
+            cursor.execute(expire_sql)
+
+            logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
 
     def _cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
@@ -426,14 +460,15 @@ if __name__ == '__main__':
         # pipeline.match_udi(cursor)
         # pipeline.filter_quality(cursor)
         # pipeline.select_columns(cursor, final=True)
+        pipeline.add_scd2_metadata(cursor)
         logger.info('Silver 14단계 완료')
 
         # ── LLM 추출 4단계 ────────────────────────────────────────────
         logger.info('LLM 추출 단계 시작')
-        records = pipeline.extract_mdr_text(cursor)
-        results = pipeline.run_llm_extraction(records)
-        pipeline.load_extraction_results(cursor, results)
-        pipeline.join_extraction(cursor)
+        # records = pipeline.extract_mdr_text(cursor)
+        # results = pipeline.run_llm_extraction(records)
+        # pipeline.load_extraction_results(cursor, results)
+        # pipeline.join_extraction(cursor)
 
         logger.info('Silver 파이프라인 완료')
 

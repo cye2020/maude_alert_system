@@ -29,9 +29,11 @@ snowflake:
       EVENT_CURRENT:
         primary_key: [MDR_REPORT_KEY, UDI_DI, SOURCE_BATCH_ID]
         business_primary_key: [MDR_REPORT_KEY, UDI_DI]
+        effective_from_col: DATE_CHANGED
       UDI_CURRENT:
         primary_key: [PRIMARY_UDI_DI, UDI_DI, SOURCE_BATCH_ID]
         business_primary_key: [PRIMARY_UDI_DI, UDI_DI]
+        effective_from_col: PUBLIC_VERSION_DATE
   aggregate:
     database: MAUDE
     schema: SILVER

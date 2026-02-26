@@ -1,9 +1,14 @@
 """
-메타데이터 추출 및 Silver SCD2 메타데이터 추가 SQL 생성 모듈
+Silver SCD2 메타데이터 추가 SQL 생성 모듈
 
-- extract_metadata: Bronze 테이블에서 메타데이터 컬럼을 SELECT하는 SQL 생성
-- add_metadata: 현재 stage 테이블에 Silver SCD2 메타데이터 컬럼을 추가한 SELECT SQL 생성
+- add_incremental_metadata:     증분 적재용 SCD2 메타데이터 추가 SELECT SQL 생성
+                                (is_current=TRUE, effective_from=지정 컬럼, batch_id→source_batch_id)
+- build_expire_old_records_sql: 동일 business_key 이전 레코드 만료 UPDATE SQL 생성
+
+effective_from_col은 storage.yaml transform.tables.{CATEGORY}_CURRENT.effective_from_col 에서 읽어
+SilverConfig.get_silver_effective_from_col(category)로 주입합니다.
 """
+from textwrap import dedent, indent
 from typing import List, Union
 
 import pendulum
@@ -12,219 +17,177 @@ import structlog
 from maude_early_alert.utils.helpers import ensure_list, format_sql_literal, validate_identifier
 from maude_early_alert.utils.sql_builder import build_cte_sql
 
+_INDENT = '    '
+
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-# Bronze 테이블의 메타데이터 컬럼 목록
-BRONZE_META_COLS = ['ingest_time', 'batch_id', 'source_system', 'source_file', 'record_hash']
+# Bronze 테이블에서 Silver로 계보 추적을 위해 추출할 메타데이터 컬럼 목록
+BRONZE_META_COLS = ['batch_id', 'source_system']
 
 
-def extract_metadata(table_name: str) -> str:
-    """Bronze 테이블에서 메타데이터 컬럼을 SELECT하는 SQL 생성
+def build_extract_bronze_metadata_sql(bronze_table: str) -> str:
+    """Bronze 테이블에서 BRONZE_META_COLS 값을 추출하는 SQL 생성
 
-    Bronze 메타데이터 컬럼(ingest_time, batch_id, source_system, source_file,
-    record_hash)을 선택합니다. Silver 파이프라인에서 Bronze 적재 정보를 참조할 때 사용합니다.
+    가장 최신 ingest_time 기준 1건을 반환합니다.
 
     Args:
-        table_name: Bronze 테이블명 (예: 'MAUDE.BRONZE.EVENT')
+        bronze_table: Bronze 테이블 전체 경로 (e.g. 'MAUDE.BRONZE.EVENT')
 
     Returns:
-        Bronze 메타데이터 컬럼만 SELECT하는 SQL 문자열
-
-    Examples:
-        >>> sql = extract_metadata('MAUDE.BRONZE.EVENT')
+        BRONZE_META_COLS 순서대로 값을 반환하는 SELECT SQL
     """
-    table_name = validate_identifier(table_name)
-    logger.debug('Bronze 메타데이터 추출 SQL 생성', table=table_name)
-    return build_cte_sql(
-        ctes=[],
-        from_clause=table_name,
-        select_cols=BRONZE_META_COLS,
-    )
+    bronze_table = validate_identifier(bronze_table)
+    cols = ', '.join(BRONZE_META_COLS)
+    return f"SELECT {cols} FROM {bronze_table} ORDER BY ingest_time DESC LIMIT 1"
 
 
-def add_metadata(
+def add_incremental_metadata(
     table_name: str,
     ingest_time: pendulum.DateTime,
-    is_current: bool,
-    effective_from: pendulum.Date,
+    effective_from_col: str,
     source_batch_id: str,
     source_system: str,
 ) -> str:
-    """Silver SCD2 메타데이터 컬럼을 추가한 SELECT SQL 생성 (리터럴 주입, 단일 배치용)
+    """증분 적재용 Silver SCD2 메타데이터 컬럼을 추가한 SELECT SQL 생성
 
-    현재 stage 테이블에서 SELECT하면서 Silver SCD2 메타데이터 컬럼을 앞에 추가합니다.
-    Bronze 메타데이터 컬럼은 Silver 메타데이터로 대체됩니다.
-    business_key는 원본 데이터 컬럼으로 유지됩니다 (별도 컬럼을 생성하지 않음).
-
-    추가되는 Silver 메타데이터 컬럼:
-        - ingest_time:     Bronze 버전 선택 시각 (TIMESTAMP_TZ)
-        - is_current:      현재 유효 여부 (SCD2)
-        - effective_from:  유효 시작 시점 (DATE)
-        - effective_to:    유효 종료 시점 (NULL — 신규 적재 시 항상 NULL)
-        - source_batch_id: Bronze batch_id (계보 추적용)
-        - source_system:   원천 시스템명
+    신규 배치 레코드에 Silver SCD2 메타데이터를 추가합니다.
+    - ingest_time    = logical_date 리터럴 (DAG 실행 시각, TIMESTAMP_TZ)
+    - is_current     = TRUE (신규 적재는 항상 현재 유효)
+    - effective_from = effective_from_col::DATE (storage.yaml에서 주입)
+    - effective_to   = NULL (적재 후 build_expire_old_records_sql로 이전 레코드를 갱신)
+    - source_batch_id = Bronze batch_id 값 리터럴 (계보 추적용)
+    - source_system   = Bronze source_system 값 리터럴
 
     Args:
-        table_name:      현재 stage 테이블명
-        ingest_time:     Bronze 버전 선택 시각 (TIMESTAMP_TZ로 캐스팅)
-        is_current:      현재 유효 여부
-        effective_from:  유효 시작 시점 (DATE로 캐스팅)
-        source_batch_id: Bronze batch_id (lineage 추적용)
-        source_system:   원천 시스템명 (예: 'openFDA')
+        table_name:       현재 stage 테이블명
+        ingest_time:      DAG logical_date (TIMESTAMP_TZ로 캐스팅)
+        effective_from_col: effective_from 소스 컬럼명
+                            (event: 'DATE_CHANGED', udi: 'PUBLIC_VERSION_DATE')
+        source_batch_id:  Bronze 테이블에서 추출한 batch_id 값
+        source_system:    Bronze 테이블에서 추출한 source_system 값
 
     Returns:
         Silver 메타데이터 컬럼이 추가된 SELECT SQL 문자열
 
     Examples:
-        >>> import pendulum
-        >>> sql = add_metadata(
-        ...     table_name='EVENT_STAGE_15',
-        ...     ingest_time=pendulum.datetime(2024, 11, 10),
-        ...     is_current=True,
-        ...     effective_from=pendulum.date(2024, 11, 10),
-        ...     source_batch_id='B202411',
-        ...     source_system='openFDA',
+        >>> sql = add_incremental_metadata(
+        ...     table_name='EVENT_STAGE_14',
+        ...     ingest_time=pendulum.datetime(2024, 11, 10, 3, 21, 10),
+        ...     effective_from_col='DATE_CHANGED',
+        ...     source_batch_id='bronze_20241110_032110',
+        ...     source_system='s3',
         ... )
     """
     table_name = validate_identifier(table_name)
-
-    # effective_from: pendulum.Date → DATE 리터럴
-    date_str = effective_from.strftime('%Y-%m-%d')
-    effective_from_expr = f"'{date_str}'::DATE AS effective_from"
-
-    # Bronze 메타데이터 컬럼만 SELECT *에서 제외 (business_key 원본 컬럼은 유지)
-    exclude_cols = sorted(set(BRONZE_META_COLS))
-    exclude_clause = ', '.join(exclude_cols)
+    validate_identifier(effective_from_col)
 
     silver_meta_exprs = [
         format_sql_literal('ingest_time', ingest_time),
-        format_sql_literal('is_current', is_current),
-        effective_from_expr,
+        'TRUE AS is_current',
+        f'{effective_from_col}::DATE AS effective_from',
         'NULL AS effective_to',
         format_sql_literal('source_batch_id', source_batch_id),
         format_sql_literal('source_system', source_system),
     ]
 
-    select_lines = ',\n    '.join(silver_meta_exprs)
+    select_block = indent(',\n'.join(silver_meta_exprs), _INDENT)
     final_query = (
         f"SELECT\n"
-        f"    {select_lines},\n"
-        f"    * EXCLUDE ({exclude_clause})\n"
+        f"{select_block},\n"
+        f"{_INDENT}* EXCLUDE ({effective_from_col})\n"
         f"FROM\n"
-        f"    {table_name}"
+        f"{_INDENT}{table_name}"
     )
 
     logger.debug(
-        'Silver 메타데이터 추가 SQL 생성',
-        table=table_name, is_current=is_current,
-        effective_from=date_str, source_system=source_system,
+        '증분 SCD2 메타데이터 추가 SQL 생성',
+        table=table_name, effective_from_col=effective_from_col,
+        source_batch_id=source_batch_id, source_system=source_system,
     )
 
     return build_cte_sql(ctes=[], final_query=final_query)
 
 
-def build_scd2_sql(
-    table_name: str,
-    partition_by: Union[str, List[str]],
-    ingest_time_col: str = 'ingest_time',
-    source_batch_id_col: str = 'batch_id',
-    source_system_col: str = 'source_system',
+def build_expire_old_records_sql(
+    target: str,
+    business_key: Union[str, List[str]],
 ) -> str:
-    """Bronze 전체 이력에서 SCD2 메타데이터를 윈도우 함수로 계산하는 SELECT SQL 생성
+    """동일 business_key의 이전 레코드를 만료 처리하는 UPDATE SQL 생성
 
-    DEDUP 이전 단계(전체 이력 보존 상태)에 적용합니다.
-    business_key 컬럼을 새로 생성하지 않고 원본 컬럼을 유지합니다.
-    partition_by 컬럼은 윈도우 함수의 PARTITION BY에만 사용됩니다.
-
-    동일 partition_by의 모든 버전에 대해 ingest_time 순서 기준으로:
-        - is_current:     가장 최신 버전이면 TRUE
-        - effective_from: 해당 버전의 ingest_time::DATE
-        - effective_to:   다음 버전의 ingest_time::DATE - 1일 (최신 버전은 NULL)
-
-    add_metadata와의 차이:
-        - add_metadata:   Python 값을 리터럴로 주입 (단일 배치 증분 적재용)
-        - build_scd2_sql: 전체 이력에서 윈도우 함수로 계산 (Full Refresh용)
+    MERGE 적재 이후 실행합니다.
+    target 테이블 내에서 business_key 기준으로 그룹을 나누고,
+    각 그룹의 is_current=TRUE 레코드 중 가장 최신(MAX effective_from) 이외의 것을 만료합니다:
+        - is_current  → FALSE
+        - effective_to → 그룹 내 최신 effective_from - 1일
 
     Args:
-        table_name:          전체 이력 테이블명 (DEDUP 이전 stage 또는 Bronze)
-        partition_by:        SCD2 파티션 기준 컬럼명. 단일 str 또는 List[str]
-        ingest_time_col:     ingest 시각 컬럼명
-        source_batch_id_col: batch_id 컬럼명
-        source_system_col:   source_system 컬럼명
+        target:       대상 테이블명 (e.g. 'MAUDE.SILVER.EVENT_CURRENT')
+        business_key: 비즈니스 기준 키 (단일 str 또는 List[str])
 
     Returns:
-        SCD2 메타데이터가 계산된 SELECT SQL 문자열
+        이전 레코드를 만료 처리하는 UPDATE SQL 문자열
 
     Examples:
-        >>> sql = build_scd2_sql('EVENT_STAGE_01', partition_by=['MDR_REPORT_KEY', 'UDI_DI'])
+        >>> sql = build_expire_old_records_sql(
+        ...     target='MAUDE.SILVER.EVENT_CURRENT',
+        ...     business_key=['MDR_REPORT_KEY', 'UDI_DI'],
+        ... )
     """
-    table_name = validate_identifier(table_name)
-    keys = ensure_list(partition_by)
+    target = validate_identifier(target)
+    keys = ensure_list(business_key)
     for k in keys:
         validate_identifier(k)
 
-    partition_cols = ', '.join(keys)
-
-    # SCD2 윈도우 표현식 (business_key 컬럼은 생성하지 않음 — 원본 컬럼 유지)
-    over_asc  = f"OVER (PARTITION BY {partition_cols} ORDER BY {ingest_time_col})"
-    over_desc = f"OVER (PARTITION BY {partition_cols} ORDER BY {ingest_time_col} DESC)"
-
-    is_current_expr     = f"(ROW_NUMBER() {over_desc} = 1) AS is_current"
-    effective_from_expr = f"{ingest_time_col}::DATE AS effective_from"
-    effective_to_expr   = (
-        f"DATEADD('day', -1, LEAD({ingest_time_col}::DATE) {over_asc}) AS effective_to"
+    group_by_cols = ', '.join(keys)
+    where_items = (
+        [f't.{k} = latest.{k}' for k in keys]
+        + ['t.effective_from < latest.effective_from', 't.is_current = TRUE']
     )
 
-    silver_meta_exprs = [
-        f"{ingest_time_col} AS ingest_time",
-        is_current_expr,
-        effective_from_expr,
-        effective_to_expr,
-        f"{source_batch_id_col} AS source_batch_id",
-        f"{source_system_col} AS source_system",
-    ]
+    sql = '\n'.join([
+        dedent(f"""\
+            UPDATE {target} AS t
+            SET
+                t.is_current = FALSE,
+                t.effective_to = DATEADD('day', -1, latest.effective_from)
+            FROM (
+                SELECT {group_by_cols}, MAX(effective_from) AS effective_from
+                FROM {target}
+                WHERE is_current = TRUE
+                GROUP BY {group_by_cols}
+            ) AS latest"""),
+        'WHERE\n' + indent('\nAND '.join(where_items), _INDENT),
+    ])
 
-    # SELECT *에서 제외: Bronze 메타 컬럼만 (business_key 원본 컬럼은 유지)
-    exclude_cols = sorted(
-        set(BRONZE_META_COLS)
-        | {ingest_time_col, source_batch_id_col, source_system_col}
-    )
-    exclude_clause = ', '.join(exclude_cols)
+    logger.debug('이전 레코드 만료 처리 SQL 생성', target=target, business_key=keys)
 
-    select_lines = ',\n    '.join(silver_meta_exprs)
-    final_query = (
-        f"SELECT\n"
-        f"    {select_lines},\n"
-        f"    * EXCLUDE ({exclude_clause})\n"
-        f"FROM\n"
-        f"    {table_name}"
-    )
-
-    logger.debug(
-        'SCD2 메타데이터 계산 SQL 생성',
-        table=table_name, partition_by=keys, partition_cols=partition_cols,
-    )
-
-    return build_cte_sql(ctes=[], final_query=final_query)
+    return sql
 
 
 if __name__ == '__main__':
-    print("=== extract_metadata ===")
-    print(extract_metadata('MAUDE.BRONZE.EVENT'))
+    import pendulum as _pendulum
 
-    print("\n=== add_metadata ===")
-    print(add_metadata(
-        table_name='EVENT_STAGE_15',
-        ingest_time=pendulum.datetime(2024, 11, 10, 3, 21, 10),
-        is_current=True,
-        effective_from=pendulum.date(2024, 11, 10),
-        source_batch_id='B202411',
-        source_system='openFDA',
+    print("=== add_incremental_metadata (event) ===")
+    print(add_incremental_metadata(
+        table_name='FOO_STAGE',
+        ingest_time=_pendulum.datetime(2024, 1, 1),
+        effective_from_col='DATE_CHANGED',
+        source_batch_id='batch_xxx',
+        source_system='example',
     ))
 
-    print("\n=== build_scd2_sql (복합 partition_by) ===")
-    print(build_scd2_sql(
-        table_name='EVENT_STAGE_01',
-        partition_by=['MDR_REPORT_KEY', 'UDI_DI'],
+    print("\n=== add_incremental_metadata (udi) ===")
+    print(add_incremental_metadata(
+        table_name='BAR_STAGE',
+        ingest_time=_pendulum.datetime(2024, 1, 1),
+        effective_from_col='PUBLIC_VERSION_DATE',
+        source_batch_id='batch_xxx',
+        source_system='example',
+    ))
+
+    print("\n=== build_expire_old_records_sql ===")
+    print(build_expire_old_records_sql(
+        target='MY_DB.MY_SCHEMA.FOO_CURRENT',
+        business_key=['KEY_A', 'KEY_B'],
     ))

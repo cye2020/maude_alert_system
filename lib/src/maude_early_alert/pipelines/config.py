@@ -344,6 +344,20 @@ class SilverConfig:
         pk = self._storage['snowflake']['transform']['tables'][table]['primary_key']
         return [pk] if isinstance(pk, str) else list(pk)
 
+    def get_silver_effective_from_col(self, category: str) -> str:
+        """Silver CURRENT 테이블의 effective_from 소스 컬럼명 반환
+
+        storage.yaml transform.tables.{CATEGORY}_CURRENT.effective_from_col 에서 읽습니다.
+
+        Args:
+            category: 카테고리명 (e.g. 'event', 'udi')
+
+        Returns:
+            effective_from 소스 컬럼명 (e.g. 'DATE_CHANGED', 'PUBLIC_VERSION_DATE')
+        """
+        table = f'{category}_CURRENT'.upper()
+        return self._storage['snowflake']['transform']['tables'][table]['effective_from_col']
+
     def get_silver_business_key(self, category: str) -> Union[str, List[str]]:
         """Silver CURRENT 테이블의 비즈니스 기준 키 컬럼명 반환
 
