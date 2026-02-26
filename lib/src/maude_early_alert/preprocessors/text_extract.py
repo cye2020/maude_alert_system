@@ -139,7 +139,7 @@ def build_extract_merge_sql(
 
 def build_extracted_join_sql(
     base_table: str,
-    extracted_suffix: str,
+    extracted_table: str,
     non_pk_columns: List[str],
     pk_column: str = "MDR_TEXT",
     base_alias: str = "e",
@@ -148,14 +148,13 @@ def build_extracted_join_sql(
     """원본 테이블과 추출 결과 테이블을 LEFT JOIN하는 SELECT SQL 생성.
 
     Args:
-        base_table: 원본 테이블명
-        extracted_suffix: 추출 테이블 suffix (e.g. '_EXTRACTED')
+        base_table: 원본 테이블명 (e.g. 'DB.SCHEMA.EVENT_CURRENT')
+        extracted_table: 추출 결과 테이블명 (e.g. 'DB.SCHEMA.EVENT_EXTRACTED')
         non_pk_columns: 추출 테이블에서 가져올 컬럼 목록 (PK 제외)
         pk_column: JOIN 키 컬럼
         base_alias: 원본 테이블 alias
         extract_alias: 추출 테이블 alias
     """
-    extracted_table = f"{base_table}{extracted_suffix}"
     extract_cols = [f"{extract_alias}.{col}" for col in non_pk_columns]
     select_columns = [f"{base_alias}.*"] + extract_cols
 
@@ -339,7 +338,7 @@ if __name__ == "__main__":
     print(build_extract_merge_sql("DST_TABLE", "TMP_TABLE", pk, non_pk))
 
     print("\n=== build_extracted_join_sql ===")
-    print(build_extracted_join_sql("SRC_TABLE", "_EXTRACTED", non_pk, pk))
+    print(build_extracted_join_sql("SRC_TABLE", "SRC_TABLE_EXTRACTED", non_pk, pk))
 
     print("\n=== records_to_rows ===")
     for r in records_to_rows([

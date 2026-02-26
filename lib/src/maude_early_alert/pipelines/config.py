@@ -400,6 +400,10 @@ class SilverConfig:
         """추출 대상 컬럼 목록 반환 (e.g. ['MDR_TEXT', 'PRODUCT_PROBLEMS'])"""
         return self._llm_extraction['source']['columns']
 
+    def get_llm_source_suffix(self) -> str:
+        """추출 소스 테이블 suffix 반환 (e.g. '_CURRENT')"""
+        return self._llm_extraction['source']['suffix']
+
     def get_llm_source_where(self) -> Optional[str]:
         """추출 WHERE 절 반환 (없으면 None)"""
         return self._llm_extraction['source'].get('where')
@@ -407,6 +411,10 @@ class SilverConfig:
     def get_llm_extracted_suffix(self) -> str:
         """추출 결과 테이블 suffix 반환 (e.g. '_EXTRACTED')"""
         return self._llm_extraction['extracted']['suffix']
+
+    def get_llm_join_suffix(self) -> str:
+        """JOIN 결과 테이블 suffix 반환 (e.g. '_LLM_EXTRACTED')"""
+        return self._llm_extraction['extracted']['join_suffix']
 
     def get_llm_extracted_columns(self) -> List[dict]:
         """추출 결과 테이블 컬럼 스키마 반환"""

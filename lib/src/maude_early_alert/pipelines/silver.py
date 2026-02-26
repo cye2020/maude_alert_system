@@ -59,6 +59,12 @@ class SilverPipeline(SnowflakeBase):
         database = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
         super().__init__(database, schema)
+
+        category = self.cfg.get_llm_source_category()
+        self.llm_source_table = f'{database}.{schema}.{category}{self.cfg.get_llm_source_suffix()}'.upper()
+        self.llm_self.llm_extracted_table = f'{database}.{schema}.{category}{self.cfg.get_llm_extracted_suffix()}'.upper()
+        self.llm_join_table = f'{database}.{schema}.{category}{self.cfg.get_llm_join_suffix()}'.upper()
+
         logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
 
     def _stage_table(self, category: str) -> str:
@@ -251,10 +257,9 @@ class SilverPipeline(SnowflakeBase):
     @with_context
     def extract_mdr_text(self, cursor: SnowflakeCursor) -> List[Dict]:
         """source 테이블에서 MDR_TEXT 추출 + unique 처리, dict 리스트 반환"""
-        category = self.cfg.get_llm_source_category()
-        logger.info('MDR_TEXT 추출 시작', category=category, source=self._stage_table(category))
+        logger.info('MDR_TEXT 추출 시작', source=self.llm_source_table)
         sql = build_mdr_text_extract_sql(
-            table_name=self._stage_table(category),
+            table_name=self.llm_source_table,
             columns=self.cfg.get_llm_source_columns(),
             where=self.cfg.get_llm_source_where(),
         )
@@ -299,40 +304,34 @@ class SilverPipeline(SnowflakeBase):
         pk_col = self.cfg.get_llm_extracted_pk_column()
         non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
 
-        category = self.cfg.get_llm_source_category()
-        extracted_table = f"{self._stage_table(category)}{self.cfg.get_llm_extracted_suffix()}"
-
         insert_data = prepare_insert_data(results, columns)
         if not insert_data:
             logger.warning('적재할 추출 데이터가 없습니다')
             return
 
-        logger.info('추출 결과 적재 시작', extracted_table=extracted_table, count=len(insert_data))
-        cursor.execute(build_ensure_extracted_table_sql(extracted_table, columns))
+        logger.info('추출 결과 적재 시작', extracted_table=self.llm_extracted_table, count=len(insert_data))
+        cursor.execute(build_ensure_extracted_table_sql(self.llm_extracted_table, columns))
 
-        temp_table = f"{extracted_table}_STG_{self.logical_date.strftime('%Y%m%d')}"
+        temp_table = f"{self.llm_extracted_table}_STG_{self.logical_date.strftime('%Y%m%d')}"
         logger.debug('임시 스테이징 테이블 생성', temp_table=temp_table)
         cursor.execute(build_create_extract_temp_sql(temp_table, columns))
         stage_insert_sql = build_extract_stage_insert_sql(temp_table, columns)
         cursor.executemany(stage_insert_sql, insert_data)
-        cursor.execute(build_extract_merge_sql(extracted_table, temp_table, pk_col, non_pk_cols))
+        cursor.execute(build_extract_merge_sql(self.llm_extracted_table, temp_table, pk_col, non_pk_cols))
         logger.info('추출 결과 적재 완료', count=len(insert_data))
 
     @with_context
     def join_extraction(self, cursor: SnowflakeCursor):
-        """원본 EVENT + 추출 결과 LEFT JOIN -> 최종 stage 생성"""
-        category = self.cfg.get_llm_source_category()
-        logger.info('추출 결과 JOIN 시작', category=category, source=self._stage_table(category))
-        pk_col = self.cfg.get_llm_extracted_pk_column()
-        non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
-
+        """원본 EVENT + 추출 결과 LEFT JOIN -> {category}_LLM_EXTRACTED 테이블 생성"""
+        logger.info('추출 결과 JOIN 시작', source=self.llm_source_table, target=self.llm_join_table)
         sql = build_extracted_join_sql(
-            base_table=self._stage_table(category),
-            extracted_suffix=self.cfg.get_llm_extracted_suffix(),
-            non_pk_columns=non_pk_cols,
-            pk_column=pk_col,
+            base_table=self.llm_source_table,
+            extracted_table=self.llm_extracted_table,
+            non_pk_columns=self.cfg.get_llm_extracted_non_pk_columns(),
+            pk_column=self.cfg.get_llm_extracted_pk_column(),
         )
-        self._create_next_stage(cursor, category, sql)
+        cursor.execute(f'CREATE OR REPLACE TABLE {self.llm_join_table} AS\n{sql}')
+        logger.info('JOIN 결과 테이블 생성 완료', table=self.llm_join_table)
 
     @with_context
     def add_scd2_metadata(self, cursor: SnowflakeCursor):
