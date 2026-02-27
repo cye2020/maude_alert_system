@@ -37,6 +37,9 @@ snowflake:
   aggregate:
     database: MAUDE
     schema: SILVER
+  gold:
+    database: MAUDE
+    schema: GOLD
   udf:
     database: MAUDE
     schema: UDF
