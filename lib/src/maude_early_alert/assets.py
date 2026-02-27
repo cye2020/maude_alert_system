@@ -26,3 +26,8 @@ MAUDE_SILVER_ASSETS = [
     Asset(f'snowflake://{_sf_transform_db}/{_sf_transform_schema}/{table}')
     for table in _sf_transform_tables
 ]
+
+# clustering_dag (clustering) → gold_dag 트리거
+MAUDE_CLUSTERED_ASSET = Asset(
+    f'snowflake://{_sf_transform_db}/{_sf_transform_schema}/EVENT_CLUSTERED'
+)

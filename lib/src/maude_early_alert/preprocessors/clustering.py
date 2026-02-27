@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 # --------------------------------------------
 # 서드파티 라이브러리
 # --------------------------------------------
+import joblib
 import numpy as np
 import pandas as pd
 import snowflake.connector
@@ -18,7 +19,7 @@ import structlog
 from sklearn.metrics import davies_bouldin_score, calinski_harabasz_score
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sentence_transformers import SentenceTransformer
-from snowflake.connector.pandas_tools import write_pandas
+from sklearn.metrics import davies_bouldin_score, calinski_harabasz_score
 
 # --------------------------------------------
 # GPU / CPU 자동 전환
@@ -44,7 +45,6 @@ from maude_early_alert.utils.secrets import get_secret
 
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
-logger.info("클러스터링 백엔드", gpu=_GPU)
 
 
 def _to_numpy(arr) -> np.ndarray:
@@ -309,10 +309,10 @@ class Clustering:
             except (ValueError, SyntaxError):
                 return str(val)
 
-        def fill_unknown(val) -> str:
-            if val is None or (isinstance(val, float) and np.isnan(val)):
-                return "unknown"
-            return str(val)
+    def _fill_unknown(val) -> str:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return "unknown"
+        return str(val)
 
         df = df.copy()
         df["MDR_SNTC"] = (
@@ -1014,10 +1014,13 @@ def print_metrics_report(
 # 실행 예시
 # =====================
 if __name__ == "__main__":
+    import plotly.express as px
+
     configure_logging(level="INFO")
 
+    # ── 0. Snowflake 연결 ──────────────────────────────────────────────────
     secret = get_secret("snowflake/de", region_name="ap-northeast-2")
-    conn   = snowflake.connector.connect(**secret)
+    conn   = snowflake.connector.connect(**secret, ocsp_fail_open=True)
     cursor = conn.cursor()
 
     try:
@@ -1026,8 +1029,10 @@ if __name__ == "__main__":
         cursor.execute("""
             SELECT
                 MDR_REPORT_KEY,
+                MANUFACTURER_NAME,
                 PRODUCT_CODE,
                 EVENT_TYPE,
+                DATE_RECEIVED,
                 PATIENT_HARM,
                 PROBLEM_COMPONENTS,
                 DEFECT_CONFIRMED,
