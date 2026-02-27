@@ -1,0 +1,121 @@
+# =====================================================
+# Clustering Pipeline Configuration
+# lib/src/maude_early_alert/preprocessors/clustering.py
+# =====================================================
+
+# 임베딩 모델 설정
+embedding:
+  model: "pritamdeka/S-PubMedBert-MS-MARCO"
+  batch_size: 32
+  normalize: true  # L2 정규화 (cosine similarity 기반 UMAP에 필요)
+
+# 기본 설정
+defaults:
+  categorical_cols:
+    - patient_harm
+    - defect_type
+    - defect_confirmed
+  embedding_col: p_c_embeddings
+  onehot_weight: 5.0   # 범주형 피처 스케일 조정 (임베딩 대비 상대적 중요도)
+  random_state: 42
+
+# 합격 조건 (Pass/Fail 필터링)
+validity:
+  k_min: 3       # 클러스터가 너무 적으면 의미 없음
+  k_max: 100     # 너무 많으면 해석 불가
+  noise_max: 0.35  # 노이즈 비율 35% 초과 시 탈락
+
+# UMAP 기본 파라미터 (Clustering.__init__ 기본값)
+umap:
+  n_neighbors: 50     # 지역 구조 반영 범위 (클수록 전역 구조)
+  min_dist: 0.0       # 클러스터 내 밀집도 (0.0 = 최대 밀집)
+  n_components: 15    # 축소 후 차원
+  metric: cosine      # 임베딩 거리 메트릭
+  random_state: 42
+
+# HDBSCAN 설정
+hdbscan:
+  metric: euclidean
+  cluster_selection_method: eom   # eom(기본) | leaf(더 작은 클러스터)
+  gen_min_span_tree: true         # approximate_predict에 필요
+
+# 그리드 서치 파라미터 (run_grid_search)
+grid_search:
+  mcs_grid: [50, 80, 100, 150, 200, 300]  # min_cluster_size 후보
+  ms_grid: [3, 5, 7, 9]                   # min_samples 후보
+
+# 품질 점수 (합격한 것 중 순위용, 가중치 합계 = 1.0)
+scoring:
+  weights:
+    silhouette: 0.05   # 클러스터 내부 응집도 (↑)
+    entropy: 0.40      # 클러스터 간 균등 분포 (↑)
+    gini: 0.25         # 쏠림 측정, 역산 적용 (↓)
+    dbi: 0.05          # 클러스터 간 분리도 (↓)
+    chi: 0.25          # 클러스터 밀집·분리 종합 (↑)
+
+  # Silhouette 구간별 점수 매핑
+  silhouette_thresholds:
+    low: 0.4   # 미만: 0~0.5 선형
+    mid: 0.5   # 미만: 0.5~0.8 선형, 이상: 0.8~1.0
+
+  # Normalized Entropy 구간별 점수 매핑
+  entropy_thresholds:
+    good: 0.7        # 이상: 1.0
+    acceptable: 0.5  # 이상: 0.5~1.0 선형, 미만: 0~0.5
+
+  # 정규화 기준값
+  dbi_reference: 1.5      # DBI 이 값 이상이면 0점
+  chi_reference: 25000.0  # CHI 이 값 이상이면 만점
+
+# Optuna 하이퍼파라미터 최적화 (optuna_search)
+optuna:
+  n_trials: 100
+  timeout: null         # 초 단위, null이면 제한 없음
+  sampler_seed: 42
+  log_file: results_optuna.json
+  storage: "sqlite:///optuna_clustering.db"  # null이면 인메모리
+  study_name: maude_clustering
+
+  # 탐색 범위
+  ranges:
+    min_cluster_size:
+      min: 50
+      max: 500
+      step: 10
+    min_samples:
+      min: 3
+      max: 20
+      step: 1
+    umap_n_components:
+      min: 10
+      max: 20
+    umap_n_neighbors:
+      min: 30
+      max: 80
+      step: 5
+    umap_min_dist:
+      min: 0.0
+      max: 0.3
+
+# 저장 경로
+paths:
+  model_dir: models/clustering  # train_and_save 기본 저장 경로
+
+# 시각화 설정 (plot_clusters_2d, plot_cluster_distribution)
+visualization:
+  hover_cols:
+    - PRODUCT_CODE
+    - PATIENT_HARM
+    - MDR_SNTC
+  scatter_output: cluster_plot.html
+  distribution_output: cluster_distribution.html
+  # 2D UMAP 전용 파라미터 (학습용 UMAP과 별개)
+  umap_2d:
+    n_neighbors: 50
+    min_dist: 0.3
+    metric: cosine
+    random_state: 42
+
+# 로깅
+logging:
+  verbose: true
