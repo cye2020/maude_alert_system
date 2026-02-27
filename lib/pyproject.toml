@@ -27,15 +27,21 @@ dependencies = [
     # OpenTelemetry (Snowflake connector tracing)
     "opentelemetry-api",
     "opentelemetry-sdk",
+    # clustering
+    "sentence-transformers",
+    "hdbscan",
+    # 시각화용
+    "plotly"
 ]
 
 [project.optional-dependencies]
-llm = [
+gpu = [
     "torch",
     "torchvision",
     "transformers[torch]",
     "vllm",
     "openai",
+    "cupy-cuda12x"
 ]
 udf = [
     "rapidfuzz",
@@ -48,7 +54,7 @@ airflow = [
     "apache-airflow-providers-amazon"
 ]
 all = [
-    "maude-early-alert[llm,udf,airflow]",
+    "maude-early-alert[gpu,udf,airflow]",
 ]
 
 [tool.hatch.build.targets.wheel]
