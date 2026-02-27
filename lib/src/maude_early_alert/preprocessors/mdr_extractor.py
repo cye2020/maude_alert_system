@@ -231,6 +231,12 @@ class MAUDEExtractor:
                 result   TEXT NOT NULL
             )
         ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS input_records (
+                idx    INTEGER PRIMARY KEY,
+                record TEXT NOT NULL
+            )
+        ''')
         conn.commit()
         return conn
 
@@ -319,19 +325,23 @@ class MAUDEExtractor:
         checkpoint_dir: Union[str, Path],
         checkpoint_interval: int = 5000,
         checkpoint_name: str = 'checkpoint',
+        auto_cleanup: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         전체 레코드 배치 처리 (체크포인트 포함).
 
         대량 데이터를 checkpoint_interval 단위로 나눠 처리하고,
         추론 결과를 SQLite DB({name}.db)에 mdr_text 기준으로 upsert합니다.
-        중단 후 재개 시 DB를 캐시로 재활용하며, 정상 완료 시 DB를 삭제합니다.
+        중단 후 재개 시 DB를 캐시로 재활용하며, auto_cleanup=True(기본값)이면
+        정상 완료 시 DB를 삭제합니다.
 
         Args:
             mdr_records: {'mdr_text': ..., 'product_problems': ...} dict 리스트
             checkpoint_dir: SQLite DB 저장 디렉토리
             checkpoint_interval: 한 청크당 레코드 수
             checkpoint_name: DB 파일명 ({name}.db)
+            auto_cleanup: True이면 완료 후 checkpoint_dir 삭제. False이면 유지 (이후
+                단계에서 명시적으로 정리하거나 재개 시 재활용할 때 사용)
 
         Returns:
             전체 추출 결과 dict 리스트 (입력 순서 유지)
@@ -341,6 +351,14 @@ class MAUDEExtractor:
 
         conn = self._open_cache_db(checkpoint_dir, checkpoint_name)
         cache = self._load_cache_from_db(conn)
+
+        # 재개 시 records를 복원할 수 있도록 저장 (이미 있으면 유지)
+        if not conn.execute('SELECT COUNT(*) FROM input_records').fetchone()[0]:
+            conn.executemany(
+                'INSERT INTO input_records (idx, record) VALUES (?, ?)',
+                [(i, json.dumps(r, ensure_ascii=False)) for i, r in enumerate(mdr_records)],
+            )
+            conn.commit()
 
         num_chunks  = (len(mdr_records) - 1) // checkpoint_interval + 1
         all_results: List[list] = []
@@ -435,9 +453,8 @@ class MAUDEExtractor:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            # 정상 완료 시에만 DB/디렉토리 삭제
             conn.close()
-            if checkpoint_dir.exists():
+            if auto_cleanup and checkpoint_dir.exists():
                 shutil.rmtree(checkpoint_dir)
 
             return flat_results
@@ -448,6 +465,66 @@ class MAUDEExtractor:
             if all_results:
                 return [r for chunk in all_results for r in chunk]
             raise
+
+
+def load_checkpoint_state(
+    checkpoint_dir: Union[str, Path],
+    checkpoint_name: str,
+) -> tuple[List[dict], List[dict]]:
+    """checkpoint DB에서 input_records와 extraction_cache를 읽어 복원.
+
+    run_llm_extraction 완료 후 run_failure_model_retry가 중단된 경우,
+    이전 단계 재실행 없이 상태를 복원할 때 사용합니다.
+
+    Args:
+        checkpoint_dir: SQLite DB가 위치한 디렉토리
+        checkpoint_name: DB 파일명 (확장자 제외, 예: 'checkpoint_event')
+
+    Returns:
+        (records, results) 튜플. 원본 입력 순서가 유지됩니다.
+
+    Raises:
+        FileNotFoundError: DB 파일이 없을 경우
+    """
+    db_path = Path(checkpoint_dir) / f'{checkpoint_name}.db'
+    if not db_path.exists():
+        raise FileNotFoundError(
+            f'체크포인트 DB 없음: {db_path}. '
+            'run_llm_extraction이 완료되지 않았거나 이미 정리된 상태입니다.'
+        )
+
+    conn = sqlite3.connect(str(db_path))
+
+    records = [
+        json.loads(record_json)
+        for _, record_json in conn.execute(
+            'SELECT idx, record FROM input_records ORDER BY idx'
+        )
+    ]
+    cache = {
+        mdr_text: json.loads(result_json)
+        for mdr_text, result_json in conn.execute(
+            'SELECT mdr_text, result FROM extraction_cache'
+        )
+    }
+    conn.close()
+
+    results = [
+        cache.get(r['mdr_text'], {
+            '_mdr_text': r['mdr_text'],
+            '_success': False,
+            '_error': 'Not found in checkpoint DB',
+        })
+        for r in records
+    ]
+
+    logger.info(
+        '체크포인트 상태 복원',
+        db=str(db_path),
+        records=len(records),
+        cached_results=len(cache),
+    )
+    return records, results
 
 
 # ============================================================================
@@ -495,7 +572,7 @@ if __name__ == "__main__":
         SAMPLE_RECORDS,
         checkpoint_dir="./checkpoints",
         checkpoint_interval=1000,
-        checkpoint_prefix="test",
+        checkpoint_name="test",
     )
 
     logger.debug("Results")

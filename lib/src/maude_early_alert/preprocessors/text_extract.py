@@ -137,6 +137,64 @@ def build_extract_merge_sql(
         )""")
 
 
+def build_failure_candidates_sql(
+    source_table: str,
+    extracted_table: str,
+    source_columns: List[str],
+    pk_column: str = "MDR_TEXT",
+    unknown_columns: Optional[List[str]] = None,
+    source_where: Optional[str] = None,
+    source_alias: str = "s",
+    extract_alias: str = "ex",
+) -> str:
+    """Snowflake에서 failure 모델 재시도 대상 레코드를 조회하는 SQL 생성.
+
+    재시도 조건 (OR):
+        - ex.{pk_column} IS NULL: _EXTRACTED에 없음 (1차 추출 실패)
+        - ex.{col} = 'Unknown': UNKNOWN 분류 컬럼
+
+    Args:
+        source_table: 원본 소스 테이블명
+        extracted_table: 추출 결과 테이블명
+        source_columns: 소스 테이블에서 SELECT할 컬럼 목록
+        pk_column: LEFT JOIN 키 컬럼
+        unknown_columns: 'Unknown' 체크 대상 추출 결과 컬럼 목록
+        source_where: 소스 테이블 WHERE 필터 (선택)
+        source_alias: 소스 테이블 alias
+        extract_alias: 추출 결과 테이블 alias
+    """
+    validate_identifier(source_table)
+    validate_identifier(extracted_table)
+    validate_identifier(pk_column)
+    for c in source_columns:
+        validate_identifier(c)
+
+    select_cols = ", ".join(f"{source_alias}.{c}" for c in source_columns)
+
+    null_cond = f"{extract_alias}.{pk_column} IS NULL"
+    unknown_conds = []
+    for col in (unknown_columns or []):
+        validate_identifier(col)
+        unknown_conds.append(f"{extract_alias}.{col} = 'Unknown'")
+
+    retry_condition = " OR ".join([null_cond] + unknown_conds)
+
+    where_parts = []
+    if source_where:
+        where_parts.append(dedent(source_where).strip())
+    where_parts.append(f"({retry_condition})")
+
+    where_clause = "\nAND ".join(where_parts)
+
+    return (
+        f"SELECT {select_cols}\n"
+        f"FROM {source_table} {source_alias}\n"
+        f"LEFT JOIN {extracted_table} {extract_alias}\n"
+        f"  ON {source_alias}.{pk_column} = {extract_alias}.{pk_column}\n"
+        f"WHERE {where_clause}"
+    )
+
+
 def build_extracted_join_sql(
     base_table: str,
     extracted_table: str,
@@ -288,6 +346,7 @@ class MDRExtractor:
         checkpoint_dir: Optional[Union[str, Path]] = None,
         checkpoint_interval: int = 5000,
         checkpoint_name: str = "checkpoint",
+        auto_cleanup: bool = True,
     ):
         """리스트(또는 unique_mdr_text)를 받아 추출 결과 반환.
 
@@ -296,6 +355,7 @@ class MDRExtractor:
             checkpoint_dir: None 이면 체크포인트 없이 process_with_retry 만 수행
             checkpoint_interval: 체크포인트 간격
             checkpoint_name: 체크포인트 DB 파일명
+            auto_cleanup: 완료 후 checkpoint_dir 자동 삭제 여부 (기본 True)
 
         Returns:
             추출 결과 dict 리스트
@@ -310,6 +370,7 @@ class MDRExtractor:
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval=checkpoint_interval,
             checkpoint_name=checkpoint_name,
+            auto_cleanup=auto_cleanup,
         )
 
 

@@ -33,6 +33,7 @@ from maude_early_alert.preprocessors.text_extract import (
     build_create_extract_temp_sql,
     build_extract_stage_insert_sql,
     build_extract_merge_sql,
+    build_failure_candidates_sql,
     build_extracted_join_sql,
     prepare_insert_data,
     MDRExtractor,
@@ -319,67 +320,37 @@ class SilverPipeline(SnowflakeBase):
         logger.info('LLM 추출 완료', result_count=len(results))
         return results
 
-    def _get_retry_candidates(
-        self,
-        records: List[dict],
-        results: List[dict],
-    ) -> tuple[List[dict], List[int]]:
-        """1차 추출 결과에서 재시도 대상 레코드를 선별.
+    @with_context
+    def run_failure_model_retry(self, cursor: SnowflakeCursor) -> List[dict]:
+        """Snowflake _EXTRACTED에서 실패/UNKNOWN 레코드를 조회해 failure 모델로 재시도.
 
         재시도 조건 (OR):
-            - _success=False  : 추출 자체가 실패한 경우
-            - defect_type == "Unknown"  : 결함 유형 미분류
-            - patient_harm == "Unknown" : 환자 피해 미분류
+            - _EXTRACTED에 없음 (1차 추출 실패)
+            - PATIENT_HARM = 'Unknown'
+            - DEFECT_TYPE = 'Unknown'
 
         Returns:
-            (retry_records, retry_indices)
-            - retry_records : failure 모델에 넘길 원본 레코드 리스트
-            - retry_indices : merged 결과에서 교체할 위치 인덱스 리스트
+            failure 모델 추출 결과 리스트 (load_extraction_results로 UPSERT)
         """
-        retry_records, retry_indices = [], []
-        for i, (record, result) in enumerate(zip(records, results)):
-            is_failed = not result.get('_success', False)
-            is_unknown_defect = (
-                result.get('manufacturer_inspection', {}).get('defect_type') == 'Unknown'
-            )
-            is_unknown_harm = (
-                result.get('incident_details', {}).get('patient_harm') == 'Unknown'
-            )
-            if is_failed or is_unknown_defect or is_unknown_harm:
-                retry_records.append(record)
-                retry_indices.append(i)
-        return retry_records, retry_indices
-
-    def run_failure_model_retry(
-        self,
-        records: List[dict],
-        results: List[dict],
-    ) -> List[dict]:
-        """실패/UNKNOWN 레코드를 failure 모델로 재시도 후 결과 병합.
-
-        1차 `run_llm_extraction` 결과에서 재시도 대상을 골라
-        llm_extraction.yaml의 failure 모델로 재추출합니다.
-        재시도 성공 시 원본 결과를 교체하고 `_retried=True` 플래그를 추가합니다.
-        재시도도 실패한 경우 원본 결과를 유지하며 `_retry_failed=True`를 추가합니다.
-
-        Args:
-            records: `extract_mdr_text` 반환 레코드 리스트 (1차 추출 입력)
-            results: `run_llm_extraction` 반환 결과 리스트
-
-        Returns:
-            재시도 결과가 병합된 결과 리스트 (입력 순서 유지)
-        """
-        retry_records, retry_indices = self._get_retry_candidates(records, results)
-
-        if not retry_records:
-            logger.info('재시도 대상 레코드 없음 (failure 모델 스킵)')
-            return results
-
-        logger.info(
-            'failure 모델 재시도 시작',
-            retry_count=len(retry_records),
-            total_count=len(records),
+        sql = build_failure_candidates_sql(
+            source_table=self.llm_source_table,
+            extracted_table=self.llm_extracted_table,
+            source_columns=self.cfg.get_llm_source_columns(),
+            pk_column=self.cfg.get_llm_extracted_pk_column(),
+            unknown_columns=['PATIENT_HARM', 'DEFECT_TYPE'],
+            source_where=self.cfg.get_llm_source_where(),
         )
+        cursor.execute(sql)
+        rows = cursor.fetchall()
+
+        if not rows:
+            logger.info('failure 모델 재시도 대상 없음 (스킵)')
+            return []
+
+        col_names = [desc[0].lower() for desc in cursor.description]
+        records = [dict(zip(col_names, row)) for row in rows]
+
+        logger.info('failure 모델 재시도 시작', retry_count=len(records))
 
         failure_model_cfg = self.cfg.get_llm_failure_model_config()
         sampling_cfg = self.cfg.get_llm_sampling_config()
@@ -392,30 +363,15 @@ class SilverPipeline(SnowflakeBase):
             sampling_config=sampling_cfg,
             prompt=prompt,
         )
-        retry_results = extractor.process_batch(
-            retry_records,
+        results = extractor.process_batch(
+            records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure",
         )
 
-        merged = list(results)
-        improved = 0
-        for idx, retry_result in zip(retry_indices, retry_results):
-            if retry_result.get('_success', False):
-                retry_result['_retried'] = True
-                merged[idx] = retry_result
-                improved += 1
-            else:
-                merged[idx]['_retry_failed'] = True
-
-        logger.info(
-            'failure 모델 재시도 완료',
-            retry_count=len(retry_records),
-            improved=improved,
-            still_failed=len(retry_records) - improved,
-        )
-        return merged
+        logger.info('failure 모델 재시도 완료', result_count=len(results))
+        return results
 
     @with_context
     def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
@@ -583,11 +539,18 @@ if __name__ == '__main__':
         # pipeline.add_scd2_metadata(cursor)
         logger.info('Silver 14단계 완료')
 
-        # ── LLM 추출 4단계 ────────────────────────────────────────────
+        # ── LLM 추출 (Design 2) ───────────────────────────────────────
+        # 1. source → records 추출
+        # 2. 1차 LLM 추출 → checkpoint_event.db (중단 시 재개 가능)
+        # 3. _EXTRACTED UPSERT (Snowflake 영속화)
+        # 4. failure 모델 재시도 → checkpoint_event_failure.db (중단 시 재개 가능)
+        # 5. _EXTRACTED 증분 UPSERT
+        # 6. source + _EXTRACTED LEFT JOIN → _LLM_EXTRACTED 생성
         logger.info('LLM 추출 단계 시작')
         records = pipeline.extract_mdr_text(cursor)
         results = pipeline.run_llm_extraction(records)
-        results = pipeline.run_failure_model_retry(records, results)
+        pipeline.load_extraction_results(cursor, results)
+        results = pipeline.run_failure_model_retry(cursor)
         pipeline.load_extraction_results(cursor, results)
         pipeline.join_extraction(cursor)
 
