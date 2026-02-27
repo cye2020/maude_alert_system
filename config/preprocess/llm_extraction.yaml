@@ -41,7 +41,6 @@ source:
   columns:
     - "MDR_TEXT"
     - "PRODUCT_PROBLEMS"
-  where: "MDR_TEXT IS NOT NULL"
 
 # === 추출 결과 테이블 스키마 ===
 extracted:

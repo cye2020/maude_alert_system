@@ -95,6 +95,7 @@ class SilverConfig:
         self._imputation = load_config('preprocess/imputation')
         self._matching = load_config('preprocess/matching')
         self._llm_extraction = load_config('preprocess/llm_extraction')
+        self._clustering = load_config('preprocess/clustering')
         self._storage = load_config('storage')
 
     @property
@@ -404,10 +405,6 @@ class SilverConfig:
         """추출 소스 테이블 suffix 반환 (e.g. '_CURRENT')"""
         return self._llm_extraction['source']['suffix']
 
-    def get_llm_source_where(self) -> Optional[str]:
-        """추출 WHERE 절 반환 (없으면 None)"""
-        return self._llm_extraction['source'].get('where')
-
     def get_llm_extracted_suffix(self) -> str:
         """추출 결과 테이블 suffix 반환 (e.g. '_EXTRACTED')"""
         return self._llm_extraction['extracted']['suffix']
@@ -438,6 +435,83 @@ class SilverConfig:
     def get_llm_failure_model_config(self) -> dict:
         """Failure 재시도 모델 설정 반환 (llm_extraction.yaml failure 섹션)"""
         return self._llm_extraction['failure']
+
+    # ==================== clustering 설정 ====================
+
+    def get_clustering_source_category(self) -> str:
+        return self._clustering['source']['category']
+
+    def get_clustering_source_suffix(self) -> str:
+        return self._clustering['source']['suffix']
+
+    def get_clustering_categorical_columns(self) -> List[str]:
+        return self._clustering['source']['columns']['categorical']
+
+    def get_clustering_text_column(self) -> str:
+        return self._clustering['source']['columns']['text'][0]
+
+    def get_clustering_vocab_min_freq(self) -> int:
+        return self._clustering['vocab_filter']['min_freq']
+
+    def get_clustering_embedding_model(self) -> str:
+        return self._clustering['embedding']['model']
+
+    def get_clustering_embedding_batch_size(self) -> int:
+        return self._clustering['embedding']['batch_size']
+
+    def get_clustering_embedding_normalize(self) -> bool:
+        return self._clustering['embedding']['normalize']
+
+    def get_clustering_onehot_weight(self) -> float:
+        return self._clustering['onehot']['weight']
+
+    def get_clustering_validity_params(self) -> Dict:
+        return dict(self._clustering['validity'])
+
+    def get_clustering_umap_params(self) -> Dict:
+        return dict(self._clustering['umap'])
+
+    def get_clustering_hdbscan_params(self) -> Dict:
+        return dict(self._clustering['hdbscan'])
+
+    def get_clustering_scoring_params(self) -> Dict:
+        return dict(self._clustering['scoring'])
+
+    def get_clustering_model_dir(self) -> str:
+        return self._clustering['paths']['model_dir']
+
+    def get_clustering_optuna_params(self) -> Dict:
+        """log_file·storage 경로를 model_dir 기준으로 조립해서 반환"""
+        cfg = self._clustering['optuna']
+        model_dir = self.get_clustering_model_dir()
+        raw_storage = cfg.get('storage')
+        return {
+            'n_trials':    cfg['n_trials'],
+            'sampler_seed': cfg['sampler_seed'],
+            'log_file':    f'{model_dir}/{cfg["log_file"]}',
+            'study_name':  cfg['study_name'],
+            'ranges':      cfg['ranges'],
+            'timeout':     cfg.get('timeout'),
+            'storage':     f'sqlite:///{model_dir}/{raw_storage}' if raw_storage else None,
+        }
+
+    def get_clustering_output_suffix(self) -> str:
+        return self._clustering['output']['suffix']
+
+    def get_clustering_output_columns(self) -> List[Dict]:
+        return self._clustering['output']['columns']
+
+    def get_clustering_hover_cols(self) -> List[str]:
+        return self._clustering['visualization']['hover_cols']
+
+    def get_clustering_scatter_output(self) -> str:
+        return self._clustering['visualization']['scatter_output']
+
+    def get_clustering_distribution_output(self) -> str:
+        return self._clustering['visualization']['distribution_output']
+
+    def get_clustering_umap_2d_params(self) -> Dict:
+        return dict(self._clustering['visualization']['umap_2d'])
 
 
 # ==================== ConfigManager (싱글톤 패턴) ====================

@@ -1,5 +1,7 @@
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
+import numpy as np
+import pandas as pd
 import pendulum
 import structlog
 
@@ -9,6 +11,7 @@ from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
 from maude_early_alert.loaders.snowflake_load import SnowflakeLoader, get_staging_table_name
 from maude_early_alert.pipelines.config import get_config
 from maude_early_alert.preprocessors.column_select import build_select_columns_sql
+from maude_early_alert.utils.sql_builder import build_cte_sql, build_join_clause
 from maude_early_alert.preprocessors.custom_transform import (
     build_combine_mdr_text_sql,
     build_primary_udi_di_sql,
@@ -65,6 +68,11 @@ class SilverPipeline(SnowflakeBase):
         self.llm_source_table = f'{database}.{schema}.{category}{self.cfg.get_llm_source_suffix()}'.upper()
         self.llm_extracted_table = f'{database}.{schema}.{category}{self.cfg.get_llm_extracted_suffix()}'.upper()
         self.llm_join_table = f'{database}.{schema}.{category}{self.cfg.get_llm_join_suffix()}'.upper()
+
+        clustering_cat = self.cfg.get_clustering_source_category()
+        self.clustering_target_table = (
+            f'{database}.{schema}.{clustering_cat}{self.cfg.get_clustering_output_suffix()}'.upper()
+        )
 
         logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
 
@@ -284,16 +292,16 @@ class SilverPipeline(SnowflakeBase):
         sql = build_mdr_text_extract_sql(
             table_name=self.llm_source_table,
             columns=self.cfg.get_llm_source_columns(),
-            where=self.cfg.get_llm_source_where(),
         )
+        source_cols = self.cfg.get_llm_source_columns()
+        pk_col = self.cfg.get_llm_extracted_pk_column()
+
         cursor.execute(sql)
-        rows = cursor.fetchall()
-        seen = {}
-        for r in rows:
-            if r[0] and r[0] not in seen:
-                seen[r[0]] = {'mdr_text': r[0], 'product_problems': r[1] or ''}
-        unique_records = list(seen.values())
-        logger.info('MDR_TEXT 추출 완료', total=len(rows), unique=len(unique_records))
+        df = cursor.fetch_pandas_all()
+        total = len(df)
+        df = df.drop_duplicates(subset=[pk_col])[source_cols].fillna('')
+        unique_records = df.rename(columns={c: c.lower() for c in source_cols}).to_dict('records')
+        logger.info('MDR_TEXT 추출 완료', total=total, unique=len(unique_records))
         return unique_records
 
     def run_llm_extraction(self, records: List) -> List[dict]:
@@ -487,6 +495,107 @@ class SilverPipeline(SnowflakeBase):
             cursor.execute(expire_sql)
 
             logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
+
+    # ==================== Clustering ====================
+
+    @with_context
+    def fetch_clustering_data(self, cursor: SnowflakeCursor) -> pd.DataFrame:
+        """Step 1: EVENT_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT"""
+        categorical_cols = self.cfg.get_clustering_categorical_columns()
+        text_col = self.cfg.get_clustering_text_column()
+        hover_cols = self.cfg.get_clustering_hover_cols()
+        # 중복 없이 순서 유지
+        select_cols = list(dict.fromkeys(hover_cols + categorical_cols + [text_col]))
+
+        logger.info('clustering 데이터 로드 시작', source=self.llm_join_table, columns=select_cols)
+        sql = build_cte_sql(ctes=[], from_clause=self.llm_join_table, select_cols=select_cols)
+        cursor.execute(sql)
+        df = cursor.fetch_pandas_all()
+        logger.info('clustering 데이터 로드 완료', rows=len(df))
+        return df
+
+    def run_clustering_tuning(self, df: pd.DataFrame) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Step 2-5: vocab filter → embed → Optuna 튜닝 + 베스트 모델 저장.
+
+        Returns:
+            (embeddings, df_processed) — load_and_predict에 재사용
+        """
+        from maude_early_alert.preprocessors.clustering import (
+            analyze_keywords, prepare_text_col, embed_texts, train_and_save,
+        )
+        text_col = self.cfg.get_clustering_text_column()
+        sntc_col = f'{text_col}_FILTERED'
+
+        vocab = analyze_keywords(df, text_col=text_col, min_freq=self.cfg.get_clustering_vocab_min_freq())
+        df = prepare_text_col(df, text_col=text_col, output_col=sntc_col, vocab=vocab)
+        embeddings = embed_texts(
+            df[sntc_col].tolist(),
+            model=self.cfg.get_clustering_embedding_model(),
+            batch_size=self.cfg.get_clustering_embedding_batch_size(),
+            normalize=self.cfg.get_clustering_embedding_normalize(),
+        )
+        train_and_save(
+            embeddings=embeddings,
+            save_dir=self.cfg.get_clustering_model_dir(),
+            df=df,
+            categorical_cols=self.cfg.get_clustering_categorical_columns(),
+            onehot_weight=self.cfg.get_clustering_onehot_weight(),
+            umap_params=self.cfg.get_clustering_umap_params(),
+            hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
+            validity_params=self.cfg.get_clustering_validity_params(),
+            scoring_params=self.cfg.get_clustering_scoring_params(),
+            optuna_params=self.cfg.get_clustering_optuna_params(),
+        )
+        return embeddings, df
+
+    def run_clustering_prediction(
+        self, df: pd.DataFrame, embeddings: np.ndarray,
+    ) -> Tuple[np.ndarray, Dict]:
+        """Step 6: 저장된 베스트 모델로 전체 클러스터링"""
+        from maude_early_alert.preprocessors.clustering import load_and_predict
+        labels, metadata = load_and_predict(
+            embeddings=embeddings,
+            model_dir=self.cfg.get_clustering_model_dir(),
+            df=df,
+        )
+        return labels, metadata
+
+    @with_context
+    def save_clustering_results(
+        self, cursor: SnowflakeCursor, df: pd.DataFrame, labels: np.ndarray,
+    ):
+        """Step 5: clustering labels를 네 컬럼 기준 JOIN으로 원본 테이블에 붙여 _CLUSTERED 저장"""
+        categorical_cols = self.cfg.get_clustering_categorical_columns()
+        text_col = self.cfg.get_clustering_text_column()
+        join_keys = categorical_cols + [text_col]
+
+        temp_table = f'{self.clustering_target_table}_STG'
+        col_defs = ', '.join(f'{c} VARCHAR' for c in join_keys) + ', CLUSTER INT'
+        cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {temp_table} ({col_defs})')
+
+        rows = [
+            tuple(row[c] for c in join_keys) + (int(label),)
+            for row, label in zip(df[join_keys].to_dict('records'), labels.tolist())
+        ]
+        placeholders = ', '.join(['%s'] * (len(join_keys) + 1))
+        col_names = ', '.join(join_keys) + ', CLUSTER'
+        cursor.executemany(f'INSERT INTO {temp_table} ({col_names}) VALUES ({placeholders})', rows)
+
+        join_clause = build_join_clause(
+            left_table=self.llm_join_table,
+            right_table=temp_table,
+            on_columns=join_keys,
+            join_type='LEFT',
+            left_alias='e',
+            right_alias='c',
+        )
+        select_sql = build_cte_sql(
+            ctes=[],
+            from_clause=f'{self.llm_join_table} e\n{join_clause}',
+            select_cols=['e.*', 'c.CLUSTER'],
+        )
+        cursor.execute(f'CREATE OR REPLACE TABLE {self.clustering_target_table} AS\n{select_sql}')
+        logger.info('_CLUSTERED 테이블 생성 완료', table=self.clustering_target_table)
 
     def cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
