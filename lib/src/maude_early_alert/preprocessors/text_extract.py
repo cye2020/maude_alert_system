@@ -287,7 +287,7 @@ class MDRExtractor:
         records: List[Union[str, dict]],
         checkpoint_dir: Optional[Union[str, Path]] = None,
         checkpoint_interval: int = 5000,
-        checkpoint_prefix: str = "checkpoint",
+        checkpoint_name: str = "checkpoint",
     ):
         """리스트(또는 unique_mdr_text)를 받아 추출 결과 반환.
 
@@ -295,7 +295,7 @@ class MDRExtractor:
             records: MDR 텍스트 문자열 리스트, 또는 dict 리스트
             checkpoint_dir: None 이면 체크포인트 없이 process_with_retry 만 수행
             checkpoint_interval: 체크포인트 간격
-            checkpoint_prefix: 체크포인트 파일 접두사
+            checkpoint_name: 체크포인트 DB 파일명
 
         Returns:
             추출 결과 dict 리스트
@@ -309,7 +309,7 @@ class MDRExtractor:
             rows,
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval=checkpoint_interval,
-            checkpoint_prefix=checkpoint_prefix,
+            checkpoint_name=checkpoint_name,
         )
 
 

@@ -435,6 +435,10 @@ class SilverConfig:
             if not col.get('primary_key')
         ]
 
+    def get_llm_failure_model_config(self) -> dict:
+        """Failure 재시도 모델 설정 반환 (llm_extraction.yaml failure 섹션)"""
+        return self._llm_extraction['failure']
+
 
 # ==================== ConfigManager (싱글톤 패턴) ====================
 

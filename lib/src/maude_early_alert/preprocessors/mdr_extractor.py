@@ -220,10 +220,10 @@ class MAUDEExtractor:
     def _open_cache_db(
         self,
         checkpoint_dir: Path,
-        checkpoint_prefix: str,
+        checkpoint_name: str,
     ) -> sqlite3.Connection:
         """SQLite 캐시 DB를 열고 테이블을 초기화."""
-        db_path = checkpoint_dir / f'{checkpoint_prefix}.db'
+        db_path = checkpoint_dir / f'{checkpoint_name}.db'
         conn = sqlite3.connect(str(db_path))
         conn.execute('''
             CREATE TABLE IF NOT EXISTS extraction_cache (
@@ -318,20 +318,20 @@ class MAUDEExtractor:
         mdr_records: List[Dict[str, Any]],
         checkpoint_dir: Union[str, Path],
         checkpoint_interval: int = 5000,
-        checkpoint_prefix: str = 'checkpoint',
+        checkpoint_name: str = 'checkpoint',
     ) -> List[Dict[str, Any]]:
         """
         전체 레코드 배치 처리 (체크포인트 포함).
 
         대량 데이터를 checkpoint_interval 단위로 나눠 처리하고,
-        추론 결과를 SQLite DB({prefix}.db)에 mdr_text 기준으로 upsert합니다.
+        추론 결과를 SQLite DB({name}.db)에 mdr_text 기준으로 upsert합니다.
         중단 후 재개 시 DB를 캐시로 재활용하며, 정상 완료 시 DB를 삭제합니다.
 
         Args:
             mdr_records: {'mdr_text': ..., 'product_problems': ...} dict 리스트
             checkpoint_dir: SQLite DB 저장 디렉토리
             checkpoint_interval: 한 청크당 레코드 수
-            checkpoint_prefix: DB 파일명 접두사 ({prefix}.db)
+            checkpoint_name: DB 파일명 ({name}.db)
 
         Returns:
             전체 추출 결과 dict 리스트 (입력 순서 유지)
@@ -339,7 +339,7 @@ class MAUDEExtractor:
         checkpoint_dir = Path(checkpoint_dir)
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        conn = self._open_cache_db(checkpoint_dir, checkpoint_prefix)
+        conn = self._open_cache_db(checkpoint_dir, checkpoint_name)
         cache = self._load_cache_from_db(conn)
 
         num_chunks  = (len(mdr_records) - 1) // checkpoint_interval + 1

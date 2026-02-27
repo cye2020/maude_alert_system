@@ -62,7 +62,7 @@ class SilverPipeline(SnowflakeBase):
 
         category = self.cfg.get_llm_source_category()
         self.llm_source_table = f'{database}.{schema}.{category}{self.cfg.get_llm_source_suffix()}'.upper()
-        self.llm_self.llm_extracted_table = f'{database}.{schema}.{category}{self.cfg.get_llm_extracted_suffix()}'.upper()
+        self.llm_extracted_table = f'{database}.{schema}.{category}{self.cfg.get_llm_extracted_suffix()}'.upper()
         self.llm_join_table = f'{database}.{schema}.{category}{self.cfg.get_llm_join_suffix()}'.upper()
 
         logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
@@ -84,9 +84,26 @@ class SilverPipeline(SnowflakeBase):
         cursor.execute(full_sql)
         logger.info(f'{category}stage 테이블 생성 완료', table=next_table)
 
-    def _filter_step(self, key: str, cursor: SnowflakeCursor):
+    def get_categories(self, step: str) -> List[str]:
+        """DAG task_group expand용 - 스텝별 카테고리 목록 반환"""
+        return {
+            'filter_dedup_rows':     lambda: list(self.cfg.get_filtering_step('DEDUP').keys()),
+            'filter_scoping':        lambda: list(self.cfg.get_filtering_step('SCOPING').keys()),
+            'filter_quality':        lambda: list(self.cfg.get_filtering_step('QUALITY_FILTER').keys()),
+            'flatten':               self.cfg.get_flatten_categories,
+            'select_columns':        self.cfg.get_column_categories,
+            'select_columns_final':  self.cfg.get_final_categories,
+            'impute_missing_values': self.cfg.get_imputation_categories,
+            'clean_values':          self.cfg.get_cleaning_categories,
+            'cast_types':            self.cfg.get_column_categories,
+            'add_scd2_metadata':     lambda: list(self.stage.keys()),
+        }[step]()
+
+    def _filter_step(self, key: str, cursor: SnowflakeCursor, category: str = None):
         """filtering.yaml의 key에 해당하는 스텝을 category별로 실행"""
-        for category, step in self.cfg.get_filtering_step(key).items():
+        all_steps = self.cfg.get_filtering_step(key)
+        run_steps = {category: all_steps[category]} if category else all_steps
+        for category, step in run_steps.items():
             source = self._stage_table(category)
             logger.info('필터 스텝 실행', key=key, category=category, type=step['type'], source=source)
             if step['type'] == 'standalone':
@@ -96,19 +113,19 @@ class SilverPipeline(SnowflakeBase):
             self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def filter_dedup_rows(self, cursor: SnowflakeCursor):
+    def filter_dedup_rows(self, cursor: SnowflakeCursor, category: str = None):
         logger.info('중복 행 필터링 시작')
-        self._filter_step('DEDUP', cursor)
+        self._filter_step('DEDUP', cursor, category)
 
     @with_context
-    def filter_scoping(self, cursor: SnowflakeCursor):
+    def filter_scoping(self, cursor: SnowflakeCursor, category: str = None):
         logger.info('스코핑 필터링 시작')
-        self._filter_step('SCOPING', cursor)
+        self._filter_step('SCOPING', cursor, category)
 
     @with_context
-    def filter_quality(self, cursor: SnowflakeCursor):
+    def filter_quality(self, cursor: SnowflakeCursor, category: str = None):
         logger.info('품질 필터링 시작')
-        self._filter_step('QUALITY_FILTER', cursor)
+        self._filter_step('QUALITY_FILTER', cursor, category)
 
     def _fetch_schema(self, cursor: SnowflakeCursor, table_name: str):
         """top-level 키/타입 + 배열별 nested 스키마 조회"""
@@ -126,8 +143,9 @@ class SilverPipeline(SnowflakeBase):
         return top, array_schemas
 
     @with_context
-    def flatten(self, cursor: SnowflakeCursor):
-        for category in self.cfg.get_flatten_categories():
+    def flatten(self, cursor: SnowflakeCursor, category: str = None):
+        run_cats = [category] if category else self.cfg.get_flatten_categories()
+        for category in run_cats:
             table_name = self._stage_table(category)
             logger.info('flatten 시작', category=category, source=table_name)
             flatten_cfg = self.cfg.get_flatten_config(category)
@@ -199,17 +217,19 @@ class SilverPipeline(SnowflakeBase):
         self._create_next_stage(cursor, target_category, sql)
 
     @with_context
-    def select_columns(self, cursor: SnowflakeCursor, final: bool = False):
-        categories = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
+    def select_columns(self, cursor: SnowflakeCursor, final: bool = False, category: str = None):
+        all_cats = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
         get_cols = self.cfg.get_final_cols if final else self.cfg.get_column_cols
-        logger.info('컬럼 선택 시작', final=final, categories=categories)
-        for category in categories:
+        run_cats = [category] if category else all_cats
+        logger.info('컬럼 선택 시작', final=final, categories=run_cats)
+        for category in run_cats:
             sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
             self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def impute_missing_values(self, cursor: SnowflakeCursor):
-        for category in self.cfg.get_imputation_categories():
+    def impute_missing_values(self, cursor: SnowflakeCursor, category: str = None):
+        run_cats = [category] if category else self.cfg.get_imputation_categories()
+        for category in run_cats:
             logger.info('결측값 대체 시작', category=category, source=self._stage_table(category))
             sql = build_mode_fill_sql(
                 group_to_target=self.cfg.get_imputation_mode(category),
@@ -219,9 +239,10 @@ class SilverPipeline(SnowflakeBase):
             self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def clean_values(self, cursor: SnowflakeCursor):
+    def clean_values(self, cursor: SnowflakeCursor, category: str = None):
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
-        for category in self.cfg.get_cleaning_categories():
+        run_cats = [category] if category else self.cfg.get_cleaning_categories()
+        for category in run_cats:
             logger.info('값 정제 시작', category=category, source=self._stage_table(category))
             sql = build_clean_sql(
                 table_name=self._stage_table(category),
@@ -231,8 +252,9 @@ class SilverPipeline(SnowflakeBase):
             self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def cast_types(self, cursor: SnowflakeCursor):
-        for category in self.cfg.get_column_categories():
+    def cast_types(self, cursor: SnowflakeCursor, category: str = None):
+        run_cats = [category] if category else self.cfg.get_column_categories()
+        for category in run_cats:
             logger.info('타입 캐스팅 시작', category=category, source=self._stage_table(category))
             sql = build_type_cast_sql(
                 columns=self.cfg.get_column_cols(category),
@@ -292,10 +314,108 @@ class SilverPipeline(SnowflakeBase):
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
-            checkpoint_prefix=f"{checkpoint_cfg['prefix']}_{category}",
+            checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}",
         )
         logger.info('LLM 추출 완료', result_count=len(results))
         return results
+
+    def _get_retry_candidates(
+        self,
+        records: List[dict],
+        results: List[dict],
+    ) -> tuple[List[dict], List[int]]:
+        """1차 추출 결과에서 재시도 대상 레코드를 선별.
+
+        재시도 조건 (OR):
+            - _success=False  : 추출 자체가 실패한 경우
+            - defect_type == "Unknown"  : 결함 유형 미분류
+            - patient_harm == "Unknown" : 환자 피해 미분류
+
+        Returns:
+            (retry_records, retry_indices)
+            - retry_records : failure 모델에 넘길 원본 레코드 리스트
+            - retry_indices : merged 결과에서 교체할 위치 인덱스 리스트
+        """
+        retry_records, retry_indices = [], []
+        for i, (record, result) in enumerate(zip(records, results)):
+            is_failed = not result.get('_success', False)
+            is_unknown_defect = (
+                result.get('manufacturer_inspection', {}).get('defect_type') == 'Unknown'
+            )
+            is_unknown_harm = (
+                result.get('incident_details', {}).get('patient_harm') == 'Unknown'
+            )
+            if is_failed or is_unknown_defect or is_unknown_harm:
+                retry_records.append(record)
+                retry_indices.append(i)
+        return retry_records, retry_indices
+
+    def run_failure_model_retry(
+        self,
+        records: List[dict],
+        results: List[dict],
+    ) -> List[dict]:
+        """실패/UNKNOWN 레코드를 failure 모델로 재시도 후 결과 병합.
+
+        1차 `run_llm_extraction` 결과에서 재시도 대상을 골라
+        llm_extraction.yaml의 failure 모델로 재추출합니다.
+        재시도 성공 시 원본 결과를 교체하고 `_retried=True` 플래그를 추가합니다.
+        재시도도 실패한 경우 원본 결과를 유지하며 `_retry_failed=True`를 추가합니다.
+
+        Args:
+            records: `extract_mdr_text` 반환 레코드 리스트 (1차 추출 입력)
+            results: `run_llm_extraction` 반환 결과 리스트
+
+        Returns:
+            재시도 결과가 병합된 결과 리스트 (입력 순서 유지)
+        """
+        retry_records, retry_indices = self._get_retry_candidates(records, results)
+
+        if not retry_records:
+            logger.info('재시도 대상 레코드 없음 (failure 모델 스킵)')
+            return results
+
+        logger.info(
+            'failure 모델 재시도 시작',
+            retry_count=len(retry_records),
+            total_count=len(records),
+        )
+
+        failure_model_cfg = self.cfg.get_llm_failure_model_config()
+        sampling_cfg = self.cfg.get_llm_sampling_config()
+        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
+        prompt = get_prompt(self.cfg.get_llm_prompt_mode())
+        category = self.cfg.get_llm_source_category()
+
+        extractor = MDRExtractor(
+            **failure_model_cfg,
+            sampling_config=sampling_cfg,
+            prompt=prompt,
+        )
+        retry_results = extractor.process_batch(
+            retry_records,
+            checkpoint_dir=checkpoint_cfg['dir'],
+            checkpoint_interval=checkpoint_cfg['interval'],
+            checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure",
+        )
+
+        merged = list(results)
+        improved = 0
+        for idx, retry_result in zip(retry_indices, retry_results):
+            if retry_result.get('_success', False):
+                retry_result['_retried'] = True
+                merged[idx] = retry_result
+                improved += 1
+            else:
+                merged[idx]['_retry_failed'] = True
+
+        logger.info(
+            'failure 모델 재시도 완료',
+            retry_count=len(retry_records),
+            improved=improved,
+            still_failed=len(retry_records) - improved,
+        )
+        return merged
 
     @with_context
     def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
@@ -334,7 +454,7 @@ class SilverPipeline(SnowflakeBase):
         logger.info('JOIN 결과 테이블 생성 완료', table=self.llm_join_table)
 
     @with_context
-    def add_scd2_metadata(self, cursor: SnowflakeCursor):
+    def add_scd2_metadata(self, cursor: SnowflakeCursor, category: str = None):
         """증분 SCD2 메타데이터 추가 및 {CATEGORY}_CURRENT 테이블 적재
 
         신규 배치 레코드에 Silver SCD2 메타데이터를 추가하고
@@ -359,7 +479,8 @@ class SilverPipeline(SnowflakeBase):
         db = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
 
-        for category in self.stage:
+        run_cats = [category] if category else list(self.stage.keys())
+        for category in run_cats:
             source = self._stage_table(category)
             pk_cols = self.cfg.get_silver_primary_key(category)
             business_key = self.cfg.get_silver_business_key(category)
@@ -411,7 +532,7 @@ class SilverPipeline(SnowflakeBase):
 
             logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
 
-    def _cleanup_stages(self, cursor: SnowflakeCursor):
+    def cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
         logger.info('중간 stage 테이블 정리 시작', stage=dict(self.stage))
         for category, current in self.stage.items():
@@ -459,15 +580,16 @@ if __name__ == '__main__':
         # pipeline.match_udi(cursor)
         # pipeline.filter_quality(cursor)
         # pipeline.select_columns(cursor, final=True)
-        pipeline.add_scd2_metadata(cursor)
+        # pipeline.add_scd2_metadata(cursor)
         logger.info('Silver 14단계 완료')
 
         # ── LLM 추출 4단계 ────────────────────────────────────────────
         logger.info('LLM 추출 단계 시작')
-        # records = pipeline.extract_mdr_text(cursor)
-        # results = pipeline.run_llm_extraction(records)
-        # pipeline.load_extraction_results(cursor, results)
-        # pipeline.join_extraction(cursor)
+        records = pipeline.extract_mdr_text(cursor)
+        results = pipeline.run_llm_extraction(records)
+        results = pipeline.run_failure_model_retry(records, results)
+        pipeline.load_extraction_results(cursor, results)
+        pipeline.join_extraction(cursor)
 
         logger.info('Silver 파이프라인 완료')
 
