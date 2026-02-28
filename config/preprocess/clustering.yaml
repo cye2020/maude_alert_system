@@ -15,93 +15,97 @@ source:
     text:
       - PROBLEM_COMPONENTS
 
-# 2. 어휘 필터링
+# 2. 텍스트 전처리 (학습·추론 공통)
 vocab_filter:
   min_freq: 10   # 이 빈도수 미만 키워드 제거
 
-# 3. 임베딩
+# 3. 임베딩 (학습·추론 공통)
 embedding:
   model: "pritamdeka/S-PubMedBert-MS-MARCO"
   batch_size: 32
   normalize: true  # L2 정규화 (cosine similarity 기반 UMAP에 필요)
 
-# 4. 원핫 인코딩
+# 4. 원핫 인코딩 (학습·추론 공통)
 onehot:
   weight: 5.0   # 범주형 피처 스케일 조정 (임베딩 대비 상대적 중요도)
 
-# 5. Optuna (UMAP 차원 축소 + HDBSCAN 클러스터링)
+# 5. 학습 (일회성 — Optuna 튜닝)
+train:
+  enabled: true   # false로 설정 시 Optuna 튜닝 스킵, active_run 모델로 예측
 
-# 합격 조건 (Pass/Fail 필터링)
-validity:
-  k_min: 3
-  k_max: 8
-  noise_max: 0.30
+  # 합격 조건 (Pass/Fail 필터링)
+  validity:
+    k_min: 3
+    k_max: 6
+    noise_max: 0.30
 
-# UMAP 고정 파라미터 (Optuna가 튜닝하지 않는 값)
-umap:
-  metric: cosine
-  random_state: 42
+  # UMAP 고정 파라미터 (Optuna가 튜닝하지 않는 값)
+  umap:
+    metric: cosine
+    random_state: 42
 
-# HDBSCAN 고정 파라미터
-hdbscan:
-  metric: euclidean
-  cluster_selection_method: eom
-  gen_min_span_tree: true
+  # HDBSCAN 고정 파라미터
+  hdbscan:
+    metric: euclidean
+    cluster_selection_method: eom
+    gen_min_span_tree: true
 
-# 품질 점수 (합격한 것 중 순위용, 가중치 합계 = 1.0)
-# DBI·CHI는 리포팅 전용 — composite score에 포함하지 않음
-scoring:
-  weights:
-    silhouette: 0.60
-    entropy: 0.20
-    gini: 0.20
-  silhouette_thresholds:
-    low: 0.4
-    mid: 0.5
-  entropy_thresholds:
-    good: 0.7
-    acceptable: 0.5
+  # 품질 점수 (합격한 것 중 순위용, 가중치 합계 = 1.0)
+  # DBI·CHI는 리포팅 전용 — composite score에 포함하지 않음
+  scoring:
+    weights:
+      silhouette: 0.45
+      noise: 0.35       # 낮을수록 좋음 (score = 1 - noise_ratio)
+      entropy: 0.10
+      gini: 0.10
+    silhouette_thresholds:
+      low: 0.4
+      mid: 0.5
+    entropy_thresholds:
+      good: 0.7
+      acceptable: 0.5
 
-# Optuna 설정
-optuna:
-  n_trials: 100
-  timeout: null         # 초 단위, null이면 제한 없음
-  sampler_seed: 42
-  log_file: results_optuna.json       # models/clustering/ 아래 저장됨
-  storage: optuna_clustering.db       # models/clustering/ 아래 저장됨 (null이면 인메모리)
-  study_name: maude_clustering
-  ranges:
-    min_cluster_size:
-      min: 50
-      max: 500
-      step: 10
-    min_samples:
-      min: 3
-      max: 20
-      step: 1
-    umap_n_components:
-      min: 10
-      max: 20
-    umap_n_neighbors:
-      min: 30
-      max: 80
-      step: 5
-    umap_min_dist:
-      min: 0.0
-      max: 0.3
+  # Optuna 설정
+  optuna:
+    n_trials: 100
+    timeout: null         # 초 단위, null이면 제한 없음
+    sampler_seed: 42
+    log_file: results_optuna.json       # run 디렉토리 아래 저장됨
+    storage: optuna_clustering.db       # run 디렉토리 아래 저장됨 (null이면 인메모리)
+    study_name: maude_clustering
+    ranges:
+      min_cluster_size:
+        min: 50
+        max: 500
+        step: 10
+      min_samples:
+        min: 3
+        max: 20
+        step: 1
+      umap_n_components:
+        min: 10
+        max: 20
+      umap_n_neighbors:
+        min: 30
+        max: 80
+        step: 5
+      umap_min_dist:
+        min: 0.0
+        max: 0.3
 
 # 6. 모델 저장 경로
 paths:
-  model_dir: models/clustering
+  base_dir: models/clustering
+  active_run: null   # 학습 후 직접 설정 (e.g. "20260120_143022")
 
-# === 클러스터링 결과 테이블 스키마 ===
+# 7. 클러스터링 결과 테이블 스키마
 output:
   suffix: "_CLUSTERED"
   columns:
     - name: "CLUSTER"
       type: INT
 
-# 7. 시각화
+# 8. 시각화
 visualization:
   hover_cols:
     - PRODUCT_CODE

@@ -271,7 +271,7 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
 
     Args:
         scoring_params: {
-            "weights": {"silhouette": float, "entropy": float, "gini": float},
+            "weights": {"silhouette": float, "noise": float, "entropy": float, "gini": float},
             "silhouette_thresholds": {"low": float, "mid": float},
             "entropy_thresholds": {"good": float, "acceptable": float},
         }
@@ -288,6 +288,9 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
     else:
         score_sil = min(1.0, 0.8 + (sil - sil_thresh["mid"]) * 0.4)
 
+    # noise_ratio: 낮을수록 좋음 → score = 1 - noise_ratio (validity 필터로 0~noise_max 보장)
+    score_noise = max(0.0, 1.0 - metrics["noise_ratio"])
+
     entropy = metrics["normalized_entropy"]
     if entropy >= entropy_thresh["good"]:
         score_entropy = 1.0
@@ -300,6 +303,7 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
 
     total = (
         score_sil       * weights.get("silhouette", 0)
+        + score_noise   * weights.get("noise", 0)
         + score_entropy * weights.get("entropy", 0)
         + score_gini    * weights.get("gini", 0)
     )

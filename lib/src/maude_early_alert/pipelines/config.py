@@ -454,6 +454,9 @@ class SilverConfig:
     def get_clustering_text_column(self) -> str:
         return self._clustering['source']['columns']['text'][0]
 
+    def get_clustering_train_enabled(self) -> bool:
+        return self._clustering['train']['enabled']
+
     def get_clustering_vocab_min_freq(self) -> int:
         return self._clustering['vocab_filter']['min_freq']
 
@@ -470,33 +473,42 @@ class SilverConfig:
         return self._clustering['onehot']['weight']
 
     def get_clustering_validity_params(self) -> Dict:
-        return dict(self._clustering['validity'])
+        return dict(self._clustering['train']['validity'])
 
     def get_clustering_umap_params(self) -> Dict:
-        return dict(self._clustering['umap'])
+        return dict(self._clustering['train']['umap'])
 
     def get_clustering_hdbscan_params(self) -> Dict:
-        return dict(self._clustering['hdbscan'])
+        return dict(self._clustering['train']['hdbscan'])
 
     def get_clustering_scoring_params(self) -> Dict:
-        return dict(self._clustering['scoring'])
+        return dict(self._clustering['train']['scoring'])
 
-    def get_clustering_model_dir(self) -> str:
-        return self._clustering['paths']['model_dir']
+    def get_clustering_base_dir(self) -> str:
+        return self._clustering['paths']['base_dir']
 
-    def get_clustering_optuna_params(self) -> Dict:
-        """log_file·storage 경로를 model_dir 기준으로 조립해서 반환"""
-        cfg = self._clustering['optuna']
-        model_dir = self.get_clustering_model_dir()
+    def get_clustering_active_dir(self) -> str:
+        """active_run으로 지정된 run 디렉토리 반환. null이면 ValueError."""
+        active_run = self._clustering['paths'].get('active_run')
+        if not active_run:
+            raise ValueError(
+                "clustering.yaml paths.active_run이 설정되지 않았습니다. "
+                "학습 완료 후 run ID를 기입하세요 (e.g. '20260120_143022')."
+            )
+        return f"{self.get_clustering_base_dir()}/runs/{active_run}"
+
+    def get_clustering_optuna_params(self, run_dir: str) -> Dict:
+        """log_file·storage 경로를 run_dir 기준으로 조립해서 반환"""
+        cfg = self._clustering['train']['optuna']
         raw_storage = cfg.get('storage')
         return {
             'n_trials':    cfg['n_trials'],
             'sampler_seed': cfg['sampler_seed'],
-            'log_file':    f'{model_dir}/{cfg["log_file"]}',
+            'log_file':    f'{run_dir}/{cfg["log_file"]}',
             'study_name':  cfg['study_name'],
             'ranges':      cfg['ranges'],
             'timeout':     cfg.get('timeout'),
-            'storage':     f'sqlite:///{model_dir}/{raw_storage}' if raw_storage else None,
+            'storage':     f'sqlite:///{run_dir}/{raw_storage}' if raw_storage else None,
         }
 
     def get_clustering_output_suffix(self) -> str:

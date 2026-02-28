@@ -1,4 +1,5 @@
 import shutil
+from functools import cached_property
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -110,29 +111,27 @@ class SilverPipeline(SnowflakeBase):
             'add_scd2_metadata':     lambda: list(self.stage.keys()),
         }[step]()
 
-    def _filter_step(self, key: str, cursor: SnowflakeCursor, category: str = None):
+    def _filter_step(self, key: str, cursor: SnowflakeCursor, category: str):
         """filtering.yaml의 key에 해당하는 스텝을 category별로 실행"""
-        all_steps = self.cfg.get_filtering_step(key)
-        run_steps = {category: all_steps[category]} if category else all_steps
-        for category, step in run_steps.items():
-            source = self._stage_table(category)
-            logger.info('필터 스텝 실행', key=key, category=category, type=step['type'], source=source)
-            if step['type'] == 'standalone':
-                sql = build_filter_sql(source, **{k: v for k, v in step.items() if k in ('where', 'qualify')})
-            else:  # chain
-                sql = build_filter_pipeline(source, step['ctes'], step['final'])
-            self._create_next_stage(cursor, category, sql)
+        step = self.cfg.get_filtering_step(key)[category]
+        source = self._stage_table(category)
+        logger.info('필터 스텝 실행', key=key, category=category, type=step['type'], source=source)
+        if step['type'] == 'standalone':
+            sql = build_filter_sql(source, **{k: v for k, v in step.items() if k in ('where', 'qualify')})
+        else:  # chain
+            sql = build_filter_pipeline(source, step['ctes'], step['final'])
+        self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def filter_dedup_rows(self, cursor: SnowflakeCursor, category: str = None):
+    def filter_dedup_rows(self, cursor: SnowflakeCursor, category: str):
         self._filter_step('DEDUP', cursor, category)
 
     @with_context
-    def filter_scoping(self, cursor: SnowflakeCursor, category: str = None):
+    def filter_scoping(self, cursor: SnowflakeCursor, category: str):
         self._filter_step('SCOPING', cursor, category)
 
     @with_context
-    def filter_quality(self, cursor: SnowflakeCursor, category: str = None):
+    def filter_quality(self, cursor: SnowflakeCursor, category: str):
         self._filter_step('QUALITY_FILTER', cursor, category)
 
     def _fetch_schema(self, cursor: SnowflakeCursor, table_name: str):
@@ -151,32 +150,30 @@ class SilverPipeline(SnowflakeBase):
         return top, array_schemas
 
     @with_context
-    def flatten(self, cursor: SnowflakeCursor, category: str = None):
-        run_cats = [category] if category else self.cfg.get_flatten_categories()
-        for category in run_cats:
-            table_name = self._stage_table(category)
-            logger.info('flatten 시작', category=category, source=table_name)
-            flatten_cfg = self.cfg.get_flatten_config(category)
-            top, array_schemas = self._fetch_schema(cursor, table_name)
+    def flatten(self, cursor: SnowflakeCursor, category: str):
+        table_name = self._stage_table(category)
+        logger.info('flatten 시작', category=category, source=table_name)
+        flatten_cfg = self.cfg.get_flatten_config(category)
+        top, array_schemas = self._fetch_schema(cursor, table_name)
 
-            exclude = {name for names in flatten_cfg.values() for name in names}
-            scalar_keys = {k: t.upper() for k, t in top.items() if k not in exclude}
+        exclude = {name for names in flatten_cfg.values() for name in names}
+        scalar_keys = {k: t.upper() for k, t in top.items() if k not in exclude}
 
-            strategy_keys = {
-                f'{strategy}_keys': {
-                    k: array_schemas[k]
-                    for k in names if k in array_schemas
-                }
-                for strategy, names in flatten_cfg.items()
+        strategy_keys = {
+            f'{strategy}_keys': {
+                k: array_schemas[k]
+                for k in names if k in array_schemas
             }
+            for strategy, names in flatten_cfg.items()
+        }
 
-            flatten_sql = build_flatten_sql(
-                table_name=table_name,
-                scalar_keys=scalar_keys,
-                **strategy_keys,
-            )
-            logger.debug('flatten SQL 생성 완료', category=category, sql=flatten_sql)
-            self._create_next_stage(cursor, category, flatten_sql)
+        flatten_sql = build_flatten_sql(
+            table_name=table_name,
+            scalar_keys=scalar_keys,
+            **strategy_keys,
+        )
+        logger.debug('flatten SQL 생성 완료', category=category, sql=flatten_sql)
+        self._create_next_stage(cursor, category, flatten_sql)
 
     @with_context
     def combine_mdr_text(self, cursor: SnowflakeCursor):
@@ -225,50 +222,41 @@ class SilverPipeline(SnowflakeBase):
         self._create_next_stage(cursor, target_category, sql)
 
     @with_context
-    def select_columns(self, cursor: SnowflakeCursor, final: bool = False, category: str = None):
-        all_cats = self.cfg.get_final_categories() if final else self.cfg.get_column_categories()
+    def select_columns(self, cursor: SnowflakeCursor, category: str, final: bool = False):
         get_cols = self.cfg.get_final_cols if final else self.cfg.get_column_cols
-        run_cats = [category] if category else all_cats
-        logger.info('컬럼 선택 시작', final=final, categories=run_cats)
-        for category in run_cats:
-            sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
-            self._create_next_stage(cursor, category, sql)
+        logger.info('컬럼 선택 시작', final=final, category=category)
+        sql = build_select_columns_sql(get_cols(category), self._stage_table(category))
+        self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def impute_missing_values(self, cursor: SnowflakeCursor, category: str = None):
-        run_cats = [category] if category else self.cfg.get_imputation_categories()
-        for category in run_cats:
-            logger.info('결측값 대체 시작', category=category, source=self._stage_table(category))
-            sql = build_mode_fill_sql(
-                group_to_target=self.cfg.get_imputation_mode(category),
-                table_name=self._stage_table(category),
-                table_alias=self.cfg.get_imputation_alias(category),
-            )
-            self._create_next_stage(cursor, category, sql)
+    def impute_missing_values(self, cursor: SnowflakeCursor, category: str):
+        logger.info('결측값 대체 시작', category=category, source=self._stage_table(category))
+        sql = build_mode_fill_sql(
+            group_to_target=self.cfg.get_imputation_mode(category),
+            table_name=self._stage_table(category),
+            table_alias=self.cfg.get_imputation_alias(category),
+        )
+        self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def clean_values(self, cursor: SnowflakeCursor, category: str = None):
+    def clean_values(self, cursor: SnowflakeCursor, category: str):
         udf_schema = f"{self.cfg.get_snowflake_udf_database()}.{self.cfg.get_snowflake_udf_schema()}"
-        run_cats = [category] if category else self.cfg.get_cleaning_categories()
-        for category in run_cats:
-            logger.info('값 정제 시작', category=category, source=self._stage_table(category))
-            sql = build_clean_sql(
-                table_name=self._stage_table(category),
-                config=self.cfg.get_cleaning_config(category),
-                udf_schema=udf_schema,
-            )
-            self._create_next_stage(cursor, category, sql)
+        logger.info('값 정제 시작', category=category, source=self._stage_table(category))
+        sql = build_clean_sql(
+            table_name=self._stage_table(category),
+            config=self.cfg.get_cleaning_config(category),
+            udf_schema=udf_schema,
+        )
+        self._create_next_stage(cursor, category, sql)
 
     @with_context
-    def cast_types(self, cursor: SnowflakeCursor, category: str = None):
-        run_cats = [category] if category else self.cfg.get_column_categories()
-        for category in run_cats:
-            logger.info('타입 캐스팅 시작', category=category, source=self._stage_table(category))
-            sql = build_type_cast_sql(
-                columns=self.cfg.get_column_cols(category),
-                input_table=self._stage_table(category),
-            )
-            self._create_next_stage(cursor, category, sql)
+    def cast_types(self, cursor: SnowflakeCursor, category: str):
+        logger.info('타입 캐스팅 시작', category=category, source=self._stage_table(category))
+        sql = build_type_cast_sql(
+            columns=self.cfg.get_column_cols(category),
+            input_table=self._stage_table(category),
+        )
+        self._create_next_stage(cursor, category, sql)
 
     @with_context
     def match_udi(self, cursor: SnowflakeCursor):
@@ -303,27 +291,34 @@ class SilverPipeline(SnowflakeBase):
         logger.info('MDR_TEXT 추출 완료', total=total, unique=len(unique_records))
         return unique_records
 
+    @cached_property
+    def _llm_extractor(self) -> MDRExtractor:
+        """1차 LLM 추출용 extractor (최초 접근 시 모델 로드, 이후 재사용)"""
+        return MDRExtractor(
+            **self.cfg.get_llm_model_config(),
+            sampling_config=self.cfg.get_llm_sampling_config(),
+            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
+        )
+
+    @cached_property
+    def _failure_extractor(self) -> MDRExtractor:
+        """failure 모델용 extractor (최초 접근 시 모델 로드, 이후 재사용)"""
+        return MDRExtractor(
+            **self.cfg.get_llm_failure_model_config(),
+            sampling_config=self.cfg.get_llm_sampling_config(),
+            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
+        )
+
     def run_llm_extraction(self, records: List) -> List[dict]:
         """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
         category = self.cfg.get_llm_source_category()
-        model_cfg = self.cfg.get_llm_model_config()
-        sampling_cfg = self.cfg.get_llm_sampling_config()
         checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        prompt = get_prompt(self.cfg.get_llm_prompt_mode())
-
-        logger.debug('LLM 모델 설정', model_cfg=model_cfg, checkpoint_dir=checkpoint_cfg['dir'])
-        extractor = MDRExtractor(
-            **model_cfg,
-            sampling_config=sampling_cfg,
-            prompt=prompt,
-        )
-        results = extractor.process_batch(
+        return self._llm_extractor.process_batch(
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}",
         )
-        return results
 
     @with_context
     def fetch_failure_candidates(self, cursor: SnowflakeCursor) -> List[dict]:
@@ -369,25 +364,14 @@ class SilverPipeline(SnowflakeBase):
             logger.info('failure 모델 재시도 대상 없음 (스킵)')
             return []
 
-        failure_model_cfg = self.cfg.get_llm_failure_model_config()
-        sampling_cfg = self.cfg.get_llm_sampling_config()
-        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        prompt = get_prompt(self.cfg.get_llm_prompt_mode())
         category = self.cfg.get_llm_source_category()
-
-        extractor = MDRExtractor(
-            **failure_model_cfg,
-            sampling_config=sampling_cfg,
-            prompt=prompt,
-        )
-        results = extractor.process_batch(
+        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
+        return self._failure_extractor.process_batch(
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure",
         )
-
-        return results
 
     @with_context
     def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
@@ -433,7 +417,7 @@ class SilverPipeline(SnowflakeBase):
         logger.info('JOIN 결과 테이블 생성 완료', table=self.llm_join_table)
 
     @with_context
-    def add_scd2_metadata(self, cursor: SnowflakeCursor, category: str = None):
+    def add_scd2_metadata(self, cursor: SnowflakeCursor, category: str):
         """증분 SCD2 메타데이터 추가 및 {CATEGORY}_CURRENT 테이블 적재
 
         신규 배치 레코드에 Silver SCD2 메타데이터를 추가하고
@@ -458,58 +442,56 @@ class SilverPipeline(SnowflakeBase):
         db = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
 
-        run_cats = [category] if category else list(self.stage.keys())
-        for category in run_cats:
-            source = self._stage_table(category)
-            pk_cols = self.cfg.get_silver_primary_key(category)
-            business_key = self.cfg.get_silver_business_key(category)
-            target = f'{db}.{schema}.{category}_CURRENT'.upper()
-            stg_table = get_staging_table_name(target)
+        source = self._stage_table(category)
+        pk_cols = self.cfg.get_silver_primary_key(category)
+        business_key = self.cfg.get_silver_business_key(category)
+        target = f'{db}.{schema}.{category}_CURRENT'.upper()
+        stg_table = get_staging_table_name(target)
 
-            logger.info(
-                'SCD2 메타데이터 추가 시작 (증분)',
-                category=category, source=source, target=target,
-            )
+        logger.info(
+            'SCD2 메타데이터 추가 시작 (증분)',
+            category=category, source=source, target=target,
+        )
 
-            # 1-4. 메타데이터 추가 SQL 생성 (is_current=TRUE, effective_from=카테고리별 컬럼)
-            bronze_db = self.cfg.get_snowflake_load_database()
-            bronze_schema = self.cfg.get_snowflake_load_schema()
-            bronze_table = f'{bronze_db}.{bronze_schema}.{category}'.upper()
-            cursor.execute(build_extract_bronze_metadata_sql(bronze_table))
-            row = cursor.fetchone()
-            source_batch_id, source_system = row[0], row[1]
+        # 1-4. 메타데이터 추가 SQL 생성 (is_current=TRUE, effective_from=카테고리별 컬럼)
+        bronze_db = self.cfg.get_snowflake_load_database()
+        bronze_schema = self.cfg.get_snowflake_load_schema()
+        bronze_table = f'{bronze_db}.{bronze_schema}.{category}'.upper()
+        cursor.execute(build_extract_bronze_metadata_sql(bronze_table))
+        row = cursor.fetchone()
+        source_batch_id, source_system = row[0], row[1]
 
-            effective_from_col = self.cfg.get_silver_effective_from_col(category)
-            meta_sql = add_incremental_metadata(
-                table_name=source,
-                ingest_time=self.logical_date,
-                effective_from_col=effective_from_col,
-                source_batch_id=source_batch_id,
-                source_system=source_system,
-            )
+        effective_from_col = self.cfg.get_silver_effective_from_col(category)
+        meta_sql = add_incremental_metadata(
+            table_name=source,
+            ingest_time=self.logical_date,
+            effective_from_col=effective_from_col,
+            source_batch_id=source_batch_id,
+            source_system=source_system,
+        )
 
-            # staging 테이블 생성
-            cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {stg_table} AS\n{meta_sql}')
+        # staging 테이블 생성
+        cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {stg_table} AS\n{meta_sql}')
 
-            # 컬럼 목록 조회 (MERGE INSERT 절 구성용)
-            cursor.execute(f'SELECT * FROM {stg_table} LIMIT 0')
-            all_cols = [desc[0] for desc in cursor.description]
+        # 컬럼 목록 조회 (MERGE INSERT 절 구성용)
+        cursor.execute(f'SELECT * FROM {stg_table} LIMIT 0')
+        all_cols = [desc[0] for desc in cursor.description]
 
-            # 대상 테이블 없으면 구조만 복사해서 생성
-            cursor.execute(
-                f'CREATE TABLE IF NOT EXISTS {target} AS\n'
-                f'SELECT * FROM {stg_table} WHERE FALSE'
-            )
+        # 대상 테이블 없으면 구조만 복사해서 생성
+        cursor.execute(
+            f'CREATE TABLE IF NOT EXISTS {target} AS\n'
+            f'SELECT * FROM {stg_table} WHERE FALSE'
+        )
 
-            # MERGE: 동일 primary_key → UPDATE (멱등성), 신규 → INSERT
-            merge_sql = SnowflakeLoader.build_merge_sql(target, stg_table, pk_cols, all_cols)
-            cursor.execute(merge_sql)
+        # MERGE: 동일 primary_key → UPDATE (멱등성), 신규 → INSERT
+        merge_sql = SnowflakeLoader.build_merge_sql(target, stg_table, pk_cols, all_cols)
+        cursor.execute(merge_sql)
 
-            # 5. 동일 business_key의 이전 레코드 만료 처리 (is_current=FALSE, effective_to 채움)
-            expire_sql = build_expire_old_records_sql(target, business_key)
-            cursor.execute(expire_sql)
+        # 5. 동일 business_key의 이전 레코드 만료 처리 (is_current=FALSE, effective_to 채움)
+        expire_sql = build_expire_old_records_sql(target, business_key)
+        cursor.execute(expire_sql)
 
-            logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
+        logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
 
     # ==================== Clustering ====================
 
@@ -529,11 +511,20 @@ class SilverPipeline(SnowflakeBase):
         logger.info('clustering 데이터 로드 완료', rows=len(df))
         return df
 
-    def run_clustering_tuning(self, df: pd.DataFrame) -> Tuple[np.ndarray, pd.DataFrame]:
-        """Step 2-5: vocab filter → embed → Optuna 튜닝 + 베스트 모델 저장.
+    def run_clustering_tuning(
+        self, df: pd.DataFrame, run_dir: str = None,
+    ) -> Tuple[np.ndarray, pd.DataFrame]:
+        """Step 2-5: vocab filter → embed → (train.enabled시) Optuna 튜닝 + 베스트 모델 저장.
+
+        train.enabled=false이면 Optuna 튜닝을 스킵하고 임베딩만 반환.
+        임베딩은 enabled 여부와 무관하게 항상 수행 (run_clustering_prediction에 필요).
+
+        Args:
+            run_dir: 모델 저장 경로. None이면 base_dir/runs/{timestamp}로 자동 생성.
+                     train.enabled=false이면 무시됨.
 
         Returns:
-            (embeddings, df_processed) — load_and_predict에 재사용
+            (embeddings, df_processed) — run_clustering_prediction에 재사용
         """
         from maude_early_alert.preprocessors.clustering import (
             analyze_keywords, prepare_text_col, embed_texts, train_and_save,
@@ -549,9 +540,20 @@ class SilverPipeline(SnowflakeBase):
             batch_size=self.cfg.get_clustering_embedding_batch_size(),
             normalize=self.cfg.get_clustering_embedding_normalize(),
         )
+
+        if not self.cfg.get_clustering_train_enabled():
+            logger.info('clustering 학습 비활성화 (train.enabled=false), Optuna 튜닝 스킵')
+            return embeddings, df
+
+        if run_dir is None:
+            timestamp = pendulum.now().strftime('%Y%m%d_%H%M%S')
+            run_dir = f"{self.cfg.get_clustering_base_dir()}/runs/{timestamp}"
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        logger.info('clustering 학습 run 디렉토리 생성', run_dir=run_dir)
+
         train_and_save(
             embeddings=embeddings,
-            save_dir=self.cfg.get_clustering_model_dir(),
+            save_dir=run_dir,
             df=df,
             categorical_cols=self.cfg.get_clustering_categorical_columns(),
             onehot_weight=self.cfg.get_clustering_onehot_weight(),
@@ -559,24 +561,30 @@ class SilverPipeline(SnowflakeBase):
             hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
             validity_params=self.cfg.get_clustering_validity_params(),
             scoring_params=self.cfg.get_clustering_scoring_params(),
-            optuna_params=self.cfg.get_clustering_optuna_params(),
+            optuna_params=self.cfg.get_clustering_optuna_params(run_dir),
         )
         return embeddings, df
 
     def run_clustering_prediction(
-        self, df: pd.DataFrame, embeddings: np.ndarray,
+        self, df: pd.DataFrame, embeddings: np.ndarray, run_dir: str = None,
     ) -> Tuple[np.ndarray, Dict]:
-        """Step 6: 저장된 베스트 모델로 전체 클러스터링"""
+        """Step 6: 저장된 베스트 모델로 전체 클러스터링.
+
+        Args:
+            run_dir: 모델 경로. None이면 yaml active_run 사용 (null이면 ValueError).
+        """
         from maude_early_alert.preprocessors.clustering import load_and_predict
+        if run_dir is None:
+            run_dir = self.cfg.get_clustering_active_dir()
         labels, metadata = load_and_predict(
             embeddings=embeddings,
-            model_dir=self.cfg.get_clustering_model_dir(),
+            model_dir=run_dir,
             df=df,
         )
         return labels, metadata
 
     @with_context
-    def save_clustering_results(
+    def join_clustering_results(
         self, cursor: SnowflakeCursor, df: pd.DataFrame, labels: np.ndarray,
     ):
         """Step 5: clustering labels를 네 컬럼 기준 JOIN으로 원본 테이블에 붙여 _CLUSTERED 저장"""
@@ -648,29 +656,39 @@ if __name__ == '__main__':
     # conn = _connect()
     # cursor = conn.cursor()
     # try:
-        # pipeline.filter_dedup_rows(cursor)
-        # pipeline.flatten(cursor)
-        # pipeline.filter_scoping(cursor)
-        # pipeline.combine_mdr_text(cursor)
-        # pipeline.extract_primary_udi_di(cursor)
-        # pipeline.select_columns(cursor)
-        # pipeline.impute_missing_values(cursor)
-        # pipeline.clean_values(cursor)
-        # pipeline.apply_company_alias(cursor)
-        # pipeline.fuzzy_match_manufacturer(cursor)
-        # pipeline.cast_types(cursor)
-        # pipeline.extract_udi_di(cursor)
-        # pipeline.match_udi(cursor)
-        # pipeline.filter_quality(cursor)
-        # pipeline.select_columns(cursor, final=True)
-        # pipeline.add_scd2_metadata(cursor)
+    #     for cat in pipeline.get_categories('filter_dedup_rows'):
+    #         pipeline.filter_dedup_rows(cursor, category=cat)
+    #     for cat in pipeline.get_categories('flatten'):
+    #         pipeline.flatten(cursor, category=cat)
+    #     for cat in pipeline.get_categories('filter_scoping'):
+    #         pipeline.filter_scoping(cursor, category=cat)
+    #     pipeline.combine_mdr_text(cursor)
+    #     pipeline.extract_primary_udi_di(cursor)
+    #     for cat in pipeline.get_categories('select_columns'):
+    #         pipeline.select_columns(cursor, category=cat)
+    #     for cat in pipeline.get_categories('impute_missing_values'):
+    #         pipeline.impute_missing_values(cursor, category=cat)
+    #     for cat in pipeline.get_categories('clean_values'):
+    #         pipeline.clean_values(cursor, category=cat)
+    #     pipeline.apply_company_alias(cursor)
+    #     pipeline.fuzzy_match_manufacturer(cursor)
+    #     for cat in pipeline.get_categories('cast_types'):
+    #         pipeline.cast_types(cursor, category=cat)
+    #     pipeline.extract_udi_di(cursor)
+    #     pipeline.match_udi(cursor)
+    #     for cat in pipeline.get_categories('filter_quality'):
+    #         pipeline.filter_quality(cursor, category=cat)
+    #     for cat in pipeline.get_categories('select_columns_final'):
+    #         pipeline.select_columns(cursor, category=cat, final=True)
+    #     for cat in pipeline.get_categories('add_scd2_metadata'):
+    #         pipeline.add_scd2_metadata(cursor, category=cat)
     # except Exception:
     #     logger.error('전처리 실패', exc_info=True)
     #     raise
     # finally:
     #     cursor.close()
     #     conn.close()
-    
+
     logger.info('Silver 14단계 완료')
 
     # ── LLM 추출 (Design 2) ───────────────────────────────────────
@@ -790,6 +808,50 @@ if __name__ == '__main__':
         pipeline.join_extraction(cursor)
     except Exception:
         logger.error('JOIN 실패', exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    # ── Clustering ────────────────────────────────────────────────
+    # 1단계: 데이터 로드 (_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT)
+    logger.info('Clustering 단계 시작: 데이터 로드')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        df = pipeline.fetch_clustering_data(cursor)
+    except Exception:
+        logger.error('clustering 데이터 로드 실패', exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    # 2-5단계: vocab filter → 임베딩 → (train.enabled=true시) Optuna 튜닝 + 저장
+    logger.info(
+        'Clustering 단계 시작: 임베딩 + 학습',
+        train_enabled=pipeline.cfg.get_clustering_train_enabled(),
+    )
+    embeddings, df = pipeline.run_clustering_tuning(df)
+
+    # 6단계: active_run 모델로 전체 클러스터링 예측
+    logger.info('Clustering 단계 시작: 예측')
+    labels, metadata = pipeline.run_clustering_prediction(df, embeddings)
+    n_clusters = int(labels.max()) + 1 if labels.max() >= 0 else 0
+    logger.info(
+        'Clustering 예측 완료',
+        n_clusters=n_clusters,
+        noise_ratio=f'{float((labels == -1).mean()):.2%}',
+    )
+
+    # 7단계: 결과 저장 (_CLUSTERED 테이블 생성)
+    logger.info('Clustering 단계 시작: 결과 저장')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        pipeline.join_clustering_results(cursor, df, labels)
+    except Exception:
+        logger.error('clustering 결과 저장 실패', exc_info=True)
         raise
     finally:
         cursor.close()

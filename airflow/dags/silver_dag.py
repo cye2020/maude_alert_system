@@ -86,7 +86,7 @@ def maude_silver():
         반환값: merged stage dict (또는 is_last=True 시 MAUDE_SILVER_ASSETS emit)
         """
         @task_group(group_id=group_id)
-        def _group(stage: dict, logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> dict:
+        def _group(stage: dict) -> dict:
 
             @task
             def get_cats(stage: dict, logical_date: pendulum.DateTime) -> List[str]:
@@ -102,10 +102,8 @@ def maude_silver():
             def merge(updates: List[dict]) -> dict:
                 return {k: v for d in updates for k, v in d.items()}
 
-            cats = get_cats(stage, logical_date)
-            results = run_step.partial(
-                stage=stage, logical_date=logical_date, run_id=run_id, dag=dag,
-            ).expand(category=cats)
+            cats = get_cats(stage)
+            results = run_step.partial(stage=stage).expand(category=cats)
             return merge(results)
 
         return _group

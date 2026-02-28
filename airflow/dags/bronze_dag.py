@@ -20,7 +20,7 @@ SNOWFLAKE_CONN_ID = 'snowflake_default'
 
 @dag(
     dag_id='maude_bronze',
-    start_date=pendulum.datetime(2026, 1, 1, tz='Asia/Seoul'),
+    start_date=pendulum.datetime(2026, 3, 3, tz='Asia/Seoul'),
     schedule=[MAUDE_S3_ASSET],
     catchup=False,
     max_active_runs=1,
