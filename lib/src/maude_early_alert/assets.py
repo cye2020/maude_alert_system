@@ -27,7 +27,18 @@ MAUDE_SILVER_ASSETS = [
     for table in _sf_transform_tables
 ]
 
+# llm_dag (join_extraction) → cluster_dag 트리거
+_llm_cfg = load_config('preprocess/llm_extraction')
+_llm_category = _llm_cfg['source']['category'].upper()
+_llm_join_suffix = _llm_cfg['extracted']['join_suffix'].upper()
+MAUDE_LLM_ASSET = Asset(
+    f'snowflake://{_sf_transform_db}/{_sf_transform_schema}/{_llm_category}{_llm_join_suffix}'
+)
+
 # clustering_dag (clustering) → gold_dag 트리거
+_clustering_cfg = load_config('preprocess/clustering')
+_clustering_category = _clustering_cfg['source']['category'].upper()
+_clustering_output_suffix = _clustering_cfg['output']['suffix'].upper()
 MAUDE_CLUSTERED_ASSET = Asset(
-    f'snowflake://{_sf_transform_db}/{_sf_transform_schema}/EVENT_CLUSTERED'
+    f'snowflake://{_sf_transform_db}/{_sf_transform_schema}/{_clustering_category}{_clustering_output_suffix}'
 )

@@ -8,7 +8,7 @@ from structlog.contextvars import bind_contextvars
 
 from maude_early_alert.logging_config import configure_logging
 from maude_early_alert.pipelines.silver import SilverPipeline
-from maude_early_alert.assets import MAUDE_SILVER_ASSETS
+from maude_early_alert.assets import MAUDE_SILVER_ASSETS, MAUDE_LLM_ASSET
 
 configure_logging(level='INFO', log_file='llm.log')
 
@@ -95,7 +95,7 @@ def maude_llm():
             logger.error('failure 재시도 실패', error=str(e), exc_info=True)
             raise AirflowException(f'failure 재시도 실패: {e}') from e
 
-    @task
+    @task(outlets=[MAUDE_LLM_ASSET])
     def join_extraction(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
         """추출 결과 JOIN → {category}_LLM_EXTRACTED 테이블 생성"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
