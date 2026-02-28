@@ -1,3 +1,5 @@
+import shutil
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -91,7 +93,7 @@ class SilverPipeline(SnowflakeBase):
         logger.debug('stage 테이블 생성 중', table=next_table)
         full_sql = f'CREATE OR REPLACE TABLE {next_table} AS\n{sql}'
         cursor.execute(full_sql)
-        logger.info(f'{category}stage 테이블 생성 완료', table=next_table)
+        logger.info('stage 테이블 생성 완료', category=category, table=next_table)
 
     def get_categories(self, step: str) -> List[str]:
         """DAG task_group expand용 - 스텝별 카테고리 목록 반환"""
@@ -123,17 +125,14 @@ class SilverPipeline(SnowflakeBase):
 
     @with_context
     def filter_dedup_rows(self, cursor: SnowflakeCursor, category: str = None):
-        logger.info('중복 행 필터링 시작')
         self._filter_step('DEDUP', cursor, category)
 
     @with_context
     def filter_scoping(self, cursor: SnowflakeCursor, category: str = None):
-        logger.info('스코핑 필터링 시작')
         self._filter_step('SCOPING', cursor, category)
 
     @with_context
     def filter_quality(self, cursor: SnowflakeCursor, category: str = None):
-        logger.info('품질 필터링 시작')
         self._filter_step('QUALITY_FILTER', cursor, category)
 
     def _fetch_schema(self, cursor: SnowflakeCursor, table_name: str):
@@ -306,7 +305,6 @@ class SilverPipeline(SnowflakeBase):
 
     def run_llm_extraction(self, records: List) -> List[dict]:
         """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
-        logger.info('LLM 추출 시작', record_count=len(records))
         category = self.cfg.get_llm_source_category()
         model_cfg = self.cfg.get_llm_model_config()
         sampling_cfg = self.cfg.get_llm_sampling_config()
@@ -325,12 +323,11 @@ class SilverPipeline(SnowflakeBase):
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}",
         )
-        logger.info('LLM 추출 완료', result_count=len(results))
         return results
 
     @with_context
-    def run_failure_model_retry(self, cursor: SnowflakeCursor) -> List[dict]:
-        """Snowflake _EXTRACTED에서 실패/UNKNOWN 레코드를 조회해 failure 모델로 재시도.
+    def fetch_failure_candidates(self, cursor: SnowflakeCursor) -> List[dict]:
+        """Snowflake _EXTRACTED에서 failure 모델 재시도 대상 레코드 조회.
 
         재시도 조건 (OR):
             - _EXTRACTED에 없음 (1차 추출 실패)
@@ -338,27 +335,39 @@ class SilverPipeline(SnowflakeBase):
             - DEFECT_TYPE = 'Unknown'
 
         Returns:
-            failure 모델 추출 결과 리스트 (load_extraction_results로 UPSERT)
+            재시도 대상 레코드 리스트
         """
         sql = build_failure_candidates_sql(
             source_table=self.llm_source_table,
             extracted_table=self.llm_extracted_table,
             source_columns=self.cfg.get_llm_source_columns(),
             pk_column=self.cfg.get_llm_extracted_pk_column(),
-            unknown_columns=['PATIENT_HARM', 'DEFECT_TYPE'],
-            source_where=self.cfg.get_llm_source_where(),
+            unknown_columns=self.cfg.get_llm_extracted_unknown_columns(),
         )
         cursor.execute(sql)
         rows = cursor.fetchall()
 
         if not rows:
-            logger.info('failure 모델 재시도 대상 없음 (스킵)')
+            logger.info('failure 모델 재시도 대상 없음')
             return []
 
         col_names = [desc[0].lower() for desc in cursor.description]
         records = [dict(zip(col_names, row)) for row in rows]
+        logger.info('failure 모델 재시도 대상 조회 완료', retry_count=len(records))
+        return records
 
-        logger.info('failure 모델 재시도 시작', retry_count=len(records))
+    def run_failure_model_retry(self, records: List[dict]) -> List[dict]:
+        """failure 모델로 재시도 (Snowflake 연결 불필요).
+
+        Args:
+            records: fetch_failure_candidates로 조회한 재시도 대상 레코드
+
+        Returns:
+            failure 모델 추출 결과 리스트 (load_extraction_results로 UPSERT)
+        """
+        if not records:
+            logger.info('failure 모델 재시도 대상 없음 (스킵)')
+            return []
 
         failure_model_cfg = self.cfg.get_llm_failure_model_config()
         sampling_cfg = self.cfg.get_llm_sampling_config()
@@ -378,7 +387,6 @@ class SilverPipeline(SnowflakeBase):
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure",
         )
 
-        logger.info('failure 모델 재시도 완료', result_count=len(results))
         return results
 
     @with_context
@@ -403,6 +411,13 @@ class SilverPipeline(SnowflakeBase):
         cursor.executemany(stage_insert_sql, insert_data)
         cursor.execute(build_extract_merge_sql(self.llm_extracted_table, temp_table, pk_col, non_pk_cols))
         logger.info('추출 결과 적재 완료', count=len(insert_data))
+
+    def cleanup_extraction_checkpoint(self) -> None:
+        """LLM 추출 체크포인트 디렉토리 삭제. load_extraction_results 성공 후 명시적으로 호출."""
+        checkpoint_dir = Path(self.cfg.get_llm_checkpoint_config()['dir'])
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+            logger.info('체크포인트 삭제 완료', checkpoint_dir=str(checkpoint_dir))
 
     @with_context
     def join_extraction(self, cursor: SnowflakeCursor):
@@ -613,23 +628,26 @@ if __name__ == '__main__':
     from maude_early_alert.utils.secrets import get_secret
     from maude_early_alert.logging_config import configure_logging
 
-    configure_logging(level='DEBUG', log_file='silver.log')
+    configure_logging(level='INFO', log_file='silver.log')
 
     secret = get_secret('snowflake/de')
 
-    conn = snowflake.connector.connect(
-        user=secret['user'],
-        password=secret['password'],
-        account=secret['account'],
-        warehouse=secret['warehouse'],
-    )
+    def _connect():
+        return snowflake.connector.connect(
+            user=secret['user'],
+            password=secret['password'],
+            account=secret['account'],
+            warehouse=secret['warehouse'],
+        )
 
     pipeline = SilverPipeline(stage={'event': 14, 'udi': 7}, logical_date=pendulum.now())
 
-    cursor = conn.cursor()
-    try:
-        logger.info('Silver 파이프라인 시작')
-        # ── Silver 14단계 ──────────────────────────────────────────────
+    logger.info('Silver 파이프라인 시작')
+
+    # ── Silver 14단계 ──────────────────────────────────────────────
+    # conn = _connect()
+    # cursor = conn.cursor()
+    # try:
         # pipeline.filter_dedup_rows(cursor)
         # pipeline.flatten(cursor)
         # pipeline.filter_scoping(cursor)
@@ -646,28 +664,135 @@ if __name__ == '__main__':
         # pipeline.filter_quality(cursor)
         # pipeline.select_columns(cursor, final=True)
         # pipeline.add_scd2_metadata(cursor)
-        logger.info('Silver 14단계 완료')
+    # except Exception:
+    #     logger.error('전처리 실패', exc_info=True)
+    #     raise
+    # finally:
+    #     cursor.close()
+    #     conn.close()
+    
+    logger.info('Silver 14단계 완료')
 
-        # ── LLM 추출 (Design 2) ───────────────────────────────────────
-        # 1. source → records 추출
-        # 2. 1차 LLM 추출 → checkpoint_event.db (중단 시 재개 가능)
-        # 3. _EXTRACTED UPSERT (Snowflake 영속화)
-        # 4. failure 모델 재시도 → checkpoint_event_failure.db (중단 시 재개 가능)
-        # 5. _EXTRACTED 증분 UPSERT
-        # 6. source + _EXTRACTED LEFT JOIN → _LLM_EXTRACTED 생성
-        logger.info('LLM 추출 단계 시작')
+    # ── LLM 추출 (Design 2) ───────────────────────────────────────
+    # 1. source → records 추출
+    # 2. 1차 LLM 추출 → checkpoint.db (중단 시 재개 가능)
+    # 3. _EXTRACTED 청크 적재 (5000건 단위, 연결별 독립)
+    # 4. failure 대상 조회
+    # 5. failure 모델 재시도 → checkpoint_failure.db (중단 시 재개 가능)
+    # 6. _EXTRACTED 증분 청크 적재
+    # 7. source + _EXTRACTED LEFT JOIN → _LLM_EXTRACTED 생성
+
+    CHUNK_SIZE = 5000
+
+    # ── 1단계: source 읽기 ────────────────────────────────────────
+    logger.info('LLM 추출 단계 시작: source 읽기')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
         records = pipeline.extract_mdr_text(cursor)
-        results = pipeline.run_llm_extraction(records)
-        pipeline.load_extraction_results(cursor, results)
-        results = pipeline.run_failure_model_retry(cursor)
-        pipeline.load_extraction_results(cursor, results)
-        pipeline.join_extraction(cursor)
-
-        logger.info('Silver 파이프라인 완료')
-
     except Exception:
-        logger.error('Silver 파이프라인 실패', exc_info=True)
+        logger.error('source 읽기 실패', exc_info=True)
         raise
     finally:
         cursor.close()
         conn.close()
+
+    # ── 2-3단계: 1차 LLM 추출 + _EXTRACTED 청크 적재 ────────────
+    total_chunks = (len(records) - 1) // CHUNK_SIZE + 1
+    logger.info('LLM 추출 단계 시작: 1차 추출 + 적재', total=len(records), chunks=total_chunks)
+    session_start = pendulum.now()
+    for chunk_idx in range(total_chunks):
+        chunk = records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
+        logger.info('1차 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
+        chunk_start = pendulum.now()
+        results = pipeline.run_llm_extraction(chunk)
+        elapsed = (pendulum.now() - chunk_start).in_seconds()
+        elapsed_session = (pendulum.now() - session_start).in_seconds()
+        avg_per_chunk = elapsed_session / (chunk_idx + 1)
+        eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
+        success = sum(1 for r in results if r.get('_success', False))
+        logger.info(
+            '1차 청크 추출 완료',
+            chunk=chunk_idx + 1, total_chunks=total_chunks,
+            success=success, failed=len(results) - success,
+            success_rate=f'{100 * success / len(results):.1f}%' if results else 'N/A',
+            elapsed=f'{elapsed:.1f}s',
+            elapsed_session=f'{elapsed_session / 3600:.2f}h',
+            remaining_time=f'{eta_seconds / 3600:.1f}h',
+            eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
+        )
+        conn = _connect()
+        cursor = conn.cursor()
+        try:
+            pipeline.load_extraction_results(cursor, results)
+        except Exception:
+            logger.error('1차 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+    pipeline.cleanup_extraction_checkpoint()
+
+    # ── 4단계: failure 대상 조회 ──────────────────────────────────
+    logger.info('LLM 추출 단계 시작: failure 대상 조회')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        failure_records = pipeline.fetch_failure_candidates(cursor)
+    except Exception:
+        logger.error('failure 대상 조회 실패', exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    # ── 5-6단계: failure 모델 재시도 + _EXTRACTED 증분 청크 적재 ─
+    total_chunks = (len(failure_records) - 1) // CHUNK_SIZE + 1 if failure_records else 0
+    logger.info('LLM 추출 단계 시작: failure 추출 + 적재', total=len(failure_records), chunks=total_chunks)
+    session_start = pendulum.now()
+    for chunk_idx in range(total_chunks):
+        chunk = failure_records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
+        logger.info('failure 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
+        chunk_start = pendulum.now()
+        failure_results = pipeline.run_failure_model_retry(chunk)
+        elapsed = (pendulum.now() - chunk_start).in_seconds()
+        elapsed_session = (pendulum.now() - session_start).in_seconds()
+        avg_per_chunk = elapsed_session / (chunk_idx + 1)
+        eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
+        success = sum(1 for r in failure_results if r.get('_success', False))
+        logger.info(
+            'failure 청크 추출 완료',
+            chunk=chunk_idx + 1, total_chunks=total_chunks,
+            success=success, failed=len(failure_results) - success,
+            success_rate=f'{100 * success / len(failure_results):.1f}%' if failure_results else 'N/A',
+            elapsed=f'{elapsed:.1f}s',
+            elapsed_session=f'{elapsed_session / 3600:.2f}h',
+            remaining_time=f'{eta_seconds / 3600:.1f}h',
+            eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
+        )
+        conn = _connect()
+        cursor = conn.cursor()
+        try:
+            pipeline.load_extraction_results(cursor, failure_results)
+        except Exception:
+            logger.error('failure 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+    pipeline.cleanup_extraction_checkpoint()
+
+    # ── 7단계: _LLM_EXTRACTED JOIN ────────────────────────────────
+    logger.info('LLM 추출 단계 시작: _LLM_EXTRACTED JOIN')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        pipeline.join_extraction(cursor)
+    except Exception:
+        logger.error('JOIN 실패', exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
+    logger.info('Silver 파이프라인 완료')

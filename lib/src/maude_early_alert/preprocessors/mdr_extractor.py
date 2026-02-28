@@ -319,29 +319,33 @@ class MAUDEExtractor:
         # 원래 입력 순서 유지
         return [all_results[r.get('mdr_text', '')] for r in mdr_records]
 
+    def cleanup_checkpoint(self, checkpoint_dir: Union[str, Path]) -> None:
+        """체크포인트 디렉토리 삭제."""
+        checkpoint_dir = Path(checkpoint_dir)
+        if checkpoint_dir.exists():
+            shutil.rmtree(checkpoint_dir)
+            logger.debug('체크포인트 삭제 완료', checkpoint_dir=str(checkpoint_dir))
+
     def process_batch(
         self,
         mdr_records: List[Dict[str, Any]],
         checkpoint_dir: Union[str, Path],
         checkpoint_interval: int = 5000,
         checkpoint_name: str = 'checkpoint',
-        auto_cleanup: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         전체 레코드 배치 처리 (체크포인트 포함).
 
         대량 데이터를 checkpoint_interval 단위로 나눠 처리하고,
         추론 결과를 SQLite DB({name}.db)에 mdr_text 기준으로 upsert합니다.
-        중단 후 재개 시 DB를 캐시로 재활용하며, auto_cleanup=True(기본값)이면
-        정상 완료 시 DB를 삭제합니다.
+        중단 후 재개 시 DB를 캐시로 재활용합니다.
+        처리 완료 후 체크포인트를 삭제하려면 cleanup_checkpoint()를 명시적으로 호출하세요.
 
         Args:
             mdr_records: {'mdr_text': ..., 'product_problems': ...} dict 리스트
             checkpoint_dir: SQLite DB 저장 디렉토리
             checkpoint_interval: 한 청크당 레코드 수
             checkpoint_name: DB 파일명 ({name}.db)
-            auto_cleanup: True이면 완료 후 checkpoint_dir 삭제. False이면 유지 (이후
-                단계에서 명시적으로 정리하거나 재개 시 재활용할 때 사용)
 
         Returns:
             전체 추출 결과 dict 리스트 (입력 순서 유지)
@@ -454,9 +458,6 @@ class MAUDEExtractor:
                 torch.cuda.empty_cache()
 
             conn.close()
-            if auto_cleanup and checkpoint_dir.exists():
-                shutil.rmtree(checkpoint_dir)
-
             return flat_results
 
         except KeyboardInterrupt:

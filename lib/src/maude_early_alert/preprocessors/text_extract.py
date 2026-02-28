@@ -143,7 +143,6 @@ def build_failure_candidates_sql(
     source_columns: List[str],
     pk_column: str = "MDR_TEXT",
     unknown_columns: Optional[List[str]] = None,
-    source_where: Optional[str] = None,
     source_alias: str = "s",
     extract_alias: str = "ex",
 ) -> str:
@@ -175,13 +174,11 @@ def build_failure_candidates_sql(
     unknown_conds = []
     for col in (unknown_columns or []):
         validate_identifier(col)
-        unknown_conds.append(f"{extract_alias}.{col} = 'Unknown'")
+        unknown_conds.append(f"{extract_alias}.{col} IN ('Unknown', 'Other')")
 
     retry_condition = " OR ".join([null_cond] + unknown_conds)
 
     where_parts = []
-    if source_where:
-        where_parts.append(dedent(source_where).strip())
     where_parts.append(f"({retry_condition})")
 
     where_clause = "\nAND ".join(where_parts)
@@ -346,7 +343,6 @@ class MDRExtractor:
         checkpoint_dir: Optional[Union[str, Path]] = None,
         checkpoint_interval: int = 5000,
         checkpoint_name: str = "checkpoint",
-        auto_cleanup: bool = True,
     ):
         """리스트(또는 unique_mdr_text)를 받아 추출 결과 반환.
 
@@ -355,7 +351,6 @@ class MDRExtractor:
             checkpoint_dir: None 이면 체크포인트 없이 process_with_retry 만 수행
             checkpoint_interval: 체크포인트 간격
             checkpoint_name: 체크포인트 DB 파일명
-            auto_cleanup: 완료 후 checkpoint_dir 자동 삭제 여부 (기본 True)
 
         Returns:
             추출 결과 dict 리스트
@@ -370,7 +365,6 @@ class MDRExtractor:
             checkpoint_dir=checkpoint_dir,
             checkpoint_interval=checkpoint_interval,
             checkpoint_name=checkpoint_name,
-            auto_cleanup=auto_cleanup,
         )
 
 

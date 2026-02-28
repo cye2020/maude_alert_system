@@ -46,6 +46,9 @@ source:
 extracted:
   suffix: "_EXTRACTED"
   join_suffix: "_LLM_EXTRACTED"
+  unknown_columns:
+    - "PATIENT_HARM"
+    - "DEFECT_TYPE"
   columns:
     - name: "MDR_TEXT"
       type: "VARCHAR(16777216)"

@@ -424,6 +424,10 @@ class SilverConfig:
                 return col['name']
         raise ValueError("llm_extraction.yaml: extracted.columns에 primary_key가 없습니다")
 
+    def get_llm_extracted_unknown_columns(self) -> List[str]:
+        """failure 재시도 대상 판별 기준 컬럼 목록 반환"""
+        return self._llm_extraction['extracted']['unknown_columns']
+
     def get_llm_extracted_non_pk_columns(self) -> List[str]:
         """추출 결과 테이블의 pk 외 컬럼명 목록 반환"""
         return [
