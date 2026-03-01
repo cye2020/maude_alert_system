@@ -41,7 +41,7 @@ def maude_gold():
     """EVENT_CLUSTERED → Gold 집계(dashboard) + 이상징후시그널(spike/stat) 파이프라인"""
 
     @task
-    def 집계(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def aggregate(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
         """클러스터/결함/제품/전체 월간 지표 집계 → Gold dashboard 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
         snapshot_date = logical_date.strftime('%Y-%m-%d')
@@ -63,7 +63,7 @@ def maude_gold():
             raise AirflowException(f'집계 실패: {e}') from e
 
     @task
-    def 이상징후시그널(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def anomaly_signal(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
         """Spike Detection + Statistical Analysis → Gold 이상 탐지 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
         snapshot_date = logical_date.strftime('%Y-%m-%d')
@@ -82,8 +82,8 @@ def maude_gold():
             logger.error('이상징후 탐지 실패', error=str(e), exc_info=True)
             raise AirflowException(f'이상징후 탐지 실패: {e}') from e
 
-    집계()
-    이상징후시그널()
+    aggregate()
+    anomaly_signal()
 
 
 maude_gold()

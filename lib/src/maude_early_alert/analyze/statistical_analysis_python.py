@@ -11,6 +11,7 @@ from typing import Optional, Dict, Any
 from snowflake.connector.cursor import SnowflakeCursor
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
+from maude_early_alert.utils.helpers import validate_identifier
 
 
 class StatisticalAnalysisPython(SnowflakeBase):
@@ -36,6 +37,8 @@ class StatisticalAnalysisPython(SnowflakeBase):
         col_column: str,
         filters: Optional[str] = None,
     ) -> pd.DataFrame:
+        validate_identifier(row_column)
+        validate_identifier(col_column)
         where_clause = f"WHERE {filters}" if filters else ""
         sql = f"""
             SELECT {row_column}, {col_column}, COUNT(*) AS observed
@@ -201,59 +204,7 @@ class StatisticalAnalysisPython(SnowflakeBase):
         return result
 
     # ──────────────────────────────────────────────
-    # 5. 결과 Snowflake 적재
-    # ──────────────────────────────────────────────
-    @with_context
-    def write_to_snowflake(
-        self,
-        cursor: SnowflakeCursor,
-        df: pd.DataFrame,
-        table_name: str,
-    ) -> int:
-        if df.empty:
-            return 0
-
-        cols = df.columns.tolist()
-        col_defs = []
-        for col in cols:
-            dtype = df[col].dtype
-            if pd.api.types.is_bool_dtype(dtype):
-                col_defs.append(f"{col} BOOLEAN")
-            elif pd.api.types.is_integer_dtype(dtype):
-                col_defs.append(f"{col} INTEGER")
-            elif pd.api.types.is_float_dtype(dtype):
-                col_defs.append(f"{col} DOUBLE")
-            else:
-                col_defs.append(f"{col} VARCHAR")
-
-        create_sql = f"CREATE OR REPLACE TABLE {table_name} ({', '.join(col_defs)})"
-        cursor.execute(create_sql)
-
-        placeholders = ", ".join(["%s"] * len(cols))
-        insert_sql = f"INSERT INTO {table_name} ({', '.join(cols)}) VALUES ({placeholders})"
-
-        data = []
-        for _, row in df.iterrows():
-            values = []
-            for col in cols:
-                val = row[col]
-                if pd.isna(val):
-                    values.append(None)
-                elif isinstance(val, (np.bool_, bool)):
-                    values.append(bool(val))
-                elif isinstance(val, (np.integer,)):
-                    values.append(int(val))
-                elif isinstance(val, (np.floating,)):
-                    values.append(float(val))
-                else:
-                    values.append(str(val))
-            data.append(values)
-
-        cursor.executemany(insert_sql, data)
-        return len(data)
-
-    # ──────────────────────────────────────────────
-    # 6. 통계 분석 실행 (계산만, 적재 X)
+    # 5. 통계 분석 실행 (계산만, 적재 X)
     # ──────────────────────────────────────────────
     def run(
         self,
@@ -361,25 +312,6 @@ if __name__ == "__main__":
         print("\n[소요 시간]")
         for step, sec in result["timings"].items():
             print(f"  {step:20} → {sec:.3f}s")
-
-        # ------------------------------------------------------------------
-        # 3. Snowflake 적재
-        # ------------------------------------------------------------------
-        output_prefix = "MAUDE_STAT"
-
-        chi2_table = f"{output_prefix}_CHI2_RESULT"
-        analyzer.write_to_snowflake(cursor, chi2["detail"], chi2_table)
-
-        odds_table = f"{output_prefix}_ODDS_RATIOS"
-        analyzer.write_to_snowflake(cursor, result["odds_ratios"], odds_table)
-
-        final_table = f"{output_prefix}_FINAL"
-        analyzer.write_to_snowflake(cursor, final_df, final_table)
-
-        print("\n[적재 완료]")
-        print(f"  chi2_result   → {chi2_table} ({len(chi2['detail'])}건)")
-        print(f"  odds_ratios   → {odds_table} ({len(result['odds_ratios'])}건)")
-        print(f"  final         → {final_table} ({len(final_df)}건)")
 
     finally:
         cursor.close()

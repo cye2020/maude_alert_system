@@ -3,6 +3,7 @@ import datetime
 from typing import Any, List, Union
 
 _IDENTIFIER_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$')
+_DATE_RE       = re.compile(r'^\d{4}-\d{2}-\d{2}$')
 
 
 def validate_identifier(name: str) -> str:
@@ -23,6 +24,26 @@ def validate_identifier(name: str) -> str:
     if not _IDENTIFIER_RE.match(name):
         raise ValueError(f"Invalid SQL identifier: {name!r}")
     return name
+
+
+def validate_date(value: str) -> str:
+    """날짜 형식 검증 (YYYY-MM-DD)
+
+    SQL f-string에 삽입되는 날짜 값의 안전성을 보장합니다.
+
+    Args:
+        value: 검증할 날짜 문자열
+
+    Returns:
+        검증 통과한 원본 문자열
+
+    Raises:
+        ValueError: YYYY-MM-DD 형식이 아니거나 실존하지 않는 날짜인 경우
+    """
+    if not _DATE_RE.match(value):
+        raise ValueError(f"유효하지 않은 날짜 형식 (YYYY-MM-DD 필요): {value!r}")
+    datetime.datetime.strptime(value, "%Y-%m-%d")  # 실존 날짜 검증 (예: 2024-02-30 거부)
+    return value
 
 
 def ensure_list(value: Union[str, List[str]]) -> List[str]:

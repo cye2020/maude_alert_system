@@ -14,6 +14,7 @@ from typing import Optional, List
 from snowflake.connector.cursor import SnowflakeCursor
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
+from maude_early_alert.utils.helpers import validate_identifier
 
 
 class SpikeDetection(SnowflakeBase):
@@ -53,6 +54,9 @@ class SpikeDetection(SnowflakeBase):
         count_column: str,
         filters: Optional[str] = None,
     ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        validate_identifier(keyword_column)
+        validate_identifier(date_column)
+        validate_identifier(count_column)
         conditions = [
             f"{keyword_column} IS NOT NULL",
             f"{date_column} IS NOT NULL",
