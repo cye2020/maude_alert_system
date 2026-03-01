@@ -1,3 +1,4 @@
+import json
 import shutil
 from functools import cached_property
 from pathlib import Path
@@ -501,8 +502,11 @@ class SilverPipeline(SnowflakeBase):
         categorical_cols = self.cfg.get_clustering_categorical_columns()
         text_col = self.cfg.get_clustering_text_column()
         hover_cols = self.cfg.get_clustering_hover_cols()
-        # 중복 없이 순서 유지
-        select_cols = list(dict.fromkeys(hover_cols + categorical_cols + [text_col]))
+        pk_cols = self.cfg.get_silver_primary_key(self.cfg.get_clustering_source_category())
+        if isinstance(pk_cols, str):
+            pk_cols = [pk_cols]
+        # 중복 없이 순서 유지 (pk를 앞에 배치)
+        select_cols = list(dict.fromkeys(pk_cols + hover_cols + categorical_cols + [text_col]))
 
         logger.info('clustering 데이터 로드 시작', source=self.llm_join_table, columns=select_cols)
         sql = build_cte_sql(ctes=[], from_clause=self.llm_join_table, select_cols=select_cols)
@@ -541,28 +545,59 @@ class SilverPipeline(SnowflakeBase):
             normalize=self.cfg.get_clustering_embedding_normalize(),
         )
 
-        if not self.cfg.get_clustering_train_enabled():
+        selected_trial = self.cfg.get_clustering_selected_trial()
+
+        if not self.cfg.get_clustering_train_enabled() and selected_trial is None:
             logger.info('clustering 학습 비활성화 (train.enabled=false), Optuna 튜닝 스킵')
             return embeddings, df
 
         if run_dir is None:
-            timestamp = pendulum.now().strftime('%Y%m%d_%H%M%S')
-            run_dir = f"{self.cfg.get_clustering_base_dir()}/runs/{timestamp}"
+            resume_dir = self.cfg.get_clustering_resume_dir()
+            if resume_dir:
+                run_dir = resume_dir
+                logger.info('clustering Optuna 재개 모드', run_dir=run_dir)
+            else:
+                timestamp = pendulum.now().strftime('%Y%m%d_%H%M%S')
+                run_dir = f"{self.cfg.get_clustering_base_dir()}/runs/{timestamp}"
         Path(run_dir).mkdir(parents=True, exist_ok=True)
-        logger.info('clustering 학습 run 디렉토리 생성', run_dir=run_dir)
+        logger.info('clustering 학습 run 디렉토리', run_dir=run_dir)
 
-        train_and_save(
-            embeddings=embeddings,
-            save_dir=run_dir,
-            df=df,
-            categorical_cols=self.cfg.get_clustering_categorical_columns(),
-            onehot_weight=self.cfg.get_clustering_onehot_weight(),
-            umap_params=self.cfg.get_clustering_umap_params(),
-            hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
-            validity_params=self.cfg.get_clustering_validity_params(),
-            scoring_params=self.cfg.get_clustering_scoring_params(),
-            optuna_params=self.cfg.get_clustering_optuna_params(run_dir),
-        )
+        selected_trial = self.cfg.get_clustering_selected_trial()
+        if selected_trial is not None:
+            # selected_trial 모드: resume_run의 JSON에서 해당 trial 파라미터로 1회 재훈련
+            from maude_early_alert.preprocessors.clustering import fit_with_params
+            resume_dir = self.cfg.get_clustering_resume_dir()
+            if not resume_dir:
+                raise ValueError("selected_trial 설정 시 resume_run도 지정해야 합니다.")
+            log_file = Path(resume_dir) / self.cfg._clustering['train']['optuna']['log_file']
+            logs = json.loads(log_file.read_text())
+            trial_entry = next((t for t in logs if t['trial'] == selected_trial), None)
+            if trial_entry is None:
+                raise ValueError(f"trial {selected_trial}을 {log_file}에서 찾을 수 없습니다.")
+            logger.info('선택된 trial로 재훈련', trial=selected_trial,
+                        hyperparams=trial_entry['hyperparams'])
+            fit_with_params(
+                hyperparams=trial_entry['hyperparams'],
+                embeddings=embeddings,
+                save_dir=run_dir,
+                umap_fixed_params=self.cfg.get_clustering_umap_params(),
+                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
+                categorical_cols=self.cfg.get_clustering_categorical_columns(),
+                df=df,
+            )
+        else:
+            # Optuna 모드: 자동 최적화 후 베스트 모델 저장
+            train_and_save(
+                embeddings=embeddings,
+                save_dir=run_dir,
+                df=df,
+                categorical_cols=self.cfg.get_clustering_categorical_columns(),
+                umap_params=self.cfg.get_clustering_umap_params(),
+                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
+                validity_params=self.cfg.get_clustering_validity_params(),
+                scoring_params=self.cfg.get_clustering_scoring_params(),
+                optuna_params=self.cfg.get_clustering_optuna_params(run_dir),
+            )
         return embeddings, df
 
     def run_clustering_prediction(
@@ -587,27 +622,30 @@ class SilverPipeline(SnowflakeBase):
     def join_clustering_results(
         self, cursor: SnowflakeCursor, df: pd.DataFrame, labels: np.ndarray,
     ):
-        """Step 5: clustering labels를 네 컬럼 기준 JOIN으로 원본 테이블에 붙여 _CLUSTERED 저장"""
-        categorical_cols = self.cfg.get_clustering_categorical_columns()
-        text_col = self.cfg.get_clustering_text_column()
-        join_keys = categorical_cols + [text_col]
+        """Step 5: clustering labels를 primary key 기준 JOIN으로 원본 테이블에 붙여 _CLUSTERED 저장"""
+        pk_cols = self.cfg.get_silver_primary_key(self.cfg.get_clustering_source_category())
+        if isinstance(pk_cols, str):
+            pk_cols = [pk_cols]
 
         temp_table = f'{self.clustering_target_table}_STG'
-        col_defs = ', '.join(f'{c} VARCHAR' for c in join_keys) + ', CLUSTER INT'
+        col_defs = ', '.join(f'{c} VARCHAR' for c in pk_cols) + ', CLUSTER INT'
         cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {temp_table} ({col_defs})')
 
         rows = [
-            tuple(row[c] for c in join_keys) + (int(label),)
-            for row, label in zip(df[join_keys].to_dict('records'), labels.tolist())
+            tuple(str(row[c]) for c in pk_cols) + (int(label),)
+            for row, label in zip(df[pk_cols].to_dict('records'), labels.tolist())
         ]
-        placeholders = ', '.join(['%s'] * (len(join_keys) + 1))
-        col_names = ', '.join(join_keys) + ', CLUSTER'
-        cursor.executemany(f'INSERT INTO {temp_table} ({col_names}) VALUES ({placeholders})', rows)
+        placeholders = ', '.join(['%s'] * (len(pk_cols) + 1))
+        col_names = ', '.join(pk_cols) + ', CLUSTER'
+        sql = f'INSERT INTO {temp_table} ({col_names}) VALUES ({placeholders})'
+        chunk_size = 10_000
+        for i in range(0, len(rows), chunk_size):
+            cursor.executemany(sql, rows[i:i + chunk_size])
 
         join_clause = build_join_clause(
             left_table=self.llm_join_table,
             right_table=temp_table,
-            on_columns=join_keys,
+            on_columns=pk_cols,
             join_type='LEFT',
             left_alias='e',
             right_alias='c',
@@ -636,7 +674,7 @@ if __name__ == '__main__':
     from maude_early_alert.utils.secrets import get_secret
     from maude_early_alert.logging_config import configure_logging
 
-    configure_logging(level='INFO', log_file='silver.log')
+    configure_logging(level='DEBUG', log_file='silver.log')
 
     secret = get_secret('snowflake/de')
 
@@ -704,114 +742,112 @@ if __name__ == '__main__':
 
     # ── 1단계: source 읽기 ────────────────────────────────────────
     logger.info('LLM 추출 단계 시작: source 읽기')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        records = pipeline.extract_mdr_text(cursor)
-    except Exception:
-        logger.error('source 읽기 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+    # conn = _connect()
+    # cursor = conn.cursor()
+    # try:
+    #     records = pipeline.extract_mdr_text(cursor)
+    # except Exception:
+    #     logger.error('source 읽기 실패', exc_info=True)
+    #     raise
+    # finally:
+    #     cursor.close()
+    #     conn.close()
 
     # ── 2-3단계: 1차 LLM 추출 + _EXTRACTED 청크 적재 ────────────
-    total_chunks = (len(records) - 1) // CHUNK_SIZE + 1
-    logger.info('LLM 추출 단계 시작: 1차 추출 + 적재', total=len(records), chunks=total_chunks)
-    session_start = pendulum.now()
-    for chunk_idx in range(total_chunks):
-        chunk = records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
-        logger.info('1차 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
-        chunk_start = pendulum.now()
-        results = pipeline.run_llm_extraction(chunk)
-        elapsed = (pendulum.now() - chunk_start).in_seconds()
-        elapsed_session = (pendulum.now() - session_start).in_seconds()
-        avg_per_chunk = elapsed_session / (chunk_idx + 1)
-        eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
-        success = sum(1 for r in results if r.get('_success', False))
-        logger.info(
-            '1차 청크 추출 완료',
-            chunk=chunk_idx + 1, total_chunks=total_chunks,
-            success=success, failed=len(results) - success,
-            success_rate=f'{100 * success / len(results):.1f}%' if results else 'N/A',
-            elapsed=f'{elapsed:.1f}s',
-            elapsed_session=f'{elapsed_session / 3600:.2f}h',
-            remaining_time=f'{eta_seconds / 3600:.1f}h',
-            eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
-        )
-        conn = _connect()
-        cursor = conn.cursor()
-        try:
-            pipeline.load_extraction_results(cursor, results)
-        except Exception:
-            logger.error('1차 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
-            raise
-        finally:
-            cursor.close()
-            conn.close()
-    pipeline.cleanup_extraction_checkpoint()
+    # total_chunks = (len(records) - 1) // CHUNK_SIZE + 1
+    # logger.info('LLM 추출 단계 시작: 1차 추출 + 적재', total=len(records), chunks=total_chunks)
+    # session_start = pendulum.now()
+    # for chunk_idx in range(total_chunks):
+    #     chunk = records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
+    #     logger.info('1차 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
+    #     chunk_start = pendulum.now()
+    #     results = pipeline.run_llm_extraction(chunk)
+    #     elapsed = (pendulum.now() - chunk_start).in_seconds()
+    #     elapsed_session = (pendulum.now() - session_start).in_seconds()
+    #     avg_per_chunk = elapsed_session / (chunk_idx + 1)
+    #     eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
+    #     success = sum(1 for r in results if r.get('_success', False))
+    #     logger.info(
+    #         '1차 청크 추출 완료',
+    #         chunk=chunk_idx + 1, total_chunks=total_chunks,
+    #         success=success, failed=len(results) - success,
+    #         success_rate=f'{100 * success / len(results):.1f}%' if results else 'N/A',
+    #         elapsed=f'{elapsed:.1f}s',
+    #         elapsed_session=f'{elapsed_session / 3600:.2f}h',
+    #         remaining_time=f'{eta_seconds / 3600:.1f}h',
+    #         eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
+    #     )
+    #     conn = _connect()
+    #     cursor = conn.cursor()
+    #     try:
+    #         pipeline.load_extraction_results(cursor, results)
+    #     except Exception:
+    #         logger.error('1차 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
+    #         raise
+    #     finally:
+    #         cursor.close()
+    #         conn.close()
 
     # ── 4단계: failure 대상 조회 ──────────────────────────────────
-    logger.info('LLM 추출 단계 시작: failure 대상 조회')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        failure_records = pipeline.fetch_failure_candidates(cursor)
-    except Exception:
-        logger.error('failure 대상 조회 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+    # logger.info('LLM 추출 단계 시작: failure 대상 조회')
+    # conn = _connect()
+    # cursor = conn.cursor()
+    # try:
+    #     failure_records = pipeline.fetch_failure_candidates(cursor)
+    # except Exception:
+    #     logger.error('failure 대상 조회 실패', exc_info=True)
+    #     raise
+    # finally:
+    #     cursor.close()
+    #     conn.close()
 
     # ── 5-6단계: failure 모델 재시도 + _EXTRACTED 증분 청크 적재 ─
-    total_chunks = (len(failure_records) - 1) // CHUNK_SIZE + 1 if failure_records else 0
-    logger.info('LLM 추출 단계 시작: failure 추출 + 적재', total=len(failure_records), chunks=total_chunks)
-    session_start = pendulum.now()
-    for chunk_idx in range(total_chunks):
-        chunk = failure_records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
-        logger.info('failure 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
-        chunk_start = pendulum.now()
-        failure_results = pipeline.run_failure_model_retry(chunk)
-        elapsed = (pendulum.now() - chunk_start).in_seconds()
-        elapsed_session = (pendulum.now() - session_start).in_seconds()
-        avg_per_chunk = elapsed_session / (chunk_idx + 1)
-        eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
-        success = sum(1 for r in failure_results if r.get('_success', False))
-        logger.info(
-            'failure 청크 추출 완료',
-            chunk=chunk_idx + 1, total_chunks=total_chunks,
-            success=success, failed=len(failure_results) - success,
-            success_rate=f'{100 * success / len(failure_results):.1f}%' if failure_results else 'N/A',
-            elapsed=f'{elapsed:.1f}s',
-            elapsed_session=f'{elapsed_session / 3600:.2f}h',
-            remaining_time=f'{eta_seconds / 3600:.1f}h',
-            eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
-        )
-        conn = _connect()
-        cursor = conn.cursor()
-        try:
-            pipeline.load_extraction_results(cursor, failure_results)
-        except Exception:
-            logger.error('failure 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
-            raise
-        finally:
-            cursor.close()
-            conn.close()
-    pipeline.cleanup_extraction_checkpoint()
+    # total_chunks = (len(failure_records) - 1) // CHUNK_SIZE + 1 if failure_records else 0
+    # logger.info('LLM 추출 단계 시작: failure 추출 + 적재', total=len(failure_records), chunks=total_chunks)
+    # session_start = pendulum.now()
+    # for chunk_idx in range(total_chunks):
+    #     chunk = failure_records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
+    #     logger.info('failure 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
+    #     chunk_start = pendulum.now()
+    #     failure_results = pipeline.run_failure_model_retry(chunk)
+    #     elapsed = (pendulum.now() - chunk_start).in_seconds()
+    #     elapsed_session = (pendulum.now() - session_start).in_seconds()
+    #     avg_per_chunk = elapsed_session / (chunk_idx + 1)
+    #     eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
+    #     success = sum(1 for r in failure_results if r.get('_success', False))
+    #     logger.info(
+    #         'failure 청크 추출 완료',
+    #         chunk=chunk_idx + 1, total_chunks=total_chunks,
+    #         success=success, failed=len(failure_results) - success,
+    #         success_rate=f'{100 * success / len(failure_results):.1f}%' if failure_results else 'N/A',
+    #         elapsed=f'{elapsed:.1f}s',
+    #         elapsed_session=f'{elapsed_session / 3600:.2f}h',
+    #         remaining_time=f'{eta_seconds / 3600:.1f}h',
+    #         eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
+    #     )
+    #     conn = _connect()
+    #     cursor = conn.cursor()
+    #     try:
+    #         pipeline.load_extraction_results(cursor, failure_results)
+    #     except Exception:
+    #         logger.error('failure 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
+    #         raise
+    #     finally:
+    #         cursor.close()
+    #         conn.close()
 
     # ── 7단계: _LLM_EXTRACTED JOIN ────────────────────────────────
-    logger.info('LLM 추출 단계 시작: _LLM_EXTRACTED JOIN')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        pipeline.join_extraction(cursor)
-    except Exception:
-        logger.error('JOIN 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
+    # logger.info('LLM 추출 단계 시작: _LLM_EXTRACTED JOIN')
+    # conn = _connect()
+    # cursor = conn.cursor()
+    # try:
+    #     pipeline.join_extraction(cursor)
+    # except Exception:
+    #     logger.error('JOIN 실패', exc_info=True)
+    #     raise
+    # finally:
+    #     cursor.close()
+    #     conn.close()
 
     # ── Clustering ────────────────────────────────────────────────
     # 1단계: 데이터 로드 (_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT)

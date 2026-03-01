@@ -25,13 +25,9 @@ embedding:
   batch_size: 32
   normalize: true  # L2 정규화 (cosine similarity 기반 UMAP에 필요)
 
-# 4. 원핫 인코딩 (학습·추론 공통)
-onehot:
-  weight: 5.0   # 범주형 피처 스케일 조정 (임베딩 대비 상대적 중요도)
-
-# 5. 학습 (일회성 — Optuna 튜닝)
+# 4. 학습 (일회성 — Optuna 튜닝)
 train:
-  enabled: true   # false로 설정 시 Optuna 튜닝 스킵, active_run 모델로 예측
+  enabled: false   # false로 설정 시 Optuna 튜닝 스킵, active_run 모델로 예측
 
   # 합격 조건 (Pass/Fail 필터링)
   validity:
@@ -52,10 +48,13 @@ train:
 
   # 품질 점수 (합격한 것 중 순위용, 가중치 합계 = 1.0)
   # DBI·CHI는 리포팅 전용 — composite score에 포함하지 않음
+  # noise는 제외 — noise→0 유인이 경계 포인트를 큰 클러스터에 흡수하여 쏠림을 악화시킴
+  # max_cluster_ratio: soft 페널티로 균형 방향 유도 (데이터 특성상 hard 컷 불가)
   scoring:
     weights:
-      silhouette: 0.45
-      noise: 0.35       # 낮을수록 좋음 (score = 1 - noise_ratio)
+      silhouette: 0.40
+      max_cluster_ratio: 0.20   # 낮을수록 균등 (score = 1 - max_cluster_ratio)
+      noise_ratio: 0.20
       entropy: 0.10
       gini: 0.10
     silhouette_thresholds:
@@ -67,36 +66,41 @@ train:
 
   # Optuna 설정
   optuna:
-    n_trials: 100
+    n_trials: 20
     timeout: null         # 초 단위, null이면 제한 없음
     sampler_seed: 42
     log_file: results_optuna.json       # run 디렉토리 아래 저장됨
     storage: optuna_clustering.db       # run 디렉토리 아래 저장됨 (null이면 인메모리)
     study_name: maude_clustering
     ranges:
-      min_cluster_size:
-        min: 50
-        max: 500
-        step: 10
-      min_samples:
-        min: 3
-        max: 20
-        step: 1
-      umap_n_components:
-        min: 10
-        max: 20
-      umap_n_neighbors:
-        min: 30
-        max: 80
+      min_cluster_size:    # best: 9000
+        min: 3000
+        max: 20000
+        step: 500
+      min_samples:         # best: 60
+        min: 20
+        max: 150
         step: 5
-      umap_min_dist:
-        min: 0.0
-        max: 0.3
+      umap_n_components:   # best: 5
+        min: 3
+        max: 12
+      umap_n_neighbors:    # best: 70
+        min: 30
+        max: 100
+        step: 5
+      umap_min_dist:       # best: 0.379
+        min: 0.1
+        max: 0.6
+      onehot_weight:       # best: 7.79
+        min: 3.0
+        max: 15.0
 
 # 6. 모델 저장 경로
 paths:
   base_dir: models/clustering
-  active_run: null   # 학습 후 직접 설정 (e.g. "20260120_143022")
+  active_run: "20260301_171726"  # 예측에 사용할 run ID (학습 완료 후 수동 설정)
+  resume_run: "20260301_171726"  # Optuna 재개 또는 selected_trial 소스 run ID
+  selected_trial: null            # 정수 설정 시 resume_run의 JSON에서 해당 trial 파라미터로 1회 재훈련
 
 # 7. 클러스터링 결과 테이블 스키마
 output:

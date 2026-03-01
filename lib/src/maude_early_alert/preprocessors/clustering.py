@@ -253,15 +253,21 @@ def compute_all_metrics(
 
 
 def is_valid(metrics: Dict, validity_params: Dict) -> bool:
-    """합격 여부 판단 (k 범위 + 노이즈 비율).
+    """하드 필터 — Optuna objective 내부 적용.
+
+    - k 범위: gradient 없으므로 hard 컷
+    - noise_max: 극단적 노이즈 제거
+    - max_cluster_ratio는 scoring(soft)으로 처리 — 데이터 분포 특성상
+      hard 컷 시 합격 trial이 없을 수 있음
 
     Args:
-        validity_params: {"k_min": int, "k_max": int, "noise_max": float}
+        validity_params: {"k_min", "k_max", "noise_max"}
     """
-    return (
-        validity_params["k_min"] <= metrics["k"] <= validity_params["k_max"]
-        and metrics["noise_ratio"] <= validity_params["noise_max"]
-    )
+    if not (validity_params["k_min"] <= metrics["k"] <= validity_params["k_max"]):
+        return False
+    if metrics["noise_ratio"] > validity_params["noise_max"]:
+        return False
+    return True
 
 
 def compute_score(metrics: Dict, scoring_params: Dict) -> float:
@@ -271,7 +277,8 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
 
     Args:
         scoring_params: {
-            "weights": {"silhouette": float, "noise": float, "entropy": float, "gini": float},
+            "weights": {"silhouette": float, "max_cluster_ratio": float,
+                        "entropy": float, "gini": float},
             "silhouette_thresholds": {"low": float, "mid": float},
             "entropy_thresholds": {"good": float, "acceptable": float},
         }
@@ -288,7 +295,10 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
     else:
         score_sil = min(1.0, 0.8 + (sil - sil_thresh["mid"]) * 0.4)
 
-    # noise_ratio: 낮을수록 좋음 → score = 1 - noise_ratio (validity 필터로 0~noise_max 보장)
+    # max_cluster_ratio: 낮을수록 균등
+    score_max_ratio = max(0.0, 1.0 - metrics["max_cluster_ratio"])
+
+    # noise_ratio: 낮을수록 좋음
     score_noise = max(0.0, 1.0 - metrics["noise_ratio"])
 
     entropy = metrics["normalized_entropy"]
@@ -302,10 +312,11 @@ def compute_score(metrics: Dict, scoring_params: Dict) -> float:
     score_gini = max(0.0, 1.0 - metrics["gini"])
 
     total = (
-        score_sil       * weights.get("silhouette", 0)
-        + score_noise   * weights.get("noise", 0)
-        + score_entropy * weights.get("entropy", 0)
-        + score_gini    * weights.get("gini", 0)
+        score_sil         * weights.get("silhouette", 0)
+        + score_max_ratio * weights.get("max_cluster_ratio", 0)
+        + score_noise     * weights.get("noise_ratio", 0)
+        + score_entropy   * weights.get("entropy", 0)
+        + score_gini      * weights.get("gini", 0)
     )
     return round(total, 4)
 
@@ -352,7 +363,8 @@ def fit_hdbscan(
 # =====================
 
 def optuna_search(
-    features: np.ndarray,
+    emb_scaled: np.ndarray,
+    cat_encoded: Optional[np.ndarray],
     umap_fixed_params: Dict,
     hdbscan_params: Dict,
     validity_params: Dict,
@@ -366,9 +378,11 @@ def optuna_search(
     storage: Optional[str] = None,
 ) -> Optional[Dict]:
     """
-    Optuna TPE 샘플러로 UMAP + HDBSCAN 하이퍼파라미터 최적화.
+    Optuna TPE 샘플러로 UMAP + HDBSCAN + onehot_weight 하이퍼파라미터 최적화.
 
     Args:
+        emb_scaled: 스케일링된 임베딩 (scaler는 train_and_save에서 1회 fit)
+        cat_encoded: 원핫 인코딩된 범주형 피처 (없으면 None). trial마다 ohw 곱해서 combine.
         umap_fixed_params: Optuna가 튜닝하지 않는 UMAP 고정값 (metric, random_state)
         hdbscan_params: HDBSCAN 고정값 (metric, cluster_selection_method, gen_min_span_tree)
         validity_params: is_valid() 기준 (k_min, k_max, noise_max)
@@ -384,10 +398,11 @@ def optuna_search(
     except ImportError:
         raise ImportError("optuna를 설치하세요: pip install optuna")
 
-    best_result: Optional[Dict] = None
+    best_result: Optional[Dict] = None        # k 유효 trial 중 최고점 (noise soft)
+    best_valid_result: Optional[Dict] = None  # k + noise_max 둘 다 통과한 최고점
 
     def objective(trial):
-        nonlocal best_result
+        nonlocal best_result, best_valid_result
 
         r = ranges["min_cluster_size"]
         mcs = trial.suggest_int("mcs", r["min"], r["max"], step=r.get("step", 1))
@@ -404,6 +419,14 @@ def optuna_search(
         r = ranges["umap_min_dist"]
         min_dist = trial.suggest_float("min_dist", r["min"], r["max"])
 
+        r = ranges["onehot_weight"]
+        ohw = trial.suggest_float("ohw", r["min"], r["max"])
+
+        features = (
+            np.hstack([emb_scaled, cat_encoded * ohw])
+            if cat_encoded is not None else emb_scaled
+        )
+
         umap_params = {
             **umap_fixed_params,
             "n_components": n_comp,
@@ -419,11 +442,17 @@ def optuna_search(
             return -1.0
 
         metrics = compute_all_metrics(X_umap, labels)
-        if metrics is None or not is_valid(metrics, validity_params):
+        if metrics is None:
+            logger.debug("trial skip: k≤1 (클러스터 미형성)", trial=trial.number,
+                         mcs=mcs, ms=ms)
+            return -1.0
+        if not is_valid(metrics, validity_params):
+            logger.debug("trial skip: k 범위 초과", trial=trial.number,
+                         k=metrics["k"], k_min=validity_params["k_min"], k_max=validity_params["k_max"])
             return -1.0
 
         score = compute_score(metrics, scoring_params)
-        hyperparams = dict(mcs=mcs, ms=ms, n_comp=n_comp, n_neigh=n_neigh, min_dist=min_dist)
+        hyperparams = dict(mcs=mcs, ms=ms, n_comp=n_comp, n_neigh=n_neigh, min_dist=min_dist, ohw=ohw)
 
         log_path = Path(log_file)
         logs = json.loads(log_path.read_text()) if log_path.exists() else []
@@ -432,25 +461,29 @@ def optuna_search(
             "trial": trial.number,
             "hyperparams": hyperparams,
             "metrics": {k: v for k, v in metrics.items() if k != "cluster_sizes"},
+            "cluster_sizes": {str(k): v for k, v in metrics["cluster_sizes"].items()},
             "score": round(score, 4),
         })
         log_path.write_text(json.dumps(logs, indent=2))
 
+        entry = dict(
+            score=score,
+            metrics=metrics,
+            labels=_to_numpy(labels).copy(),
+            X_umap=X_umap.copy(),
+            model=hdb,
+            umap_model=umap_model,
+            hyperparams=hyperparams,
+        )
         if best_result is None or score > best_result["score"]:
-            best_result = dict(
-                score=score,
-                metrics=metrics,
-                labels=_to_numpy(labels).copy(),
-                model=hdb,
-                umap_model=umap_model,
-                hyperparams=hyperparams,
-            )
+            best_result = entry
+        if metrics["noise_ratio"] <= validity_params["noise_max"]:
+            if best_valid_result is None or score > best_valid_result["score"]:
+                best_valid_result = entry
         return score
 
-    try:
-        optuna.delete_study(study_name=study_name, storage=storage)
-    except Exception:
-        pass
+    if storage and Path(storage.replace("sqlite:///", "")).exists():
+        logger.info("기존 Optuna study 재개", storage=storage)
 
     study = optuna.create_study(
         study_name=study_name,
@@ -467,16 +500,24 @@ def optuna_search(
     study.optimize(objective, n_trials=n_trials, timeout=timeout,
                    show_progress_bar=True, gc_after_trial=True)
 
-    if best_result:
+    final_result = best_valid_result if best_valid_result else best_result
+
+    if final_result:
+        if best_valid_result is None:
+            logger.warning(
+                "Optuna 완료 — noise_max 미달 trial 없음, noise 조건 완화 후 최선 결과 사용",
+                noise_ratio=round(best_result["metrics"]["noise_ratio"], 3),
+                noise_max=validity_params["noise_max"],
+            )
         logger.info("Optuna 완료",
-            score=round(best_result["score"], 3),
-            k=best_result["metrics"]["k"],
-            sil=round(best_result["metrics"]["sil"], 3),
-            noise=round(best_result["metrics"]["noise_ratio"], 3))
+            score=round(final_result["score"], 3),
+            k=final_result["metrics"]["k"],
+            sil=round(final_result["metrics"]["sil"], 3),
+            noise=round(final_result["metrics"]["noise_ratio"], 3))
     else:
         logger.warning("Optuna 완료 — 합격 trial 없음")
 
-    return best_result
+    return final_result
 
 
 # =====================
@@ -492,11 +533,11 @@ def train_and_save(
     scoring_params: Dict,
     optuna_params: Dict,
     categorical_cols: Optional[List[str]],
-    onehot_weight: float,
     df: Optional[pd.DataFrame] = None,
 ) -> Dict:
     """
     Optuna 최적화 후 모델 일체를 저장.
+    onehot_weight는 Optuna가 튜닝 (ranges.onehot_weight).
 
     저장 구조:
         {save_dir}/
@@ -505,7 +546,7 @@ def train_and_save(
             umap_model.joblib
             hdbscan_model.joblib
             labels.npy
-            metadata.json
+            metadata.json   (best trial의 onehot_weight 포함)
 
     Args:
         umap_params: yaml의 umap: (metric, random_state)
@@ -521,15 +562,29 @@ def train_and_save(
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
-    features, scaler, encoder = prepare_features(
-        embeddings, categorical_cols, onehot_weight, df=df, fit=True
-    )
-    joblib.dump(scaler, save_path / "scaler.joblib")
-    if encoder is not None:
-        joblib.dump(encoder, save_path / "encoder.joblib")
+    scaler = StandardScaler()
+    encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore") if categorical_cols and df is not None else None
+
+    if (save_path / "scaler.joblib").exists():
+        # Optuna 재개: 기존 scaler/encoder 로드 → feature 공간 일관성 유지
+        logger.info("Optuna 재개: 기존 scaler/encoder 로드", path=str(save_path))
+        scaler = joblib.load(save_path / "scaler.joblib")
+        enc_path = save_path / "encoder.joblib"
+        encoder = joblib.load(enc_path) if enc_path.exists() else None
+        emb_scaled = scaler.transform(embeddings)
+        cat_encoded = encoder.transform(df[categorical_cols]) if encoder is not None else None
+    else:
+        emb_scaled = scaler.fit_transform(embeddings)
+        joblib.dump(scaler, save_path / "scaler.joblib")
+        if encoder is not None:
+            cat_encoded = encoder.fit_transform(df[categorical_cols])
+            joblib.dump(encoder, save_path / "encoder.joblib")
+        else:
+            cat_encoded = None
 
     result = optuna_search(
-        features=features,
+        emb_scaled=emb_scaled,
+        cat_encoded=cat_encoded,
         umap_fixed_params=umap_params,
         hdbscan_params=hdbscan_params,
         validity_params=validity_params,
@@ -549,18 +604,102 @@ def train_and_save(
     joblib.dump(result["model"], save_path / "hdbscan_model.joblib")
     np.save(save_path / "labels.npy", result["labels"])
 
+    labels_np = result["labels"]
+    unique_labels = sorted([int(l) for l in np.unique(labels_np) if l != -1])
+    centroids = np.stack([result["X_umap"][labels_np == l].mean(axis=0) for l in unique_labels])
+    np.save(save_path / "centroids.npy", centroids)
+
     metadata = {
         "timestamp": datetime.now().isoformat(),
         "hyperparams": result["hyperparams"],
         "metrics": {k: v for k, v in result["metrics"].items() if k != "cluster_sizes"},
         "cluster_sizes": {str(k): v for k, v in result["metrics"].get("cluster_sizes", {}).items()},
         "categorical_cols": categorical_cols or [],
-        "onehot_weight": onehot_weight,
+        "onehot_weight": result["hyperparams"]["ohw"],
+        "cluster_labels": unique_labels,
     }
     (save_path / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
 
     logger.info("모델 저장 완료", path=str(save_path))
     return result
+
+
+def fit_with_params(
+    hyperparams: Dict,
+    embeddings: np.ndarray,
+    save_dir: str,
+    umap_fixed_params: Dict,
+    hdbscan_params: Dict,
+    categorical_cols: Optional[List[str]],
+    df: Optional[pd.DataFrame] = None,
+) -> Dict:
+    """results_optuna.json에서 선택한 trial 파라미터로 1회 재훈련 후 모델 저장.
+
+    scaler/encoder는 save_dir에서 로드 (Optuna 단계에서 이미 fit됨).
+
+    Args:
+        hyperparams: {"mcs", "ms", "n_comp", "n_neigh", "min_dist", "ohw"}
+        save_dir: Optuna 단계에서 생성된 run 디렉토리 (scaler.joblib 필요)
+    """
+    save_path = Path(save_dir)
+
+    scaler = joblib.load(save_path / "scaler.joblib")
+    emb_scaled = scaler.transform(embeddings)
+
+    enc_path = save_path / "encoder.joblib"
+    if enc_path.exists() and categorical_cols and df is not None:
+        encoder = joblib.load(enc_path)
+        cat_encoded = encoder.transform(df[categorical_cols])
+    else:
+        cat_encoded = None
+
+    ohw = hyperparams["ohw"]
+    features = (
+        np.hstack([emb_scaled, cat_encoded * ohw])
+        if cat_encoded is not None else emb_scaled
+    )
+
+    umap_params = {
+        **umap_fixed_params,
+        "n_components": hyperparams["n_comp"],
+        "n_neighbors": hyperparams["n_neigh"],
+        "min_dist":    hyperparams["min_dist"],
+    }
+
+    logger.info("선택된 파라미터로 재훈련 시작", hyperparams=hyperparams)
+    X_umap, umap_model = reduce_dimensions(features, umap_params)
+    labels, hdb = fit_hdbscan(X_umap, hyperparams["mcs"], hyperparams["ms"], hdbscan_params)
+    labels_np = _to_numpy(labels)
+
+    metrics = compute_all_metrics(X_umap, labels_np)
+    if metrics is None:
+        raise RuntimeError("선택된 파라미터로 클러스터링 실패 (k≤1)")
+
+    logger.info("재훈련 완료",
+        k=metrics["k"], sil=round(metrics["sil"], 3),
+        noise=round(metrics["noise_ratio"], 3),
+        max_cluster_ratio=round(metrics["max_cluster_ratio"], 3))
+
+    joblib.dump(umap_model, save_path / "umap_model.joblib")
+    joblib.dump(hdb, save_path / "hdbscan_model.joblib")
+    np.save(save_path / "labels.npy", labels_np)
+
+    unique_labels = sorted([int(l) for l in np.unique(labels_np) if l != -1])
+    centroids = np.stack([X_umap[labels_np == l].mean(axis=0) for l in unique_labels])
+    np.save(save_path / "centroids.npy", centroids)
+
+    metadata = {
+        "timestamp": datetime.now().isoformat(),
+        "hyperparams": hyperparams,
+        "metrics": {k: v for k, v in metrics.items() if k != "cluster_sizes"},
+        "cluster_sizes": {str(k): v for k, v in metrics.get("cluster_sizes", {}).items()},
+        "categorical_cols": categorical_cols or [],
+        "onehot_weight": hyperparams["ohw"],
+        "cluster_labels": unique_labels,
+    }
+    (save_path / "metadata.json").write_text(json.dumps(metadata, indent=2, ensure_ascii=False))
+    logger.info("선택된 trial 모델 저장 완료", path=str(save_path))
+    return {"labels": labels_np, "metrics": metrics, "hyperparams": hyperparams}
 
 
 def load_and_predict(
@@ -586,35 +725,25 @@ def load_and_predict(
 
     scaler: StandardScaler = joblib.load(model_path / "scaler.joblib")
     umap_model = joblib.load(model_path / "umap_model.joblib")
-    hdb_model = joblib.load(model_path / "hdbscan_model.joblib")
+    centroids = np.load(model_path / "centroids.npy")
+    cluster_labels = np.array(metadata.get("cluster_labels", list(range(len(centroids)))))
 
-    _, _, encoder = prepare_features(
-        embeddings, categorical_cols, onehot_weight, df=df,
-        scaler=scaler, fit=False
-    )
-    # encoder가 저장되어 있으면 로드해서 다시 변환
+    emb_scaled = scaler.transform(embeddings)
     enc_path = model_path / "encoder.joblib"
     if enc_path.exists() and categorical_cols and df is not None:
         encoder = joblib.load(enc_path)
-        emb_scaled = scaler.transform(embeddings)
         cat_encoded = encoder.transform(df[categorical_cols])
         features = np.hstack([emb_scaled, cat_encoded * onehot_weight])
     else:
-        features = scaler.transform(embeddings)
+        features = emb_scaled
 
     X_umap = _to_numpy(umap_model.transform(features)).astype(np.float32)
 
-    try:
-        from hdbscan import approximate_predict as _approx_predict
-        labels, _ = _approx_predict(hdb_model, X_umap)
-        labels = _to_numpy(labels)
-    except (ImportError, AttributeError, TypeError):
-        logger.warning("approximate_predict 미지원 → fit_predict 사용")
-        X_in = cp.asarray(X_umap) if _GPU else X_umap
-        labels = _to_numpy(hdb_model.fit_predict(X_in))
+    # cuML HDBSCAN은 역직렬화 후 predict가 불안정 → nearest-centroid 방식 사용
+    dists = np.linalg.norm(X_umap[:, None, :] - centroids[None, :, :], axis=-1)
+    labels = cluster_labels[np.argmin(dists, axis=1)]
 
-    n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
-    logger.info("예측 완료", n=len(labels), k=n_clusters)
+    logger.info("예측 완료 (nearest-centroid)", n=len(labels), k=len(cluster_labels))
     return labels, metadata
 
 
@@ -774,33 +903,33 @@ if __name__ == "__main__":
 
         # ── Step 4-5. Optuna 튜닝 + 베스트 모델 저장 ─────────────────────
         train_and_save(
-            embeddings      = embeddings,
-            save_dir        = MODEL_DIR,
-            df              = df,
+            embeddings       = embeddings,
+            save_dir         = MODEL_DIR,
+            df               = df,
             categorical_cols = CATEGORICAL,
-            onehot_weight   = 5.0,
-            umap_params     = {"metric": "cosine", "random_state": 42},
-            hdbscan_params  = {"metric": "euclidean",
-                               "cluster_selection_method": "eom",
-                               "gen_min_span_tree": True},
-            validity_params = {"k_min": 3, "k_max": 100, "noise_max": 0.35},
-            scoring_params  = {
-                "weights": {"silhouette": 0.60, "entropy": 0.20, "gini": 0.20},
+            umap_params      = {"metric": "cosine", "random_state": 42},
+            hdbscan_params   = {"metric": "euclidean",
+                                "cluster_selection_method": "eom",
+                                "gen_min_span_tree": True},
+            validity_params  = {"k_min": 3, "k_max": 6, "noise_max": 0.30},
+            scoring_params   = {
+                "weights": {"silhouette": 0.45, "noise": 0.35, "entropy": 0.10, "gini": 0.10},
                 "silhouette_thresholds": {"low": 0.4, "mid": 0.5},
                 "entropy_thresholds": {"good": 0.7, "acceptable": 0.5},
             },
-            optuna_params   = {
-                "n_trials": 100, "sampler_seed": 42,
+            optuna_params    = {
+                "n_trials": 50, "sampler_seed": 42,
                 "log_file": "results_optuna.json",
                 "study_name": "maude_clustering",
                 "storage": "sqlite:///optuna_clustering.db",
                 "timeout": None,
                 "ranges": {
-                    "min_cluster_size":  {"min": 50,  "max": 500, "step": 10},
-                    "min_samples":       {"min": 3,   "max": 20,  "step": 1},
-                    "umap_n_components": {"min": 10,  "max": 20},
-                    "umap_n_neighbors":  {"min": 30,  "max": 80,  "step": 5},
-                    "umap_min_dist":     {"min": 0.0, "max": 0.3},
+                    "min_cluster_size":  {"min": 3000, "max": 20000, "step": 500},
+                    "min_samples":       {"min": 20,   "max": 150,   "step": 5},
+                    "umap_n_components": {"min": 3,    "max": 12},
+                    "umap_n_neighbors":  {"min": 30,   "max": 100,   "step": 5},
+                    "umap_min_dist":     {"min": 0.1,  "max": 0.6},
+                    "onehot_weight":     {"min": 3.0,  "max": 15.0},
                 },
             },
         )

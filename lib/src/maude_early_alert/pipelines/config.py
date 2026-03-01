@@ -469,9 +469,6 @@ class SilverConfig:
     def get_clustering_embedding_normalize(self) -> bool:
         return self._clustering['embedding']['normalize']
 
-    def get_clustering_onehot_weight(self) -> float:
-        return self._clustering['onehot']['weight']
-
     def get_clustering_validity_params(self) -> Dict:
         return dict(self._clustering['train']['validity'])
 
@@ -496,6 +493,18 @@ class SilverConfig:
                 "학습 완료 후 run ID를 기입하세요 (e.g. '20260120_143022')."
             )
         return f"{self.get_clustering_base_dir()}/runs/{active_run}"
+
+    def get_clustering_resume_dir(self) -> Optional[str]:
+        """resume_run이 설정된 경우 해당 run 디렉토리 반환, null이면 None."""
+        resume_run = self._clustering['paths'].get('resume_run')
+        if not resume_run:
+            return None
+        return f"{self.get_clustering_base_dir()}/runs/{resume_run}"
+
+    def get_clustering_selected_trial(self) -> Optional[int]:
+        """selected_trial이 설정된 경우 trial 번호 반환, null이면 None."""
+        val = self._clustering['paths'].get('selected_trial')
+        return int(val) if val is not None else None
 
     def get_clustering_optuna_params(self, run_dir: str) -> Dict:
         """log_file·storage 경로를 run_dir 기준으로 조립해서 반환"""

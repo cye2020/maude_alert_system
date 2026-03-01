@@ -168,27 +168,31 @@ def build_failure_candidates_sql(
     for c in source_columns:
         validate_identifier(c)
 
-    select_cols = ", ".join(f"{source_alias}.{c}" for c in source_columns)
+    select_cols = [f"{source_alias}.{c}" for c in source_columns]
 
     null_cond = f"{extract_alias}.{pk_column} IS NULL"
     unknown_conds = []
     for col in (unknown_columns or []):
         validate_identifier(col)
         unknown_conds.append(f"{extract_alias}.{col} IN ('Unknown', 'Other')")
+    where = "(" + " OR ".join([null_cond] + unknown_conds) + ")"
 
-    retry_condition = " OR ".join([null_cond] + unknown_conds)
+    join = build_join_clause(
+        left_table=source_table,
+        right_table=extracted_table,
+        on_columns=pk_column,
+        join_type="LEFT",
+        left_alias=source_alias,
+        right_alias=extract_alias,
+    )
 
-    where_parts = []
-    where_parts.append(f"({retry_condition})")
-
-    where_clause = "\nAND ".join(where_parts)
-
-    return (
-        f"SELECT {select_cols}\n"
-        f"FROM {source_table} {source_alias}\n"
-        f"LEFT JOIN {extracted_table} {extract_alias}\n"
-        f"  ON {source_alias}.{pk_column} = {extract_alias}.{pk_column}\n"
-        f"WHERE {where_clause}"
+    return build_cte_sql(
+        ctes=[],
+        from_clause=f"{source_table} {source_alias}",
+        select_cols=select_cols,
+        joins=[join],
+        where=where,
+        distinct=True,
     )
 
 
