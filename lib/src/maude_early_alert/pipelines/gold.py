@@ -3,11 +3,11 @@ from typing import Optional
 
 import structlog
 from snowflake.connector.cursor import SnowflakeCursor
-import numpy as np
+from snowflake.connector.pandas_tools import write_pandas
 import pandas as pd
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
-from maude_early_alert.utils.helpers import validate_identifier
+from maude_early_alert.utils.helpers import validate_identifier, validate_date
 from maude_early_alert.utils.config_loader import load_config
 from maude_early_alert.analyze.aggregation import Aggregation
 from maude_early_alert.analyze.spike_detection import SpikeDetection
@@ -37,9 +37,9 @@ class GoldPipeline(SnowflakeBase):
     CLUSTER_METRICS = [
         "REPORT_COUNT", "DEATH_COUNT", "SERIOUS_INJURY_COUNT",
         "MINOR_INJURY_COUNT", "NO_HARM_COUNT",
-        "CFR", "DEFECT_CONFIRMED_COUNT", "DEFECT_CONFIRMED_RATE",
+        "SEVERE_HARM_RATE", "DEFECT_CONFIRMED_COUNT", "DEFECT_CONFIRMED_RATE",
     ]
-    PRODUCT_METRICS = ["REPORT_COUNT", "DEATH_COUNT", "CFR"]
+    PRODUCT_METRICS = ["REPORT_COUNT", "DEATH_COUNT", "SEVERE_HARM_RATE"]
     OVERVIEW_METRICS = [
         "TOTAL_REPORT_COUNT", "DEATH_COUNT", "SERIOUS_INJURY_COUNT",
         "SEVERE_HARM_RATE", "DEFECT_CONFIRMED_RATE",
@@ -68,111 +68,82 @@ class GoldPipeline(SnowflakeBase):
         w_part = f"_{window}M" if window else ""
         return f"{group.upper()}{w_part}_{use.upper()}"
     
-    def _ensure_gold_table(
-        self, 
-        cursor:SnowflakeCursor,
-        table_name: str
+    def _write_ctas(
+        self,
+        cursor    : SnowflakeCursor,
+        sql       : str,
+        table_name: str,
     ) -> None:
+        """CREATE OR REPLACE TABLE ... AS SELECT 로 Gold 테이블 전체 교체"""
+        cursor.execute(sql)
+        logger.info("Gold CTAS 완료", table=f"{self.database}.{self.gold_schema}.{table_name}")
+
+    def _write_incremental(
+        self,
+        cursor       : SnowflakeCursor,
+        df           : pd.DataFrame,
+        table_name   : str,
+        snapshot_date: str,
+    ) -> None:
+        """자동 스키마 추론 + 증분 적재 (Spike용, DELETE + INSERT, 트랜잭션 보장)
+
+        [Phase 1] DDL: 빈 DataFrame으로 스키마만 생성. Snowflake DDL은 auto-commit이므로
+                       트랜잭션 밖에서 실행. 테이블이 이미 존재하면 no-op.
+        [Phase 2] DML: snapshot_date 기준 DELETE + INSERT를 트랜잭션으로 보호.
+                       첫 실행 / 재실행 모두 동일 경로 → 멱등성 보장.
+        """
         full = f"{self.database}.{self.gold_schema}.{table_name}"
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {full} (
-                METRIC_DATE DATE,
-                GRAIN VARCHAR,
-                MANUFACTURER VARCHAR,
-                ENTITY_VALUE VARCHAR,
-                METRIC_NAME VARCHAR,
-                METRIC_VALUE FLOAT,
-                SOURCE_TABLE VARCHAR,
-                SNAPSHOT_DATE DATE
+
+        # Phase 1: 테이블 스키마 생성 (DDL, auto-commit, 이미 있으면 no-op)
+        write_pandas(
+            cursor.connection,
+            df.head(0),
+            table_name,
+            database=self.database,
+            schema=self.gold_schema,
+            overwrite=False,
+            auto_create_table=True,
+            quote_identifiers=True,
+        )
+
+        # Phase 2: 트랜잭션으로 보호된 DELETE + INSERT
+        with self.transaction(cursor):
+            cursor.execute(f"DELETE FROM {full} WHERE SNAPSHOT_DATE = '{snapshot_date}'")
+            success, _, nrows, _ = write_pandas(
+                cursor.connection,
+                df,
+                table_name,
+                database=self.database,
+                schema=self.gold_schema,
+                overwrite=False,
+                auto_create_table=False,
+                quote_identifiers=True,
             )
-        """)
-        
-    @staticmethod
-    def _dtype_to_sf(dtype) -> str:
-        if pd.api.types.is_integer_dtype(dtype):
-            return "NUMBER"
-        if pd.api.types.is_float_dtype(dtype):
-            return "FLOAT"
-        if pd.api.types.is_bool_dtype(dtype):
-            return "BOOLEAN"
-        if pd.api.types.is_datetime64_any_dtype(dtype):
-            return "TIMESTAMP_NTZ"
-        return "VARCHAR"
+            if not success:
+                raise RuntimeError(f"write_pandas 실패: {full}")
+        logger.info("Spike 적재 완료", table=full, rows=nrows)
 
-    def _write_gold(
+    def _write_auto(
         self,
-        cursor : SnowflakeCursor,
-        df_long : pd.DataFrame,
-        table_name : str,
+        cursor    : SnowflakeCursor,
+        df        : pd.DataFrame,
+        table_name: str,
     ) -> None:
+        """자동 스키마 추론 + 전체 교체 (Stat용, 테이블명에 YYYYMM 포함)"""
         full = f"{self.database}.{self.gold_schema}.{table_name}"
-        self._ensure_gold_table(cursor, table_name)
-        cursor.execute(f"TRUNCATE TABLE {full}")
-        rows = [tuple(None if (isinstance(v, float) and np.isnan(v)) else v
-                      for v in r)
-                for r in df_long.itertuples(index=False, name=None)]
-        cursor.executemany(
-            f"INSERT INTO {full} "
-            "(METRIC_DATE,GRAIN,MANUFACTURER,ENTITY_VALUE,"
-            "METRIC_NAME,METRIC_VALUE,SOURCE_TABLE,SNAPSHOT_DATE) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-            rows,
+        success, _, nrows, _ = write_pandas(
+            cursor.connection,
+            df,
+            table_name,
+            database=self.database,
+            schema=self.gold_schema,
+            overwrite=True,
+            auto_create_table=True,
+            quote_identifiers=True,
         )
-        logger.info("Gold 적재 완료", table=full, rows=len(df_long))
-
-    def _write_spike(
-        self,
-        cursor : SnowflakeCursor,
-        df : pd.DataFrame,
-        table_name : str,
-    ) -> None:
-        full = f"{self.database}.{self.gold_schema}.{table_name}"
-        col_defs = ", ".join(
-            f"{c} {self._dtype_to_sf(t)}"
-            for c, t in zip(df.columns, df.dtypes)
-        )
-        cursor.execute(f"DROP TABLE IF EXISTS {full}")
-        cursor.execute(f"CREATE TABLE {full} ({col_defs})")
-        placeholders = ", ".join(["%s"] * len(df.columns))
-        rows = [tuple(None if (isinstance(v, float) and np.isnan(v)) else v
-                      for v in r)
-                for r in df.itertuples(index=False, name=None)]
-        cursor.executemany(
-            f"INSERT INTO {full} VALUES ({placeholders})",
-            rows,
-        )
-        logger.info("Spike 적재 완료", table=full, rows=len(df))
-        
-    def _melt(
-        self,
-        df_wide : pd.DataFrame,
-        entity_col : str,
-        manufacturer_col : str,
-        snapshot_date : str,
-        source_table : str,
-        metric_cols : list,
-    ) -> pd.DataFrame:
-        df = df_wide.copy()
-        df["GRAIN"] = "month"
-        df["SOURCE_TABLE"] = source_table
-        df["SNAPSHOT_DATE"] = snapshot_date
-        df = df.rename(columns={
-            entity_col : "ENTITY_VALUE",
-            manufacturer_col:"MANUFACTURER",
-        })
-        long = df.melt(
-            id_vars = ["METRIC_DATE", "GRAIN", "MANUFACTURER", "ENTITY_VALUE",
-                       "SOURCE_TABLE", "SNAPSHOT_DATE"],
-            value_vars = metric_cols,
-            var_name = "METRIC_NAME", 
-            value_name = "METRIC_VALUE",
-        )
-        long["METRIC_VALUE"] = pd.to_numeric(long["METRIC_VALUE"], errors="coerce")
-        return long[[
-            "METRIC_DATE", "GRAIN", "MANUFACTURER", "ENTITY_VALUE",
-            "METRIC_NAME", "METRIC_VALUE",
-            "SOURCE_TABLE", "SNAPSHOT_DATE",
-        ]]
+        if not success:
+            raise RuntimeError(f"write_pandas 실패: {full}")
+        logger.info("Stat 적재 완료", table=full, rows=nrows)
         
     # ===================================================================
     # 1. CLUSTER_{YYYYMM}_DASHBOARD
@@ -186,17 +157,30 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
-        agg = Aggregation(database=self.database, schema=self.schema)
+        agg     = Aggregation(database=self.database, schema=self.schema)
+        metrics = ", ".join(self.CLUSTER_METRICS)
         for w in windows:
             table_name = self._table_name("CLUSTER", "DASHBOARD", w)
-            df = agg.cluster_dashboard(cursor, source_table, snapshot_date, window=w)
-            df_long = self._melt(df, "CLUSTER_ID", "MANUFACTURER",
-                                 snapshot_date, source_table, self.CLUSTER_METRICS)
-            self._write_gold(cursor, df_long, table_name)
-            logger.info("CLUSTER 적재완료", table=table_name, window=w, rows=len(df_long))
-        
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg.cluster_dashboard_sql(source_table, snapshot_date, w)
+            self._write_ctas(cursor, f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       CLUSTER_ID              AS ENTITY_VALUE,
+                       METRIC_NAME,
+                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
+                ORDER BY 1, 2, 3, 4, 5
+            """, table_name)
+            logger.info("CLUSTER 적재완료", table=table_name, window=w)
+
     # ===================================================================
     # 2. DEFECT_{YYYYMM}_SPIKE
     # ===================================================================
@@ -209,17 +193,28 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
         agg = Aggregation(database=self.database, schema=self.schema)
         for w in windows:
             table_name = self._table_name("DEFECT", "SPIKE", w)
-            df = agg.defect_spike(cursor, source_table, snapshot_date, window=w)
-            df_long = self._melt(df, "DEFECT_TYPE", "MANUFACTURER",
-                                 snapshot_date, source_table, ["REPORT_COUNT"])
-            self._write_gold(cursor, df_long, table_name)
-            logger.info("DEFECT 적재완료", table=table_name, window=w, rows=len(df_long))
-        
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg.defect_spike_sql(source_table, snapshot_date, w)
+            self._write_ctas(cursor, f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       DEFECT_TYPE             AS ENTITY_VALUE,
+                       'REPORT_COUNT'          AS METRIC_NAME,
+                       REPORT_COUNT::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                ORDER BY 1, 2, 3
+            """, table_name)
+            logger.info("DEFECT 적재완료", table=table_name, window=w)
+
     # ------------------------------------------------------------------
     # 3. PRODUCT_{YYYYMM}_DASHBOARD
     # ------------------------------------------------------------------
@@ -232,16 +227,29 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
-        agg = Aggregation(database=self.database, schema=self.schema)
+        agg     = Aggregation(database=self.database, schema=self.schema)
+        metrics = ", ".join(self.PRODUCT_METRICS)
         for w in windows:
             table_name = self._table_name("PRODUCT", "DASHBOARD", w)
-            df = agg.product_dashboard(cursor, source_table, snapshot_date, window=w)
-            df_long = self._melt(df, "PRODUCT_CODE", "MANUFACTURER",
-                                 snapshot_date, source_table, self.PRODUCT_METRICS)
-            self._write_gold(cursor, df_long, table_name)
-            logger.info("PRODUCT 적재 완료", table=table_name, window=w, rows=len(df_long))
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg.product_dashboard_sql(source_table, snapshot_date, w)
+            self._write_ctas(cursor, f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       PRODUCT_CODE            AS ENTITY_VALUE,
+                       METRIC_NAME,
+                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
+                ORDER BY 1, 2, 3, 4, 5
+            """, table_name)
+            logger.info("PRODUCT 적재 완료", table=table_name, window=w)
 
     # ------------------------------------------------------------------
     # 4. OVERVIEW_{YYYYMM}_DASHBOARD
@@ -255,17 +263,29 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
-        agg = Aggregation(database=self.database, schema=self.schema)
+        agg     = Aggregation(database=self.database, schema=self.schema)
+        metrics = ", ".join(self.OVERVIEW_METRICS)
         for w in windows:
             table_name = self._table_name("OVERVIEW", "DASHBOARD", w)
-            df = agg.overview_dashboard(cursor, source_table, snapshot_date, window=w)
-            df["ENTITY_VALUE"] = "TOTAL"
-            df_long = self._melt(df, "ENTITY_VALUE", "MANUFACTURER",
-                                 snapshot_date, source_table, self.OVERVIEW_METRICS)
-            self._write_gold(cursor, df_long, table_name)
-            logger.info("OVERVIEW 적재 완료", table=table_name, window=w, rows=len(df_long))
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg.overview_dashboard_sql(source_table, snapshot_date, w)
+            self._write_ctas(cursor, f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       'TOTAL'                 AS ENTITY_VALUE,
+                       METRIC_NAME,
+                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
+                ORDER BY 1, 2, 3, 4, 5
+            """, table_name)
+            logger.info("OVERVIEW 적재 완료", table=table_name, window=w)
 
     # ------------------------------------------------------------------
     # 5. SPIKE_{YYYYMM}_RESULT
@@ -282,14 +302,15 @@ class GoldPipeline(SnowflakeBase):
         date_column   : str = _spike['date_column'],
         count_column  : str = _spike['count_column'],
         filters       : Optional[str] = _spike['filters'],
+        eps           : float = _spike['eps'],
         z_threshold   : float = _spike['z_threshold'],
         min_c_recent  : int = _spike['min_c_recent'],
         alpha         : float = _spike['alpha'],
         correction    : str = _spike['correction'],
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
-        src           = f"{self.database}.{self.schema}.{source_table}"
+        src           = f"{self.database}.{self.schema}.{validate_identifier(source_table)}"
 
         detector = SpikeDetection(database=self.database, schema=self.schema)
 
@@ -314,7 +335,7 @@ class GoldPipeline(SnowflakeBase):
             df["AS_OF_MONTH"] = as_of_month
             df["WINDOW"]      = w
             df = detector.calculate_ratio_metrics(df)
-            df = detector.calculate_zscore_metrics(df)
+            df = detector.calculate_zscore_metrics(df, eps)
             df = detector.calculate_poisson_metrics(df, alpha, correction)
             df = detector.determine_spikes(df, z_threshold, min_c_recent, alpha)
             df = detector.add_ensemble_pattern(df)
@@ -322,7 +343,7 @@ class GoldPipeline(SnowflakeBase):
 
             table_name = self._table_name("SPIKE", "RESULT", w)
             logger.info("SPIKE 탐지 완료", window=w, rows=len(df), snapshot_date=snapshot_date)
-            self._write_spike(cursor, df, table_name)
+            self._write_incremental(cursor, df, table_name, snapshot_date)
 
     # ------------------------------------------------------------------
     # 6. STAT_{YYYYMM}_{CHI2|ODDS|FINAL}
@@ -340,8 +361,8 @@ class GoldPipeline(SnowflakeBase):
         min_cell     : int = _stat['min_cell'],
         alpha        : float = _stat['alpha'],
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
-        src           = f"{self.database}.{self.schema}.{source_table}"
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
+        src           = f"{self.database}.{self.schema}.{validate_identifier(source_table)}"
 
         analyzer = StatisticalAnalysisPython(database=self.database, schema=self.schema)
 
@@ -356,13 +377,14 @@ class GoldPipeline(SnowflakeBase):
                 alpha          = alpha,
             )
 
-        chi2_table  = "STAT_CHI2_RESULT"
-        odds_table  = "STAT_ODDS_RATIOS"
-        final_table = "STAT_FINAL"
+        yyyymm      = snapshot_date[:7].replace("-", "")
+        chi2_table  = f"STAT_{yyyymm}_CHI2_RESULT"
+        odds_table  = f"STAT_{yyyymm}_ODDS_RATIOS"
+        final_table = f"STAT_{yyyymm}_FINAL"
 
-        self._write_spike(cursor, result["chi2"]["detail"], chi2_table)
-        self._write_spike(cursor, result["odds_ratios"],    odds_table)
-        self._write_spike(cursor, result["final"],          final_table)
+        self._write_auto(cursor, result["chi2"]["detail"], chi2_table)
+        self._write_auto(cursor, result["odds_ratios"],    odds_table)
+        self._write_auto(cursor, result["final"],          final_table)
 
         logger.info("통계 분석 완료",
                     tables=[chi2_table, odds_table, final_table],
@@ -379,7 +401,7 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = snapshot_date or date.today().strftime("%Y-%m-%d")
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
         windows       = windows or self.WINDOWS
         logger.info("Gold 파이프라인 시작",
                     source_table=source_table, snapshot_date=snapshot_date, windows=windows)
@@ -410,10 +432,7 @@ if __name__ == "__main__":
 
     try:
         pipeline = GoldPipeline(database="MAUDE", schema="SILVER", gold_schema="GOLD")
-        pipeline.run_cluster_dashboard (cursor, SOURCE_TABLE, SNAPSHOT_DATE)
-        pipeline.run_defect_spike      (cursor, SOURCE_TABLE, SNAPSHOT_DATE)
-        pipeline.run_product_dashboard (cursor, SOURCE_TABLE, SNAPSHOT_DATE)
-        pipeline.run_overview_dashboard(cursor, SOURCE_TABLE, SNAPSHOT_DATE)
+        pipeline.run(cursor, SOURCE_TABLE, SNAPSHOT_DATE)
     except Exception:
         logger.error("Gold 파이프라인 실패", exc_info=True)
         raise
