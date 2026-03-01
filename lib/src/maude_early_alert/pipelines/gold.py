@@ -1,9 +1,9 @@
 from datetime import date
 from typing import Optional
 
+import numpy as np
 import structlog
 from snowflake.connector.cursor import SnowflakeCursor
-from snowflake.connector.pandas_tools import write_pandas
 import pandas as pd
 
 from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
@@ -78,6 +78,25 @@ class GoldPipeline(SnowflakeBase):
         cursor.execute(sql)
         logger.info("Gold CTAS 완료", table=f"{self.database}.{self.gold_schema}.{table_name}")
 
+    @staticmethod
+    def _dtype_to_sf(dtype) -> str:
+        if pd.api.types.is_integer_dtype(dtype):
+            return "NUMBER"
+        if pd.api.types.is_float_dtype(dtype):
+            return "FLOAT"
+        if pd.api.types.is_bool_dtype(dtype):
+            return "BOOLEAN"
+        if pd.api.types.is_datetime64_any_dtype(dtype):
+            return "TIMESTAMP_NTZ"
+        return "VARCHAR"
+
+    @staticmethod
+    def _to_rows(df: pd.DataFrame) -> list:
+        return [
+            tuple(None if (isinstance(v, float) and np.isnan(v)) else v for v in r)
+            for r in df.itertuples(index=False, name=None)
+        ]
+
     def _write_incremental(
         self,
         cursor       : SnowflakeCursor,
@@ -85,43 +104,17 @@ class GoldPipeline(SnowflakeBase):
         table_name   : str,
         snapshot_date: str,
     ) -> None:
-        """자동 스키마 추론 + 증분 적재 (Spike용, DELETE + INSERT, 트랜잭션 보장)
-
-        [Phase 1] DDL: 빈 DataFrame으로 스키마만 생성. Snowflake DDL은 auto-commit이므로
-                       트랜잭션 밖에서 실행. 테이블이 이미 존재하면 no-op.
-        [Phase 2] DML: snapshot_date 기준 DELETE + INSERT를 트랜잭션으로 보호.
-                       첫 실행 / 재실행 모두 동일 경로 → 멱등성 보장.
-        """
+        """스키마 추론 + 증분 적재 (Spike용, DELETE + INSERT, 트랜잭션 보장)"""
         full = f"{self.database}.{self.gold_schema}.{table_name}"
+        col_defs     = ", ".join(f"{c} {self._dtype_to_sf(t)}" for c, t in zip(df.columns, df.dtypes))
+        placeholders = ", ".join(["%s"] * len(df.columns))
+        rows         = self._to_rows(df)
 
-        # Phase 1: 테이블 스키마 생성 (DDL, auto-commit, 이미 있으면 no-op)
-        write_pandas(
-            cursor.connection,
-            df.head(0),
-            table_name,
-            database=self.database,
-            schema=self.gold_schema,
-            overwrite=False,
-            auto_create_table=True,
-            quote_identifiers=True,
-        )
-
-        # Phase 2: 트랜잭션으로 보호된 DELETE + INSERT
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS {full} ({col_defs})")
         with self.transaction(cursor):
             cursor.execute(f"DELETE FROM {full} WHERE SNAPSHOT_DATE = '{snapshot_date}'")
-            success, _, nrows, _ = write_pandas(
-                cursor.connection,
-                df,
-                table_name,
-                database=self.database,
-                schema=self.gold_schema,
-                overwrite=False,
-                auto_create_table=False,
-                quote_identifiers=True,
-            )
-            if not success:
-                raise RuntimeError(f"write_pandas 실패: {full}")
-        logger.info("Spike 적재 완료", table=full, rows=nrows)
+            cursor.executemany(f"INSERT INTO {full} VALUES ({placeholders})", rows)
+        logger.info("Spike 적재 완료", table=full, rows=len(rows))
 
     def _write_auto(
         self,
@@ -129,21 +122,16 @@ class GoldPipeline(SnowflakeBase):
         df        : pd.DataFrame,
         table_name: str,
     ) -> None:
-        """자동 스키마 추론 + 전체 교체 (Stat용, 테이블명에 YYYYMM 포함)"""
+        """스키마 추론 + 전체 교체 (Stat용, 테이블명에 YYYYMM 포함)"""
         full = f"{self.database}.{self.gold_schema}.{table_name}"
-        success, _, nrows, _ = write_pandas(
-            cursor.connection,
-            df,
-            table_name,
-            database=self.database,
-            schema=self.gold_schema,
-            overwrite=True,
-            auto_create_table=True,
-            quote_identifiers=True,
-        )
-        if not success:
-            raise RuntimeError(f"write_pandas 실패: {full}")
-        logger.info("Stat 적재 완료", table=full, rows=nrows)
+        col_defs     = ", ".join(f"{c} {self._dtype_to_sf(t)}" for c, t in zip(df.columns, df.dtypes))
+        placeholders = ", ".join(["%s"] * len(df.columns))
+        rows         = self._to_rows(df)
+
+        cursor.execute(f"DROP TABLE IF EXISTS {full}")
+        cursor.execute(f"CREATE TABLE {full} ({col_defs})")
+        cursor.executemany(f"INSERT INTO {full} VALUES ({placeholders})", rows)
+        logger.info("Stat 적재 완료", table=full, rows=len(rows))
         
     # ===================================================================
     # 1. CLUSTER_{YYYYMM}_DASHBOARD
@@ -164,7 +152,7 @@ class GoldPipeline(SnowflakeBase):
         for w in windows:
             table_name = self._table_name("CLUSTER", "DASHBOARD", w)
             full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.cluster_dashboard_sql(source_table, snapshot_date, w)
+            agg_sql    = agg.cluster_dashboard_sql(source_table, w)
             self._write_ctas(cursor, f"""
                 CREATE OR REPLACE TABLE {full} AS
                 SELECT METRIC_DATE,
@@ -199,7 +187,7 @@ class GoldPipeline(SnowflakeBase):
         for w in windows:
             table_name = self._table_name("DEFECT", "SPIKE", w)
             full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.defect_spike_sql(source_table, snapshot_date, w)
+            agg_sql    = agg.defect_spike_sql(source_table, w)
             self._write_ctas(cursor, f"""
                 CREATE OR REPLACE TABLE {full} AS
                 SELECT METRIC_DATE,
@@ -234,7 +222,7 @@ class GoldPipeline(SnowflakeBase):
         for w in windows:
             table_name = self._table_name("PRODUCT", "DASHBOARD", w)
             full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.product_dashboard_sql(source_table, snapshot_date, w)
+            agg_sql    = agg.product_dashboard_sql(source_table, w)
             self._write_ctas(cursor, f"""
                 CREATE OR REPLACE TABLE {full} AS
                 SELECT METRIC_DATE,
@@ -270,7 +258,7 @@ class GoldPipeline(SnowflakeBase):
         for w in windows:
             table_name = self._table_name("OVERVIEW", "DASHBOARD", w)
             full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.overview_dashboard_sql(source_table, snapshot_date, w)
+            agg_sql    = agg.overview_dashboard_sql(source_table, w)
             self._write_ctas(cursor, f"""
                 CREATE OR REPLACE TABLE {full} AS
                 SELECT METRIC_DATE,

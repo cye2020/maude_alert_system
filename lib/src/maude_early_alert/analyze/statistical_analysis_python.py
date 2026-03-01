@@ -61,62 +61,60 @@ class StatisticalAnalysisPython(SnowflakeBase):
         row_column: str,
         col_column: str,
     ) -> Dict[str, Any]:
+        """제품코드별 2×N 카이제곱 검정.
+
+        각 제품코드에 대해 [이 제품, 나머지 합산] × 결함유형 분할표를 만들어
+        독립적으로 검정합니다. 제품코드마다 고유한 CHI2_STATISTIC / P_VALUE /
+        CRAMERS_V 가 부여됩니다.
+        """
         pivot = df.pivot_table(
             index=row_column, columns=col_column,
             values="OBSERVED", fill_value=0, aggfunc="sum",
         )
-        matrix = pivot.values
-
-        chi2, p_value, dof, expected = stats.chi2_contingency(matrix)
-        n = matrix.sum()
-        k = min(matrix.shape) - 1
-        cramers_v = np.sqrt(chi2 / (n * k)) if k > 0 else 0.0
-
-        if cramers_v < 0.1:
-            effect = "Very Weak"
-        elif cramers_v < 0.3:
-            effect = "Weak"
-        elif cramers_v < 0.5:
-            effect = "Moderate"
-        else:
-            effect = "Strong"
-
-        # 셀별 상세 결과
-        rows_list = []
+        matrix     = pivot.values
         row_labels = pivot.index.tolist()
         col_labels = pivot.columns.tolist()
+        col_totals = matrix.sum(axis=0)
+
+        def _effect(v: float) -> str:
+            if v < 0.1:  return "Very Weak"
+            if v < 0.3:  return "Weak"
+            if v < 0.5:  return "Moderate"
+            return "Strong"
+
+        rows_list = []
         for i, r in enumerate(row_labels):
+            this_row = matrix[i]
+            rest_row = col_totals - this_row
+            sub      = np.array([this_row, rest_row])
+
+            chi2, p_value, dof, expected = stats.chi2_contingency(sub)
+            n         = int(sub.sum())
+            cramers_v = np.sqrt(chi2 / n) if n > 0 else 0.0  # k=1 (2행 분할표)
+
             for j, c in enumerate(col_labels):
-                obs = matrix[i, j]
-                exp = expected[i, j]
+                obs = this_row[j]
+                exp = expected[0, j]
                 if obs == 0 and exp == 0:
                     continue
                 std_residual = (obs - exp) / np.sqrt(exp) if exp > 0 else 0.0
-                chi2_comp = ((obs - exp) ** 2) / exp if exp > 0 else 0.0
+                chi2_comp    = ((obs - exp) ** 2) / exp if exp > 0 else 0.0
                 rows_list.append({
-                    row_column: r,
-                    col_column: c,
-                    "OBSERVED": int(obs),
-                    "EXPECTED": round(exp, 6),
-                    "STD_RESIDUAL": round(std_residual, 10),
-                    "CHI2_COMPONENT": round(chi2_comp, 10),
-                    "CHI2_STATISTIC": round(chi2, 10),
-                    "DF": int(dof),
-                    "P_VALUE": p_value,
-                    "CRAMERS_V": round(cramers_v, 10),
-                    "EFFECT_SIZE": effect,
-                    "TOTAL_N": int(n),
+                    row_column        : r,
+                    col_column        : c,
+                    "OBSERVED"        : int(obs),
+                    "EXPECTED"        : round(exp, 6),
+                    "STD_RESIDUAL"    : round(std_residual, 10),
+                    "CHI2_COMPONENT"  : round(chi2_comp, 10),
+                    "CHI2_STATISTIC"  : round(chi2, 10),
+                    "DF"              : int(dof),
+                    "P_VALUE"         : p_value,
+                    "CRAMERS_V"       : round(cramers_v, 10),
+                    "EFFECT_SIZE"     : _effect(cramers_v),
+                    "TOTAL_N"         : n,
                 })
 
-        result_df = pd.DataFrame(rows_list)
-        return {
-            "chi2_statistic": chi2,
-            "p_value": p_value,
-            "dof": dof,
-            "cramers_v": cramers_v,
-            "effect_size": effect,
-            "detail": result_df,
-        }
+        return {"detail": pd.DataFrame(rows_list)}
 
     # ──────────────────────────────────────────────
     # 3. 오즈비 계산
@@ -245,17 +243,10 @@ class StatisticalAnalysisPython(SnowflakeBase):
         timings["total"] = sum(timings.values())
 
         return {
-            "chi2": {
-                "chi2_statistic": chi2_result["chi2_statistic"],
-                "p_value": chi2_result["p_value"],
-                "dof": chi2_result["dof"],
-                "cramers_v": chi2_result["cramers_v"],
-                "effect_size": chi2_result["effect_size"],
-                "detail": chi2_result["detail"],
-            },
+            "chi2"       : {"detail": chi2_result["detail"]},
             "odds_ratios": odds_df,
-            "final": final_df,
-            "timings": timings,
+            "final"      : final_df,
+            "timings"    : timings,
         }
 
 
@@ -299,15 +290,12 @@ if __name__ == "__main__":
         print("=" * 60)
         print("Python 통계 분석 결과")
         print("=" * 60)
-        chi2 = result["chi2"]
-        print(f"  Chi2 통계량: {chi2['chi2_statistic']:.4f}")
-        print(f"  p-value:     {chi2['p_value']:.2e}")
-        print(f"  자유도:      {chi2['dof']}")
-        print(f"  Cramer's V:  {chi2['cramers_v']:.4f} ({chi2['effect_size']})")
-        print(f"  오즈비 수:   {len(result['odds_ratios'])}")
-        final_df = result["final"]
+        chi2_detail = result["chi2"]["detail"]
+        print(f"  Chi2 검정 행 수: {len(chi2_detail)} (제품코드별 2×N 검정)")
+        print(f"  오즈비 수:       {len(result['odds_ratios'])}")
+        final_df  = result["final"]
         sig_count = int(final_df["SIGNIFICANT_CORRECTED"].sum()) if not final_df.empty else 0
-        print(f"  유의미 수:   {sig_count} (FDR 보정)")
+        print(f"  유의미 수:       {sig_count} (FDR 보정)")
 
         print("\n[소요 시간]")
         for step, sec in result["timings"].items():
