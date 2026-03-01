@@ -87,7 +87,7 @@ def build_create_extract_temp_sql(
     """추출 결과용 임시 스테이징 테이블 CREATE SQL 생성."""
     col_defs = [f"{col['name']} {col['type']}" for col in columns]
     col_clause = indent(",\n".join(col_defs), _INDENT)
-    return f"CREATE TEMPORARY TABLE {table_name} (\n{col_clause}\n)"
+    return f"CREATE OR REPLACE TEMPORARY TABLE {table_name} (\n{col_clause}\n)"
 
 
 def build_extract_stage_insert_sql(

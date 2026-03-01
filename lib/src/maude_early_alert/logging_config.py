@@ -2,9 +2,19 @@
 import logging
 import structlog
 
+_SUPPRESS = [
+    'snowflake.connector',
+    'urllib3',
+    'botocore',
+    'boto3',
+]
+
 def configure_logging(level: str = 'INFO', log_file: str | None = None,):
     log_level = getattr(logging, level.upper())
     logging.basicConfig(filename=log_file, level=log_level)
+
+    for name in _SUPPRESS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[
