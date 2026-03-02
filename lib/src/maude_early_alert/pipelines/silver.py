@@ -39,7 +39,6 @@ from maude_early_alert.preprocessors.text_extract import (
     build_ensure_extracted_table_sql,
     build_create_extract_temp_sql,
     build_extract_stage_insert_sql,
-    build_extract_merge_sql,
     build_failure_candidates_sql,
     build_extracted_join_sql,
     prepare_insert_data,
@@ -349,6 +348,8 @@ class SilverPipeline(SnowflakeBase):
 
         col_names = [desc[0].lower() for desc in cursor.description]
         records = [dict(zip(col_names, row)) for row in rows]
+        pk_col = self.cfg.get_llm_extracted_pk_column().lower()
+        records = pd.DataFrame(records).drop_duplicates(subset=[pk_col]).to_dict('records')
         logger.info('failure 모델 재시도 대상 조회 완료', retry_count=len(records))
         return records
 
@@ -394,7 +395,8 @@ class SilverPipeline(SnowflakeBase):
         cursor.execute(build_create_extract_temp_sql(temp_table, columns))
         stage_insert_sql = build_extract_stage_insert_sql(temp_table, columns)
         cursor.executemany(stage_insert_sql, insert_data)
-        cursor.execute(build_extract_merge_sql(self.llm_extracted_table, temp_table, pk_col, non_pk_cols))
+        all_cols = [pk_col] + non_pk_cols
+        cursor.execute(SnowflakeLoader.build_merge_sql(self.llm_extracted_table, temp_table, pk_col, all_cols))
         logger.info('추출 결과 적재 완료', count=len(insert_data))
 
     def cleanup_extraction_checkpoint(self) -> None:
@@ -789,86 +791,86 @@ if __name__ == '__main__':
     #         conn.close()
 
     # ── 4단계: failure 대상 조회 ──────────────────────────────────
-    logger.info('LLM 추출 단계 시작: failure 대상 조회')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        failure_records = pipeline.fetch_failure_candidates(cursor)
-    except Exception:
-        logger.error('failure 대상 조회 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
-
-    # ── 5-6단계: failure 모델 재시도 + _EXTRACTED 증분 청크 적재 ─
-    total_chunks = (len(failure_records) - 1) // CHUNK_SIZE + 1 if failure_records else 0
-    logger.info('LLM 추출 단계 시작: failure 추출 + 적재', total=len(failure_records), chunks=total_chunks)
-    session_start = pendulum.now()
-    for chunk_idx in range(total_chunks):
-        chunk = failure_records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
-        logger.info('failure 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
-        chunk_start = pendulum.now()
-        failure_results = pipeline.run_failure_model_retry(chunk)
-        elapsed = (pendulum.now() - chunk_start).in_seconds()
-        elapsed_session = (pendulum.now() - session_start).in_seconds()
-        avg_per_chunk = elapsed_session / (chunk_idx + 1)
-        eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
-        success = sum(1 for r in failure_results if r.get('_success', False))
-        logger.info(
-            'failure 청크 추출 완료',
-            chunk=chunk_idx + 1, total_chunks=total_chunks,
-            success=success, failed=len(failure_results) - success,
-            success_rate=f'{100 * success / len(failure_results):.1f}%' if failure_results else 'N/A',
-            elapsed=f'{elapsed:.1f}s',
-            elapsed_session=f'{elapsed_session / 3600:.2f}h',
-            remaining_time=f'{eta_seconds / 3600:.1f}h',
-            eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
-        )
-        conn = _connect()
-        cursor = conn.cursor()
-        try:
-            pipeline.load_extraction_results(cursor, failure_results)
-        except Exception:
-            logger.error('failure 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
-            raise
-        finally:
-            cursor.close()
-            conn.close()
-
-    # ── 7단계: _LLM_EXTRACTED JOIN ────────────────────────────────
-    logger.info('LLM 추출 단계 시작: _LLM_EXTRACTED JOIN')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        pipeline.join_extraction(cursor)
-    except Exception:
-        logger.error('JOIN 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
-
-    # ── Clustering ────────────────────────────────────────────────
-    # 1단계: 데이터 로드 (_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT)
-    # logger.info('Clustering 단계 시작: 데이터 로드')
+    # logger.info('LLM 추출 단계 시작: failure 대상 조회')
     # conn = _connect()
     # cursor = conn.cursor()
     # try:
-    #     df = pipeline.fetch_clustering_data(cursor)
+    #     failure_records = pipeline.fetch_failure_candidates(cursor)
     # except Exception:
-    #     logger.error('clustering 데이터 로드 실패', exc_info=True)
+    #     logger.error('failure 대상 조회 실패', exc_info=True)
     #     raise
     # finally:
     #     cursor.close()
     #     conn.close()
 
+    # ── 5-6단계: failure 모델 재시도 + _EXTRACTED 증분 청크 적재 ─
+    # total_chunks = (len(failure_records) - 1) // CHUNK_SIZE + 1 if failure_records else 0
+    # logger.info('LLM 추출 단계 시작: failure 추출 + 적재', total=len(failure_records), chunks=total_chunks)
+    # session_start = pendulum.now()
+    # for chunk_idx in range(total_chunks):
+    #     chunk = failure_records[chunk_idx * CHUNK_SIZE:(chunk_idx + 1) * CHUNK_SIZE]
+    #     logger.info('failure 청크 추출 시작', chunk=chunk_idx + 1, total_chunks=total_chunks, size=len(chunk))
+    #     chunk_start = pendulum.now()
+    #     failure_results = pipeline.run_failure_model_retry(chunk)
+    #     elapsed = (pendulum.now() - chunk_start).in_seconds()
+    #     elapsed_session = (pendulum.now() - session_start).in_seconds()
+    #     avg_per_chunk = elapsed_session / (chunk_idx + 1)
+    #     eta_seconds = avg_per_chunk * (total_chunks - chunk_idx - 1)
+    #     success = sum(1 for r in failure_results if r.get('_success', False))
+    #     logger.info(
+    #         'failure 청크 추출 완료',
+    #         chunk=chunk_idx + 1, total_chunks=total_chunks,
+    #         success=success, failed=len(failure_results) - success,
+    #         success_rate=f'{100 * success / len(failure_results):.1f}%' if failure_results else 'N/A',
+    #         elapsed=f'{elapsed:.1f}s',
+    #         elapsed_session=f'{elapsed_session / 3600:.2f}h',
+    #         remaining_time=f'{eta_seconds / 3600:.1f}h',
+    #         eta_kst=pendulum.now('Asia/Seoul').add(seconds=int(eta_seconds)).format('MM-DD HH:mm'),
+    #     )
+    #     conn = _connect()
+    #     cursor = conn.cursor()
+    #     try:
+    #         pipeline.load_extraction_results(cursor, failure_results)
+    #     except Exception:
+    #         logger.error('failure 청크 적재 실패', chunk=chunk_idx + 1, exc_info=True)
+    #         raise
+    #     finally:
+    #         cursor.close()
+    #         conn.close()
+
+    # ── 7단계: _LLM_EXTRACTED JOIN ────────────────────────────────
+    # logger.info('LLM 추출 단계 시작: _LLM_EXTRACTED JOIN')
+    # conn = _connect()
+    # cursor = conn.cursor()
+    # try:
+    #     pipeline.join_extraction(cursor)
+    # except Exception:
+    #     logger.error('JOIN 실패', exc_info=True)
+    #     raise
+    # finally:
+    #     cursor.close()
+    #     conn.close()
+
+    # ── Clustering ────────────────────────────────────────────────
+    # 1단계: 데이터 로드 (_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT)
+    logger.info('Clustering 단계 시작: 데이터 로드')
+    conn = _connect()
+    cursor = conn.cursor()
+    try:
+        df = pipeline.fetch_clustering_data(cursor)
+    except Exception:
+        logger.error('clustering 데이터 로드 실패', exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()
+
     # 2-5단계: vocab filter → 임베딩 → (train.enabled=true시) Optuna 튜닝 + 저장
-    # logger.info(
-    #     'Clustering 단계 시작: 임베딩 + 학습',
-    #     train_enabled=pipeline.cfg.get_clustering_train_enabled(),
-    # )
-    # embeddings, df = pipeline.run_clustering_tuning(df)
+    logger.info(
+        'Clustering 단계 시작: 임베딩 + 학습',
+        train_enabled=pipeline.cfg.get_clustering_train_enabled(),
+    )
+    embeddings, df = pipeline.run_clustering_tuning(df)
 
     # 6단계: active_run 모델로 전체 클러스터링 예측
     # logger.info('Clustering 단계 시작: 예측')

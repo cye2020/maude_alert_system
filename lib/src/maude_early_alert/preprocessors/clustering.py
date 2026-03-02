@@ -255,17 +255,14 @@ def compute_all_metrics(
 def is_valid(metrics: Dict, validity_params: Dict) -> bool:
     """하드 필터 — Optuna objective 내부 적용.
 
-    - k 범위: gradient 없으므로 hard 컷
-    - noise_max: 극단적 노이즈 제거
-    - max_cluster_ratio는 scoring(soft)으로 처리 — 데이터 분포 특성상
-      hard 컷 시 합격 trial이 없을 수 있음
+    - k 범위만 hard 컷 (gradient 없으므로)
+    - noise_max·max_cluster_ratio는 scoring(soft)으로 처리
+      → hard 컷 시 합격 trial이 없을 수 있음
 
     Args:
         validity_params: {"k_min", "k_max", "noise_max"}
     """
     if not (validity_params["k_min"] <= metrics["k"] <= validity_params["k_max"]):
-        return False
-    if metrics["noise_ratio"] > validity_params["noise_max"]:
         return False
     return True
 
@@ -448,7 +445,8 @@ def optuna_search(
             return -1.0
         if not is_valid(metrics, validity_params):
             logger.debug("trial skip: k 범위 초과", trial=trial.number,
-                         k=metrics["k"], k_min=validity_params["k_min"], k_max=validity_params["k_max"])
+                         k=metrics["k"],
+                         k_min=validity_params["k_min"], k_max=validity_params["k_max"])
             return -1.0
 
         score = compute_score(metrics, scoring_params)
@@ -500,24 +498,24 @@ def optuna_search(
     study.optimize(objective, n_trials=n_trials, timeout=timeout,
                    show_progress_bar=True, gc_after_trial=True)
 
-    final_result = best_valid_result if best_valid_result else best_result
-
-    if final_result:
-        if best_valid_result is None:
+    if best_valid_result is None:
+        if best_result is not None:
             logger.warning(
-                "Optuna 완료 — noise_max 미달 trial 없음, noise 조건 완화 후 최선 결과 사용",
-                noise_ratio=round(best_result["metrics"]["noise_ratio"], 3),
+                "Optuna 완료 — noise_max를 통과한 trial 없음 (베스트 모델 미선정)",
+                best_noise_ratio=round(best_result["metrics"]["noise_ratio"], 3),
                 noise_max=validity_params["noise_max"],
+                k=best_result["metrics"]["k"],
             )
-        logger.info("Optuna 완료",
-            score=round(final_result["score"], 3),
-            k=final_result["metrics"]["k"],
-            sil=round(final_result["metrics"]["sil"], 3),
-            noise=round(final_result["metrics"]["noise_ratio"], 3))
-    else:
-        logger.warning("Optuna 완료 — 합격 trial 없음")
+        else:
+            logger.warning("Optuna 완료 — 합격 trial 없음")
+        return None
 
-    return final_result
+    logger.info("Optuna 완료",
+        score=round(best_valid_result["score"], 3),
+        k=best_valid_result["metrics"]["k"],
+        sil=round(best_valid_result["metrics"]["sil"], 3),
+        noise=round(best_valid_result["metrics"]["noise_ratio"], 3))
+    return best_valid_result
 
 
 # =====================

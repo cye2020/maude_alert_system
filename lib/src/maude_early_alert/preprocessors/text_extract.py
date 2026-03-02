@@ -103,40 +103,6 @@ def build_extract_stage_insert_sql(
     )
 
 
-def build_extract_merge_sql(
-    target: str,
-    source: str,
-    pk_column: str,
-    non_pk_columns: List[str],
-) -> str:
-    """추출 결과 MERGE SQL 생성.
-
-    Args:
-        target: 대상 테이블명
-        source: 소스 (임시) 테이블명
-        pk_column: PRIMARY KEY 컬럼명
-        non_pk_columns: PK 외 컬럼명 목록
-    """
-    update_set = ",\n        ".join(
-        f"target.{col} = source.{col}" for col in non_pk_columns
-    )
-    all_cols = [pk_column] + non_pk_columns
-    insert_cols = ", ".join(all_cols)
-    insert_vals = ", ".join(f"source.{col}" for col in all_cols)
-
-    return dedent(f"""\
-        MERGE INTO {target} AS target
-        USING {source} AS source
-        ON target.{pk_column} = source.{pk_column}
-        WHEN MATCHED THEN UPDATE SET
-            {update_set}
-        WHEN NOT MATCHED THEN INSERT (
-            {insert_cols}
-        ) VALUES (
-            {insert_vals}
-        )""")
-
-
 def build_failure_candidates_sql(
     source_table: str,
     extracted_table: str,

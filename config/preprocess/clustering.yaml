@@ -73,10 +73,10 @@ train:
     storage: optuna_clustering.db       # run 디렉토리 아래 저장됨 (null이면 인메모리)
     study_name: maude_clustering
     ranges:
-      min_cluster_size:    # best: 9000
-        min: 3000
+      min_cluster_size:    # best: 9000 (509K 기준) → 681K 스케일 ≈ 12000
+        min: 5000
         max: 20000
-        step: 500
+        step: 1000
       min_samples:         # best: 60
         min: 20
         max: 150
@@ -99,7 +99,7 @@ train:
 paths:
   base_dir: models/clustering
   active_run: "20260301_171726"  # 예측에 사용할 run ID (학습 완료 후 수동 설정)
-  resume_run: "20260301_171726"  # Optuna 재개 또는 selected_trial 소스 run ID
+  resume_run: '20260301_171726'  # Optuna 재개 또는 selected_trial 소스 run ID
   selected_trial: 41            # 정수 설정 시 resume_run의 JSON에서 해당 trial 파라미터로 1회 재훈련
 
 # 7. 클러스터링 결과 테이블 스키마
