@@ -279,6 +279,7 @@ class SilverPipeline(SnowflakeBase):
         sql = build_mdr_text_extract_sql(
             table_name=self.llm_source_table,
             columns=self.cfg.get_llm_source_columns(),
+            logical_date=self.logical_date,
         )
         source_cols = self.cfg.get_llm_source_columns()
         pk_col = self.cfg.get_llm_extracted_pk_column()
@@ -338,6 +339,7 @@ class SilverPipeline(SnowflakeBase):
             source_columns=self.cfg.get_llm_source_columns(),
             pk_column=self.cfg.get_llm_extracted_pk_column(),
             unknown_columns=self.cfg.get_llm_extracted_unknown_columns(),
+            logical_date=self.logical_date,
         )
         cursor.execute(sql)
         rows = cursor.fetchall()

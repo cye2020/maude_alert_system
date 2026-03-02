@@ -7,6 +7,11 @@ from textwrap import dedent, indent
 from typing import Any, Dict, List, Optional, Union
 
 # ======================
+# 서드파티 라이브러리
+# ======================
+import pendulum
+
+# ======================
 # 내부 라이브러리
 # ======================
 from maude_early_alert.utils.helpers import validate_identifier
@@ -24,14 +29,16 @@ def build_mdr_text_extract_sql(
     columns: Optional[List[str]] = None,
     where: Optional[str] = None,
     limit: Optional[int] = None,
+    logical_date: Optional[pendulum.DateTime] = None,
 ) -> str:
     """대상 테이블에서 MDR_TEXT 추출용 SELECT SQL 생성.
 
     Args:
         table_name: 대상 테이블 (FQDN 가능, 예: MAUDE.SILVER.EVENT_STAGE_12)
         columns: SELECT 컬럼 목록 (None이면 MDR_TEXT 만)
-        where: WHERE 절 (선택, 예: "MDR_TEXT IS NOT NULL")
+        where: WHERE 절 추가 필터 (선택, 예: "MDR_TEXT IS NOT NULL")
         limit: LIMIT 값 (None이면 미포함)
+        logical_date: 지정 시 SOURCE_BATCH_ID = 'maude_YYYYMM' 조건을 자동 추가
 
     Returns:
         실행 가능한 SELECT SQL 문자열
@@ -41,10 +48,16 @@ def build_mdr_text_extract_sql(
     for c in select_cols:
         validate_identifier(c)
 
+    conditions = []
+    if logical_date is not None:
+        conditions.append(f"SOURCE_BATCH_ID = 'maude_{logical_date.strftime('%Y%m')}'")
+    if where:
+        conditions.append(dedent(where).strip())
+
     select_clause = ", ".join(select_cols)
     sql = f"SELECT {select_clause}\nFROM {table_name}"
-    if where:
-        sql += f"\nWHERE {dedent(where).strip()}"
+    if conditions:
+        sql += "\nWHERE " + "\nAND ".join(conditions)
     if limit is not None:
         sql += f"\nLIMIT {limit}"
     return sql
@@ -109,6 +122,7 @@ def build_failure_candidates_sql(
     source_columns: List[str],
     pk_column: str = "MDR_TEXT",
     unknown_columns: Optional[List[str]] = None,
+    logical_date: Optional[pendulum.DateTime] = None,
     source_alias: str = "s",
     extract_alias: str = "ex",
 ) -> str:
@@ -124,7 +138,7 @@ def build_failure_candidates_sql(
         source_columns: 소스 테이블에서 SELECT할 컬럼 목록
         pk_column: LEFT JOIN 키 컬럼
         unknown_columns: 'Unknown' 체크 대상 추출 결과 컬럼 목록
-        source_where: 소스 테이블 WHERE 필터 (선택)
+        logical_date: 지정 시 SOURCE_BATCH_ID = 'maude_YYYYMM' 조건을 자동 추가
         source_alias: 소스 테이블 alias
         extract_alias: 추출 결과 테이블 alias
     """
@@ -141,7 +155,13 @@ def build_failure_candidates_sql(
     for col in (unknown_columns or []):
         validate_identifier(col)
         unknown_conds.append(f"{extract_alias}.{col} IN ('Unknown', 'Other')")
-    where = "(" + " OR ".join([null_cond] + unknown_conds) + ")"
+    failure_cond = "(" + " OR ".join([null_cond] + unknown_conds) + ")"
+
+    if logical_date is not None:
+        batch_id = f"maude_{logical_date.strftime('%Y%m')}"
+        where = f"({source_alias}.SOURCE_BATCH_ID = '{batch_id}')\nAND {failure_cond}"
+    else:
+        where = failure_cond
 
     join = build_join_clause(
         left_table=source_table,
@@ -358,9 +378,6 @@ if __name__ == "__main__":
 
     print("\n=== build_extract_stage_insert_sql ===")
     print(build_extract_stage_insert_sql("TMP_TABLE", cols))
-
-    print("\n=== build_extract_merge_sql ===")
-    print(build_extract_merge_sql("DST_TABLE", "TMP_TABLE", pk, non_pk))
 
     print("\n=== build_extracted_join_sql ===")
     print(build_extracted_join_sql("SRC_TABLE", "SRC_TABLE_EXTRACTED", non_pk, pk))

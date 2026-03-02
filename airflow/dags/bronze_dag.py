@@ -40,7 +40,7 @@ def maude_bronze():
 
         try:
             pipeline = BronzePipeline(logical_date)
-            batch_id = f"bronze_{logical_date.strftime('%Y%m%d_%H%M%S')}"
+            batch_id = f"maude_{logical_date.strftime('%Y%m')}"
 
             hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
             with hook.get_conn() as conn, closing(conn.cursor()) as cursor:
