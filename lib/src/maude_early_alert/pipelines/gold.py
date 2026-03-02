@@ -125,7 +125,66 @@ class GoldPipeline(SnowflakeBase):
 
         
     # ===================================================================
-    # 1. CLUSTER_{YYYYMM}_DASHBOARD
+    # 1-4. CTAS 대시보드 공통 헬퍼
+    # ===================================================================
+
+    def _run_ctas_window(
+        self,
+        cursor           : SnowflakeCursor,
+        source_table     : str,
+        snapshot_date    : str,
+        windows          : list,
+        group            : str,
+        use              : str,
+        agg_fn,
+        entity_expr      : str,
+        metrics          : list = None,
+        metric_name_expr : str = None,
+        metric_value_expr: str = None,
+    ) -> None:
+        """window별 Gold CTAS 테이블 생성 공통 헬퍼.
+        metrics 지정 시 UNPIVOT, 미지정 시 직접 SELECT.
+        """
+        agg = Aggregation(database=self.database, schema=self.schema)
+        for w in windows:
+            table_name = self._table_name(group, use, w)
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg_fn(agg, source_table, w)
+            if metrics:
+                cols = ", ".join(metrics)
+                sql  = f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       {entity_expr}           AS ENTITY_VALUE,
+                       METRIC_NAME,
+                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({cols}))
+                ORDER BY 1, 2, 3, 4, 5
+            """
+            else:
+                sql  = f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       {entity_expr}           AS ENTITY_VALUE,
+                       {metric_name_expr}      AS METRIC_NAME,
+                       {metric_value_expr}     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                ORDER BY 1, 2, 3
+            """
+            self._write_ctas(cursor, sql, table_name)
+            logger.info(f"{group} 적재 완료", table=table_name, window=w)
+
+    # ===================================================================
+    # 1. CLUSTER_{W}M_DASHBOARD
     # ===================================================================
 
     @with_context
@@ -136,32 +195,18 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
-        windows       = windows or self.WINDOWS
-        agg     = Aggregation(database=self.database, schema=self.schema)
-        metrics = ", ".join(self.CLUSTER_METRICS)
-        for w in windows:
-            table_name = self._table_name("CLUSTER", "DASHBOARD", w)
-            full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.cluster_dashboard_sql(source_table, w)
-            self._write_ctas(cursor, f"""
-                CREATE OR REPLACE TABLE {full} AS
-                SELECT METRIC_DATE,
-                       'month'::VARCHAR        AS GRAIN,
-                       MANUFACTURER,
-                       CLUSTER_ID              AS ENTITY_VALUE,
-                       METRIC_NAME,
-                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
-                       '{source_table}'        AS SOURCE_TABLE,
-                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
-                FROM ({agg_sql}) base
-                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
-                ORDER BY 1, 2, 3, 4, 5
-            """, table_name)
-            logger.info("CLUSTER 적재완료", table=table_name, window=w)
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="CLUSTER", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.cluster_dashboard_sql(s, w),
+            entity_expr="CLUSTER_ID",
+            metrics=self.CLUSTER_METRICS,
+        )
 
     # ===================================================================
-    # 2. DEFECT_{YYYYMM}_SPIKE
+    # 2. DEFECT_{W}M_SPIKE
     # ===================================================================
 
     @with_context
@@ -172,30 +217,19 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
-        windows       = windows or self.WINDOWS
-        agg = Aggregation(database=self.database, schema=self.schema)
-        for w in windows:
-            table_name = self._table_name("DEFECT", "SPIKE", w)
-            full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.defect_spike_sql(source_table, w)
-            self._write_ctas(cursor, f"""
-                CREATE OR REPLACE TABLE {full} AS
-                SELECT METRIC_DATE,
-                       'month'::VARCHAR        AS GRAIN,
-                       MANUFACTURER,
-                       DEFECT_TYPE             AS ENTITY_VALUE,
-                       'REPORT_COUNT'          AS METRIC_NAME,
-                       REPORT_COUNT::FLOAT     AS METRIC_VALUE,
-                       '{source_table}'        AS SOURCE_TABLE,
-                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
-                FROM ({agg_sql}) base
-                ORDER BY 1, 2, 3
-            """, table_name)
-            logger.info("DEFECT 적재완료", table=table_name, window=w)
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="DEFECT", use="SPIKE",
+            agg_fn=lambda agg, s, w: agg.defect_spike_sql(s, w),
+            entity_expr="DEFECT_TYPE",
+            metric_name_expr="'REPORT_COUNT'",
+            metric_value_expr="REPORT_COUNT::FLOAT",
+        )
 
     # ------------------------------------------------------------------
-    # 3. PRODUCT_{YYYYMM}_DASHBOARD
+    # 3. PRODUCT_{W}M_DASHBOARD
     # ------------------------------------------------------------------
 
     @with_context
@@ -206,32 +240,18 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
-        windows       = windows or self.WINDOWS
-        agg     = Aggregation(database=self.database, schema=self.schema)
-        metrics = ", ".join(self.PRODUCT_METRICS)
-        for w in windows:
-            table_name = self._table_name("PRODUCT", "DASHBOARD", w)
-            full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.product_dashboard_sql(source_table, w)
-            self._write_ctas(cursor, f"""
-                CREATE OR REPLACE TABLE {full} AS
-                SELECT METRIC_DATE,
-                       'month'::VARCHAR        AS GRAIN,
-                       MANUFACTURER,
-                       PRODUCT_CODE            AS ENTITY_VALUE,
-                       METRIC_NAME,
-                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
-                       '{source_table}'        AS SOURCE_TABLE,
-                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
-                FROM ({agg_sql}) base
-                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
-                ORDER BY 1, 2, 3, 4, 5
-            """, table_name)
-            logger.info("PRODUCT 적재 완료", table=table_name, window=w)
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="PRODUCT", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.product_dashboard_sql(s, w),
+            entity_expr="PRODUCT_CODE",
+            metrics=self.PRODUCT_METRICS,
+        )
 
     # ------------------------------------------------------------------
-    # 4. OVERVIEW_{YYYYMM}_DASHBOARD
+    # 4. OVERVIEW_{W}M_DASHBOARD
     # ------------------------------------------------------------------
 
     @with_context
@@ -242,32 +262,18 @@ class GoldPipeline(SnowflakeBase):
         snapshot_date: Optional[str] = None,
         windows      : list = None,
     ) -> None:
-        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
-        windows       = windows or self.WINDOWS
-        agg     = Aggregation(database=self.database, schema=self.schema)
-        metrics = ", ".join(self.OVERVIEW_METRICS)
-        for w in windows:
-            table_name = self._table_name("OVERVIEW", "DASHBOARD", w)
-            full       = f"{self.database}.{self.gold_schema}.{table_name}"
-            agg_sql    = agg.overview_dashboard_sql(source_table, w)
-            self._write_ctas(cursor, f"""
-                CREATE OR REPLACE TABLE {full} AS
-                SELECT METRIC_DATE,
-                       'month'::VARCHAR        AS GRAIN,
-                       MANUFACTURER,
-                       'TOTAL'                 AS ENTITY_VALUE,
-                       METRIC_NAME,
-                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
-                       '{source_table}'        AS SOURCE_TABLE,
-                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
-                FROM ({agg_sql}) base
-                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({metrics}))
-                ORDER BY 1, 2, 3, 4, 5
-            """, table_name)
-            logger.info("OVERVIEW 적재 완료", table=table_name, window=w)
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="OVERVIEW", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.overview_dashboard_sql(s, w),
+            entity_expr="'TOTAL'",
+            metrics=self.OVERVIEW_METRICS,
+        )
 
     # ------------------------------------------------------------------
-    # 5. SPIKE_{YYYYMM}_RESULT
+    # 5. SPIKE_{W}M_RESULT
     # ------------------------------------------------------------------
 
     @with_context

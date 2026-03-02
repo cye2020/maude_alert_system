@@ -30,6 +30,9 @@ dependencies = [
     # clustering
     "sentence-transformers",
     "hdbscan",
+    # 통계 분석
+    "scipy",
+    "statsmodels",
     # 시각화용
     "plotly"
 ]
