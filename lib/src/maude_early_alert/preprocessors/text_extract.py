@@ -30,6 +30,8 @@ def build_mdr_text_extract_sql(
     where: Optional[str] = None,
     limit: Optional[int] = None,
     logical_date: Optional[pendulum.DateTime] = None,
+    exclude_extracted_table: Optional[str] = None,
+    pk_column: str = "MDR_TEXT",
 ) -> str:
     """대상 테이블에서 MDR_TEXT 추출용 SELECT SQL 생성.
 
@@ -39,6 +41,8 @@ def build_mdr_text_extract_sql(
         where: WHERE 절 추가 필터 (선택, 예: "MDR_TEXT IS NOT NULL")
         limit: LIMIT 값 (None이면 미포함)
         logical_date: 지정 시 SOURCE_BATCH_ID = 'maude_YYYYMM' 조건을 자동 추가
+        exclude_extracted_table: 지정 시 pk_column NOT IN (SELECT pk_column FROM ...) 조건 추가
+        pk_column: exclude_extracted_table 사용 시 제외 기준 컬럼명
 
     Returns:
         실행 가능한 SELECT SQL 문자열
@@ -53,6 +57,10 @@ def build_mdr_text_extract_sql(
         conditions.append(f"SOURCE_BATCH_ID = 'maude_{logical_date.strftime('%Y%m')}'")
     if where:
         conditions.append(dedent(where).strip())
+    if exclude_extracted_table is not None:
+        validate_identifier(exclude_extracted_table)
+        validate_identifier(pk_column)
+        conditions.append(f"{pk_column} NOT IN (SELECT {pk_column} FROM {exclude_extracted_table})")
 
     select_clause = ", ".join(select_cols)
     sql = f"SELECT {select_clause}\nFROM {table_name}"

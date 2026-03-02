@@ -97,6 +97,7 @@ class SilverConfig:
         self._llm_extraction = load_config('preprocess/llm_extraction')
         self._clustering = load_config('preprocess/clustering')
         self._storage = load_config('storage')
+        self._pipeline = load_config('preprocess/pipeline')
 
     @property
     def filtering(self) -> dict:
@@ -112,6 +113,10 @@ class SilverConfig:
     def cleaning(self) -> dict:
         """클린징 설정 (cleaning.yaml)"""
         return self._cleaning
+
+    def get_pipeline_config(self) -> dict:
+        """카테고리별 파이프라인 스텝 순서 반환 (pipeline.yaml)"""
+        return self._pipeline
 
     # ==================== snowflake 설정 ====================
 

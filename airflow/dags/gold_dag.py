@@ -15,7 +15,7 @@ configure_logging(level='INFO', log_file='gold.log')
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-SNOWFLAKE_CONN_ID = 'snowflake_default'
+SNOWFLAKE_CONN_ID = 'snowflake_de'
 
 _storage = load_config('storage')
 _DATABASE    = _storage['snowflake']['transform']['database']
@@ -41,10 +41,10 @@ def maude_gold():
     """EVENT_CLUSTERED → Gold 집계(dashboard) + 이상징후시그널(spike/stat) 파이프라인"""
 
     @task
-    def aggregate(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def aggregate(run_id: str, dag: DAG) -> None:
         """클러스터/결함/제품/전체 월간 지표 집계 → Gold dashboard 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = logical_date.strftime('%Y-%m-01')
+        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-01')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,
@@ -63,10 +63,10 @@ def maude_gold():
             raise AirflowException(f'집계 실패: {e}') from e
 
     @task
-    def anomaly_signal(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def anomaly_signal(run_id: str, dag: DAG) -> None:
         """Spike Detection + Statistical Analysis → Gold 이상 탐지 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = logical_date.strftime('%Y-%m-01')
+        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-01')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,

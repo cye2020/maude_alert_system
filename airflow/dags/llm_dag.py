@@ -14,7 +14,7 @@ configure_logging(level='INFO', log_file='llm.log')
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-SNOWFLAKE_CONN_ID = 'snowflake_default'
+SNOWFLAKE_CONN_ID = 'snowflake_de'
 CHUNK_SIZE = 5000
 
 
@@ -38,10 +38,10 @@ def maude_llm():
     """
 
     @task
-    def llm_extract_and_load(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> int:
+    def llm_extract_and_load(run_id: str, dag: DAG) -> int:
         """MDR 텍스트 추출 → LLM 청크 처리 → Snowflake 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=logical_date)
+        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now('Asia/Seoul'))
         hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
         try:
             # 1단계: MDR 텍스트 추출
@@ -65,10 +65,10 @@ def maude_llm():
             raise AirflowException(f'LLM 추출 실패: {e}') from e
 
     @task
-    def failure_retry_and_load(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> int:
+    def failure_retry_and_load(run_id: str, dag: DAG) -> int:
         """Failure 후보 조회 → failure 모델 청크 처리 → Snowflake 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=logical_date)
+        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now('Asia/Seoul'))
         hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
         try:
             # 4단계: failure 후보 조회
@@ -96,10 +96,10 @@ def maude_llm():
             raise AirflowException(f'failure 재시도 실패: {e}') from e
 
     @task(outlets=[MAUDE_LLM_ASSET])
-    def join_extraction(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def join_extraction(run_id: str, dag: DAG) -> None:
         """추출 결과 JOIN → {category}_LLM_EXTRACTED 테이블 생성"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=logical_date)
+        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now('Asia/Seoul'))
         hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
         try:
             with hook.get_conn() as conn, closing(conn.cursor()) as cursor:
@@ -110,9 +110,9 @@ def maude_llm():
             raise AirflowException(f'JOIN 실패: {e}') from e
 
     @task(trigger_rule='all_done')
-    def cleanup_checkpoint(logical_date: pendulum.DateTime) -> None:
+    def cleanup_checkpoint() -> None:
         """체크포인트 삭제 (성공/실패 무관하게 항상 실행)"""
-        SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=logical_date).cleanup_extraction_checkpoint()
+        SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now('Asia/Seoul')).cleanup_extraction_checkpoint()
 
     s0 = llm_extract_and_load()
     s1 = failure_retry_and_load()

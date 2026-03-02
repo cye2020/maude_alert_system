@@ -30,12 +30,11 @@ def maude_ingest():
     """FDA MAUDE 데이터를 추출하여 S3에 적재하는 파이프라인"""
 
     @task
-    def extract(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> List[str]:
+    def extract(run_id: str, dag: DAG) -> List[str]:
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-
         try:
             import requests
-            pipeline = IngestPipeline(logical_date)
+            pipeline = IngestPipeline(pendulum.now('Asia/Seoul'))
 
             with requests.Session() as session:
                 data_urls = pipeline.extract(session)
@@ -47,29 +46,35 @@ def maude_ingest():
             logger.error('Extract failed', error=str(e), exc_info=True)
             raise AirflowException(f'추출 실패: {e}') from e
 
-    @task(outlets=[MAUDE_S3_ASSET])
-    def s3_load(data_urls: List[str], logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    @task
+    def s3_load(url: str, run_id: str, dag: DAG) -> str:
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-
         try:
             import requests
             from airflow.providers.amazon.aws.hooks.s3 import S3Hook
-            pipeline = IngestPipeline(logical_date)
+            pipeline = IngestPipeline(pendulum.now('Asia/Seoul'))
 
             hook = S3Hook(aws_conn_id='aws_default')
             client = hook.get_conn()
             with requests.Session() as session:
-                pipeline.s3_load(data_urls, client, session)
+                pipeline.s3_load([url], client, session)
 
-            logger.info('S3 load completed', count=len(data_urls))
+            logger.info('S3 load completed', url=url)
+            return url
 
         except Exception as e:
             logger.error('S3 load failed', error=str(e), exc_info=True)
             raise AirflowException(f'S3 적재 실패: {e}') from e
 
+    @task(outlets=[MAUDE_S3_ASSET])
+    def finalize(loaded_urls: List[str], run_id: str, dag: DAG) -> None:
+        bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
+        logger.info('S3 load all completed', count=len(loaded_urls))
+
     # Task 의존성 정의
     data_urls = extract()
-    s3_load(data_urls)
+    loaded = s3_load.expand(url=data_urls)
+    finalize(loaded)
 
 
 maude_ingest()

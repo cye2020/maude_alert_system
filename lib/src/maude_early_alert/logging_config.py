@@ -21,6 +21,7 @@ def configure_logging(level: str = 'INFO', log_file: str | None = None,):
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso", utc=False),
+            structlog.processors.format_exc_info,
             structlog.processors.JSONRenderer(ensure_ascii=False),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),

@@ -18,7 +18,7 @@ columns:
     - DATE_RECEIVED
   source_date_cols:       # source 대표 날짜 (COALESCE 우선순위 순)
     - PUBLISH_DATE
-    - PUBLIC_VERSION_DATE
+    - EFFECTIVE_FROM
   udi_di:           UDI_DI
   primary_udi_di:   PRIMARY_UDI_DI
   manufacturer:     MANUFACTURER_NAME

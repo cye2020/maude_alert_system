@@ -55,7 +55,7 @@ if __name__ == '__main__':
 
     configure_logging(level='DEBUG', log_file='temp.log')
 
-    logical_date = pendulum.now()
+    logical_date = pendulum.now('Asia/Seoul')
 
     pipeline = IngestPipeline(logical_date)
 

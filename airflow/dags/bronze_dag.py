@@ -15,12 +15,12 @@ configure_logging(level='INFO', log_file='bronze.log')
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-SNOWFLAKE_CONN_ID = 'snowflake_default'
+SNOWFLAKE_CONN_ID = 'snowflake_de'
 
 
 @dag(
     dag_id='maude_bronze',
-    start_date=pendulum.datetime(2026, 3, 3, tz='Asia/Seoul'),
+    start_date=pendulum.datetime(2026, 1, 1, tz='Asia/Seoul'),
     schedule=[MAUDE_S3_ASSET],
     catchup=False,
     max_active_runs=1,
@@ -34,26 +34,37 @@ SNOWFLAKE_CONN_ID = 'snowflake_default'
 def maude_bronze():
     """S3에 적재된 MAUDE 데이터를 Snowflake Bronze 레이어로 로드하는 파이프라인"""
 
-    @task(outlets=MAUDE_BRONZE_ASSETS)
-    def load_all(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> List[Dict[str, Any]]:
-        bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
+    @task
+    def get_tables() -> List[str]:
+        return BronzePipeline(pendulum.now('Asia/Seoul')).get_tables()
 
+    @task
+    def load_table(table: str, run_id: str, dag: DAG) -> Dict[str, Any]:
+        bind_contextvars(dag_id=dag.dag_id, run_id=run_id, table=table)
         try:
-            pipeline = BronzePipeline(logical_date)
-            batch_id = f"maude_{logical_date.strftime('%Y%m')}"
+            kst = pendulum.now('Asia/Seoul')
+            batch_id = f"maude_{kst.strftime('%Y%m')}"
+            pipeline = BronzePipeline(kst)
 
             hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
             with hook.get_conn() as conn, closing(conn.cursor()) as cursor:
-                results = pipeline.load_all(cursor, batch_id=batch_id)
+                result = pipeline.load_table(cursor, table_name=table, batch_id=batch_id)
 
-            logger.info('Bronze load completed', table_count=len(results), batch_id=batch_id)
-            return results
+            logger.info('Table load completed', table=table, **result)
+            return result
 
         except Exception as e:
-            logger.error('Bronze load failed', error=str(e), exc_info=True)
-            raise AirflowException(f'Bronze 적재 실패: {e}') from e
+            logger.error('Table load failed', table=table, error=str(e), exc_info=True)
+            raise AirflowException(f'Bronze 적재 실패 [{table}]: {e}') from e
 
-    load_all()
+    @task(outlets=MAUDE_BRONZE_ASSETS)
+    def finalize(results: List[Dict[str, Any]], run_id: str, dag: DAG) -> None:
+        bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
+        logger.info('Bronze load all completed', table_count=len(results))
+
+    tables = get_tables()
+    loaded = load_table.expand(table=tables)
+    finalize(loaded)
 
 
 maude_bronze()

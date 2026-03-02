@@ -14,7 +14,7 @@ configure_logging(level='INFO', log_file='cluster.log')
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
-SNOWFLAKE_CONN_ID = 'snowflake_default'
+SNOWFLAKE_CONN_ID = 'snowflake_de'
 
 
 @dag(
@@ -38,10 +38,10 @@ def maude_cluster():
     """
 
     @task(outlets=[MAUDE_CLUSTERED_ASSET])
-    def clustering(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
+    def clustering(run_id: str, dag: DAG) -> None:
         """fetch → tune → predict → join_clustering_results"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=logical_date)
+        pipeline = SilverPipeline(stage={'event': 0, 'udi': 0}, logical_date=pendulum.now('Asia/Seoul'))
         hook = SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID)
         try:
             # 1단계: 데이터 로드 (EVENT_LLM_EXTRACTED → DataFrame)

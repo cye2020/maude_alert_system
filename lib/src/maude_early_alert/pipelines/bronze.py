@@ -112,45 +112,49 @@ class BronzePipeline(SnowflakeBase):
             'total_rows': total_count,
         }
 
+    def get_tables(self) -> List[str]:
+        """적재 대상 테이블 목록 반환"""
+        return self.cfg.get_snowflake_load_tables()
+
     @with_context
-    def load_all(
+    def load_table(
         self, cursor: SnowflakeCursor,
+        table_name: str,
         batch_id: str,
-    ) -> List[Dict[str, Any]]:
-        """config의 모든 테이블 순회하며 S3→Snowflake 적재
+    ) -> Dict[str, Any]:
+        """단일 테이블 S3→Snowflake 적재
 
         Args:
             cursor: Snowflake cursor
+            table_name: 적재 대상 테이블명
             batch_id: 배치 식별자
         """
-
-        tables = self.cfg.get_snowflake_load_tables()
-        stage = self.cfg.get_snowflake_load_stage()
         ym = self.logical_date.strftime('%Y%m')
-        results = []
-
+        stage = self.cfg.get_snowflake_load_stage()
+        s3_stage_path = f"{stage}/{ym}/device/{table_name.lower()}"
+        primary_key = self.cfg.get_snowflake_load_primary_key(table_name)
+        business_primary_key = self.cfg.get_snowflake_load_business_primary_key(table_name)
         metadata = {
             'source_system': 's3',
             'ingest_time': self.logical_date,
             'batch_id': batch_id,
         }
+        return self.load_folder(
+            cursor,
+            table_name=table_name,
+            s3_stage_path=s3_stage_path,
+            primary_key=primary_key,
+            metadata=metadata,
+            business_primary_key=business_primary_key,
+        )
 
-        for table in tables:
-            s3_stage_path = f"{stage}/{ym}/device/{table.lower()}"
-            primary_key = self.cfg.get_snowflake_load_primary_key(table)
-            business_primary_key = self.cfg.get_snowflake_load_business_primary_key(table)
-
-            result = self.load_folder(
-                cursor,
-                table_name=table,
-                s3_stage_path=s3_stage_path,
-                primary_key=primary_key,
-                metadata=metadata,
-                business_primary_key=business_primary_key,
-            )
-            results.append(result)
-
-        return results
+    @with_context
+    def load_all(
+        self, cursor: SnowflakeCursor,
+        batch_id: str,
+    ) -> List[Dict[str, Any]]:
+        """config의 모든 테이블 순회하며 S3→Snowflake 적재"""
+        return [self.load_table(cursor, table_name=t, batch_id=batch_id) for t in self.get_tables()]
 
     @staticmethod
     def _parse_copy_result(results) -> Dict[str, Any]:

@@ -2,7 +2,7 @@ import json
 import shutil
 from functools import cached_property
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import ClassVar, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,38 @@ from maude_early_alert.preprocessors.prompt import get_prompt
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
 class SilverPipeline(SnowflakeBase):
+    # (step_name → pipeline.yaml) → (method_name, needs_category, extra_kwargs)
+    STEP_REGISTRY: ClassVar[Dict[str, Tuple[str, bool, dict]]] = {
+        'filter_dedup_rows':        ('filter_dedup_rows',        True,  {}),
+        'flatten':                  ('flatten',                  True,  {}),
+        'filter_scoping':           ('filter_scoping',           True,  {}),
+        'combine_mdr_text':         ('combine_mdr_text',         False, {}),
+        'extract_primary_udi_di':   ('extract_primary_udi_di',   False, {}),
+        'select_columns':           ('select_columns',           True,  {}),
+        'select_columns_final':     ('select_columns',           True,  {'final': True}),
+        'impute_missing_values':    ('impute_missing_values',    True,  {}),
+        'clean_values':             ('clean_values',             True,  {}),
+        'apply_company_alias':      ('apply_company_alias',      False, {}),
+        'fuzzy_match_manufacturer': ('fuzzy_match_manufacturer', False, {}),
+        'cast_types':               ('cast_types',               True,  {}),
+        'extract_udi_di':           ('extract_udi_di',           False, {}),
+        'match_udi':                ('match_udi',                False, {}),
+        'filter_quality':           ('filter_quality',           True,  {}),
+        'add_scd2_metadata':        ('add_scd2_metadata',        True,  {}),
+    }
+
+    def run_step(self, cursor: 'SnowflakeCursor', step: str, category: str | None = None) -> None:
+        """STEP_REGISTRY 기반 단일 진입점 실행"""
+        if category is not None and self.stage.get(category, 0) < 0:
+            logger.info(f'{step}[{category}] 스킵 — stage 비어있음', stage=self.stage[category])
+            return
+        method_name, needs_category, kwargs = self.STEP_REGISTRY[step]
+        method = getattr(self, method_name)
+        if needs_category:
+            method(cursor, category=category, **kwargs)
+        else:
+            method(cursor, **kwargs)
+
     def __init__(self, stage: Dict[str, int], logical_date: pendulum.DateTime):
         self.cfg = get_config().silver
         self.stage = stage
@@ -79,6 +111,12 @@ class SilverPipeline(SnowflakeBase):
 
         logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
 
+    def _current_table(self, category: str) -> str:
+        """SCD2 CURRENT 테이블명 반환 (e.g. 'MAUDE.SILVER.UDI_CURRENT')"""
+        db = self.cfg.get_snowflake_transform_database()
+        schema = self.cfg.get_snowflake_transform_schema()
+        return f'{db}.{schema}.{category}_CURRENT'.upper()
+
     def _stage_table(self, category: str) -> str:
         """현재 stage 테이블명 반환 (e.g. 'EVENT_STAGE_01')"""
         if self.stage[category] == 0:
@@ -94,6 +132,11 @@ class SilverPipeline(SnowflakeBase):
         logger.debug('stage 테이블 생성 중', table=next_table)
         full_sql = f'CREATE OR REPLACE TABLE {next_table} AS\n{sql}'
         cursor.execute(full_sql)
+        cursor.execute(f'SELECT COUNT(1) FROM {next_table}')
+        if cursor.fetchone()[0] == 0:
+            logger.warning('stage 테이블 비어있음, 후속 스텝 스킵', category=category, table=next_table)
+            self.stage[category] = -self.stage[category]
+            return
         logger.info('stage 테이블 생성 완료', category=category, table=next_table)
 
     def get_categories(self, step: str) -> List[str]:
@@ -214,7 +257,7 @@ class SilverPipeline(SnowflakeBase):
         logger.info('제조사 퍼지 매칭 시작', target=target_category, threshold=threshold)
         sql = build_manufacturer_fuzzy_match_sql(
             target=self._stage_table(target_category),
-            source=self._stage_table(self.cfg.get_fuzzy_match_source_category()),
+            source=self._current_table(self.cfg.get_fuzzy_match_source_category()),
             mfr_col=self.cfg.get_fuzzy_match_mfr_col(),
             udf_schema=udf_schema,
             threshold=threshold,
@@ -265,7 +308,7 @@ class SilverPipeline(SnowflakeBase):
         logger.info('UDI 매칭 시작', target=target_cat, source=source_cat)
         sql = build_matching_sql(
             target=self._stage_table(target_cat),
-            source=self._stage_table(source_cat),
+            source=self._current_table(source_cat),
             **self.cfg.get_matching_kwargs(),
         )
         self._create_next_stage(cursor, target_cat, sql)
@@ -276,13 +319,16 @@ class SilverPipeline(SnowflakeBase):
     def extract_mdr_text(self, cursor: SnowflakeCursor) -> List[Dict]:
         """source 테이블에서 MDR_TEXT 추출 + unique 처리, dict 리스트 반환"""
         logger.info('MDR_TEXT 추출 시작', source=self.llm_source_table)
-        sql = build_mdr_text_extract_sql(
-            table_name=self.llm_source_table,
-            columns=self.cfg.get_llm_source_columns(),
-            logical_date=self.logical_date,
-        )
         source_cols = self.cfg.get_llm_source_columns()
         pk_col = self.cfg.get_llm_extracted_pk_column()
+        cursor.execute(build_ensure_extracted_table_sql(self.llm_extracted_table, self.cfg.get_llm_extracted_columns()))
+        sql = build_mdr_text_extract_sql(
+            table_name=self.llm_source_table,
+            columns=source_cols,
+            logical_date=self.logical_date,
+            exclude_extracted_table=self.llm_extracted_table,
+            pk_column=pk_col,
+        )
 
         cursor.execute(sql)
         df = cursor.fetch_pandas_all()
@@ -666,7 +712,7 @@ class SilverPipeline(SnowflakeBase):
         """중간 stage 테이블 전부 삭제"""
         logger.info('중간 stage 테이블 정리 시작', stage=dict(self.stage))
         for category, current in self.stage.items():
-            for i in range(1, current + 1):
+            for i in range(1, abs(current) + 1):
                 table = f'{category}_stage_{i:02d}'.upper()
                 logger.debug('stage 테이블 삭제', table=table)
                 cursor.execute(f'DROP TABLE IF EXISTS {table}')
