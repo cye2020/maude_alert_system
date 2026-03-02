@@ -22,16 +22,23 @@ logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 class GoldPipeline(SnowflakeBase):
     """
     Silver -> Gold 파이프라인
-     
-    Aggregation / SpikeDetection / StatisticalAnalysis 결과물
-    
-    생성 테이블
-    CLUSTER_{YYYYMM}_DASHBOARD
-    DEFECT_{YYYYMM}_SPIKE
-    PRODUCT_{YYYYMM}_DASHBOARD
-    OVERVIEW_{YYYYMM}_DASHBOARD
-    SPIKE_{YYYYMM}_RESULT
-    STAT_{YYYYMM}_CHI2 / ODDS / FINAL
+
+    [DASH] 대시보드 집계 (CTAS, 실행마다 전체 교체)
+      CLUSTER_{W}M_DASHBOARD  : 클러스터별 월간 지표
+                                REPORT_COUNT, DEATH_COUNT, SEVERE_HARM_RATE 등
+      DEFECT_{W}M_SPIKE       : 결함 유형별 월간 보고 건수 (단순 COUNT, 시각화용)
+                                ※ SPIKE_RESULT와 다름 — 통계 검정 없음
+      OVERVIEW_{W}M_DASHBOARD : 전체 현황 요약
+      PRODUCT_{W}M_DASHBOARD  : 제품코드별 월간 지표
+
+    [DETECT] 이상 탐지 결과 (증분, SNAPSHOT_DATE 키)
+      SPIKE_{W}M_RESULT       : Z-score / Poisson 검정 → IS_SPIKE, Z_SCORE, P_VALUE
+                                ※ DEFECT_SPIKE와 다름 — 통계적 탐지 결과
+
+    [STAT] 통계 분석 결과 (증분, SNAPSHOT_DATE 키)
+      STAT_CHI2_RESULT        : 제품코드별 2×N 카이제곱 → CHI2_STATISTIC, CRAMERS_V
+      STAT_ODDS_RATIOS        : Fisher's exact 오즈비 → ODDS_RATIO, CI_LOWER, CI_UPPER
+      STAT_FINAL              : STAT_ODDS_RATIOS + FDR 보정 → SIGNIFICANT_CORRECTED
     """
     
     CLUSTER_METRICS = [
@@ -116,22 +123,6 @@ class GoldPipeline(SnowflakeBase):
             cursor.executemany(f"INSERT INTO {full} VALUES ({placeholders})", rows)
         logger.info("Spike 적재 완료", table=full, rows=len(rows))
 
-    def _write_auto(
-        self,
-        cursor    : SnowflakeCursor,
-        df        : pd.DataFrame,
-        table_name: str,
-    ) -> None:
-        """스키마 추론 + 전체 교체 (Stat용, 테이블명에 YYYYMM 포함)"""
-        full = f"{self.database}.{self.gold_schema}.{table_name}"
-        col_defs     = ", ".join(f"{c} {self._dtype_to_sf(t)}" for c, t in zip(df.columns, df.dtypes))
-        placeholders = ", ".join(["%s"] * len(df.columns))
-        rows         = self._to_rows(df)
-
-        cursor.execute(f"DROP TABLE IF EXISTS {full}")
-        cursor.execute(f"CREATE TABLE {full} ({col_defs})")
-        cursor.executemany(f"INSERT INTO {full} VALUES ({placeholders})", rows)
-        logger.info("Stat 적재 완료", table=full, rows=len(rows))
         
     # ===================================================================
     # 1. CLUSTER_{YYYYMM}_DASHBOARD
@@ -334,7 +325,7 @@ class GoldPipeline(SnowflakeBase):
             self._write_incremental(cursor, df, table_name, snapshot_date)
 
     # ------------------------------------------------------------------
-    # 6. STAT_{YYYYMM}_{CHI2|ODDS|FINAL}
+    # 6. STAT_CHI2_RESULT / STAT_ODDS_RATIOS / STAT_FINAL
     # ------------------------------------------------------------------
 
     @with_context
@@ -365,14 +356,20 @@ class GoldPipeline(SnowflakeBase):
                 alpha          = alpha,
             )
 
-        yyyymm      = snapshot_date[:7].replace("-", "")
-        chi2_table  = f"STAT_{yyyymm}_CHI2_RESULT"
-        odds_table  = f"STAT_{yyyymm}_ODDS_RATIOS"
-        final_table = f"STAT_{yyyymm}_FINAL"
+        chi2_df  = result["chi2"]["detail"].copy()
+        odds_df  = result["odds_ratios"].copy()
+        final_df = result["final"].copy()
 
-        self._write_auto(cursor, result["chi2"]["detail"], chi2_table)
-        self._write_auto(cursor, result["odds_ratios"],    odds_table)
-        self._write_auto(cursor, result["final"],          final_table)
+        for df in (chi2_df, odds_df, final_df):
+            df["SNAPSHOT_DATE"] = snapshot_date
+
+        chi2_table  = "STAT_CHI2_RESULT"
+        odds_table  = "STAT_ODDS_RATIOS"
+        final_table = "STAT_FINAL"
+
+        self._write_incremental(cursor, chi2_df,  chi2_table,  snapshot_date)
+        self._write_incremental(cursor, odds_df,  odds_table,  snapshot_date)
+        self._write_incremental(cursor, final_df, final_table, snapshot_date)
 
         logger.info("통계 분석 완료",
                     tables=[chi2_table, odds_table, final_table],

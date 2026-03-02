@@ -31,7 +31,7 @@ _cfg         = load_config('gold')
     catchup=False,
     max_active_runs=1,
     tags=['maude', 'gold', 'snowflake'],
-    description='EVENT_CLUSTERED 기반 Gold 레이어 집계 및 이상 탐지',
+    description='DASH(집계/시각화) / DETECT(스파이크 탐지) / STAT(통계 분석) Gold 테이블 생성',
     default_args={
         'retries': 2,
         'retry_delay': pendulum.duration(minutes=5),
@@ -44,7 +44,7 @@ def maude_gold():
     def aggregate(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
         """클러스터/결함/제품/전체 월간 지표 집계 → Gold dashboard 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = logical_date.strftime('%Y-%m-%d')
+        snapshot_date = logical_date.strftime('%Y-%m-01')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,
@@ -66,7 +66,7 @@ def maude_gold():
     def anomaly_signal(logical_date: pendulum.DateTime, run_id: str, dag: DAG) -> None:
         """Spike Detection + Statistical Analysis → Gold 이상 탐지 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = logical_date.strftime('%Y-%m-%d')
+        snapshot_date = logical_date.strftime('%Y-%m-01')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,
