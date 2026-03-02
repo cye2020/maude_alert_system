@@ -61,13 +61,27 @@ all = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/maude_early_alert"]
 
-# uv index 설정 - torch/vllm CUDA 빌드 소스
+[tool.uv]
+torch-backend = "auto"
+
+# uv index 설정 - torch CUDA 빌드 소스 (vllm은 torch-backend=auto로 처리)
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
-vllm = { index = "pytorch-cu128" }
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+cuml-cu12 = [
+  { index = "nvidia-pypi", marker = "sys_platform == 'linux'" },
+]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "nvidia-pypi"
+url = "https://pypi.nvidia.com"
 explicit = true

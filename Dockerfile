@@ -1,5 +1,5 @@
 # 공식 Airflow 이미지를 베이스로 사용 (entrypoint 보존)
-FROM apache/airflow:latest
+FROM apache/airflow:latest-python3.11
 
 USER root
 
