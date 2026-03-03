@@ -1,0 +1,97 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maude-early-alert"
+version = "1.0.0"
+description = "MAUDE 조기 경보 파이프라인 모듈"
+requires-python = ">=3.11"
+dependencies = [
+    # Core
+    "structlog",
+    "pyyaml",
+    "pendulum",
+    "requests",
+    "tqdm",
+    "pydantic",
+    "tenacity",
+    # Data
+    "pandas",
+]
+
+[project.optional-dependencies]
+snowflake = [
+    "snowflake-connector-python[pandas]",
+    "snowflake-snowpark-python",
+    # OpenTelemetry (Snowflake connector tracing)
+    "opentelemetry-api",
+    "opentelemetry-sdk",
+]
+aws = [
+    "boto3",
+    "aws-secretsmanager-caching",
+]
+clustering = [
+    "hdbscan",
+    # 통계 분석
+    "scipy",
+    "statsmodels",
+    # 시각화용
+    "plotly",
+]
+worker = [
+    # LLM/Clustering 공용 가상환경(/opt/vllm-env)
+    "maude-early-alert[snowflake,aws,clustering]",
+    "torch",
+    "torchvision",
+    "transformers[torch]",
+    "openai",
+    "cupy-cuda12x",
+    "cuml-cu12",
+    "vllm==0.15.1",
+    "sentence-transformers",
+]
+udf = [
+    "rapidfuzz",
+    "country-named-entity-recognition",
+    "clean-text",
+]
+airflow = [
+    "apache-airflow[postgres,async]==3.1.7",
+    "apache-airflow-providers-snowflake",
+    "apache-airflow-providers-amazon",
+    "psycopg2-binary",
+    "asyncpg",
+]
+all = [
+    "maude-early-alert[snowflake,aws,udf,airflow,clustering]",
+    # worker는 Dockerfile에서 별도 venv(/opt/vllm-env)로 설치
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maude_early_alert"]
+
+[tool.uv]
+torch-backend = "auto"
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+torchvision = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+cuml-cu12 = [
+  { index = "nvidia-pypi", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "nvidia-pypi"
+url = "https://pypi.nvidia.com"
+explicit = true

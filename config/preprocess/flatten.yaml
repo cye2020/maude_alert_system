@@ -1,0 +1,13 @@
+event:
+  flatten:
+    - device
+  transform:
+    - mdr_text
+  first_element:
+    - patient
+
+udi:
+  flatten: 
+    - identifiers
+  transform:
+    - product_codes

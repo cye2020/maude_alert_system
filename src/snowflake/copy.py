@@ -6,8 +6,6 @@ https://docs.snowflake.com/ko/user-guide/tutorials/script-data-load-transform-pa
 """
 
 import logging
-from pathlib import Path
-from typing import Optional, Dict, Any
 import snowflake.connector
 from snowflake.connector import DictCursor
 

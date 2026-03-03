@@ -1,0 +1,432 @@
+from datetime import date
+from typing import Optional
+
+import numpy as np
+import structlog
+from snowflake.connector.cursor import SnowflakeCursor
+import pandas as pd
+
+from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
+from maude_early_alert.utils.helpers import validate_identifier, validate_date
+from maude_early_alert.utils.config_loader import load_config
+from maude_early_alert.analyze.aggregation import Aggregation
+from maude_early_alert.analyze.spike_detection import SpikeDetection
+from maude_early_alert.analyze.statistical_analysis_python import StatisticalAnalysisPython
+
+_cfg  = load_config('gold')
+_spike = _cfg['spike_detection']
+_stat  = _cfg['statistical_analysis']
+
+logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
+
+class GoldPipeline(SnowflakeBase):
+    """
+    Silver -> Gold 파이프라인
+
+    [DASH] 대시보드 집계 (CTAS, 실행마다 전체 교체)
+      CLUSTER_{W}M_DASHBOARD  : 클러스터별 월간 지표
+                                REPORT_COUNT, DEATH_COUNT, SEVERE_HARM_RATE 등
+      DEFECT_{W}M_SPIKE       : 결함 유형별 월간 보고 건수 (단순 COUNT, 시각화용)
+                                ※ SPIKE_RESULT와 다름 — 통계 검정 없음
+      OVERVIEW_{W}M_DASHBOARD : 전체 현황 요약
+      PRODUCT_{W}M_DASHBOARD  : 제품코드별 월간 지표
+
+    [DETECT] 이상 탐지 결과 (증분, SNAPSHOT_DATE 키)
+      SPIKE_{W}M_RESULT       : Z-score / Poisson 검정 → IS_SPIKE, Z_SCORE, P_VALUE
+                                ※ DEFECT_SPIKE와 다름 — 통계적 탐지 결과
+
+    [STAT] 통계 분석 결과 (증분, SNAPSHOT_DATE 키)
+      STAT_CHI2_RESULT        : 제품코드별 2×N 카이제곱 → CHI2_STATISTIC, CRAMERS_V
+      STAT_ODDS_RATIOS        : Fisher's exact 오즈비 → ODDS_RATIO, CI_LOWER, CI_UPPER
+      STAT_FINAL              : STAT_ODDS_RATIOS + FDR 보정 → SIGNIFICANT_CORRECTED
+    """
+    
+    CLUSTER_METRICS = [
+        "REPORT_COUNT", "DEATH_COUNT", "SERIOUS_INJURY_COUNT",
+        "MINOR_INJURY_COUNT", "NO_HARM_COUNT",
+        "SEVERE_HARM_RATE", "DEFECT_CONFIRMED_COUNT", "DEFECT_CONFIRMED_RATE",
+    ]
+    PRODUCT_METRICS = ["REPORT_COUNT", "DEATH_COUNT", "SEVERE_HARM_RATE"]
+    OVERVIEW_METRICS = [
+        "TOTAL_REPORT_COUNT", "DEATH_COUNT", "SERIOUS_INJURY_COUNT",
+        "SEVERE_HARM_RATE", "DEFECT_CONFIRMED_RATE",
+    ]
+    
+    def __init__(
+        self, 
+        database: str,
+        schema : str = "SILVER", 
+        gold_schema : str = "GOLD",
+    ):
+        super().__init__(database, schema)
+        self.gold_schema = validate_identifier(gold_schema)
+    
+    # ===================================================================
+    # 내부 헬퍼
+    # ===================================================================
+    WINDOWS = _cfg['windows']
+
+    def _table_name(
+        self,
+        group : str,
+        use   : str,
+        window: int = None,
+    ) -> str:
+        w_part = f"_{window}M" if window else ""
+        return f"{group.upper()}{w_part}_{use.upper()}"
+    
+    def _write_ctas(
+        self,
+        cursor    : SnowflakeCursor,
+        sql       : str,
+        table_name: str,
+    ) -> None:
+        """CREATE OR REPLACE TABLE ... AS SELECT 로 Gold 테이블 전체 교체"""
+        cursor.execute(sql)
+        logger.info("Gold CTAS 완료", table=f"{self.database}.{self.gold_schema}.{table_name}")
+
+    @staticmethod
+    def _dtype_to_sf(dtype) -> str:
+        if pd.api.types.is_integer_dtype(dtype):
+            return "NUMBER"
+        if pd.api.types.is_float_dtype(dtype):
+            return "FLOAT"
+        if pd.api.types.is_bool_dtype(dtype):
+            return "BOOLEAN"
+        if pd.api.types.is_datetime64_any_dtype(dtype):
+            return "TIMESTAMP_NTZ"
+        return "VARCHAR"
+
+    @staticmethod
+    def _to_rows(df: pd.DataFrame) -> list:
+        return [
+            tuple(None if (isinstance(v, float) and np.isnan(v)) else v for v in r)
+            for r in df.itertuples(index=False, name=None)
+        ]
+
+    def _write_incremental(
+        self,
+        cursor       : SnowflakeCursor,
+        df           : pd.DataFrame,
+        table_name   : str,
+        snapshot_date: str,
+    ) -> None:
+        """스키마 추론 + 증분 적재 (Spike용, DELETE + INSERT, 트랜잭션 보장)"""
+        full = f"{self.database}.{self.gold_schema}.{table_name}"
+        col_defs     = ", ".join(f"{c} {self._dtype_to_sf(t)}" for c, t in zip(df.columns, df.dtypes))
+        placeholders = ", ".join(["%s"] * len(df.columns))
+        rows         = self._to_rows(df)
+
+        cursor.execute(f"CREATE TABLE IF NOT EXISTS {full} ({col_defs})")
+        with self.transaction(cursor):
+            cursor.execute(f"DELETE FROM {full} WHERE SNAPSHOT_DATE = '{snapshot_date}'")
+            cursor.executemany(f"INSERT INTO {full} VALUES ({placeholders})", rows)
+        logger.info("Spike 적재 완료", table=full, rows=len(rows))
+
+        
+    # ===================================================================
+    # 1-4. CTAS 대시보드 공통 헬퍼
+    # ===================================================================
+
+    def _run_ctas_window(
+        self,
+        cursor           : SnowflakeCursor,
+        source_table     : str,
+        snapshot_date    : str,
+        windows          : list,
+        group            : str,
+        use              : str,
+        agg_fn,
+        entity_expr      : str,
+        metrics          : list = None,
+        metric_name_expr : str = None,
+        metric_value_expr: str = None,
+    ) -> None:
+        """window별 Gold CTAS 테이블 생성 공통 헬퍼.
+        metrics 지정 시 UNPIVOT, 미지정 시 직접 SELECT.
+        """
+        agg = Aggregation(database=self.database, schema=self.schema)
+        for w in windows:
+            table_name = self._table_name(group, use, w)
+            full       = f"{self.database}.{self.gold_schema}.{table_name}"
+            agg_sql    = agg_fn(agg, source_table, w)
+            if metrics:
+                cols = ", ".join(metrics)
+                sql  = f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       {entity_expr}           AS ENTITY_VALUE,
+                       METRIC_NAME,
+                       METRIC_VALUE::FLOAT     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                UNPIVOT (METRIC_VALUE FOR METRIC_NAME IN ({cols}))
+                ORDER BY 1, 2, 3, 4, 5
+            """
+            else:
+                sql  = f"""
+                CREATE OR REPLACE TABLE {full} AS
+                SELECT METRIC_DATE,
+                       'month'::VARCHAR        AS GRAIN,
+                       MANUFACTURER,
+                       {entity_expr}           AS ENTITY_VALUE,
+                       {metric_name_expr}      AS METRIC_NAME,
+                       {metric_value_expr}     AS METRIC_VALUE,
+                       '{source_table}'        AS SOURCE_TABLE,
+                       '{snapshot_date}'::DATE AS SNAPSHOT_DATE
+                FROM ({agg_sql}) base
+                ORDER BY 1, 2, 3
+            """
+            self._write_ctas(cursor, sql, table_name)
+            logger.info(f"{group} 적재 완료", table=table_name, window=w)
+
+    # ===================================================================
+    # 1. CLUSTER_{W}M_DASHBOARD
+    # ===================================================================
+
+    @with_context
+    def run_cluster_dashboard(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = "EVENT_CLUSTERED",
+        snapshot_date: Optional[str] = None,
+        windows      : list = None,
+    ) -> None:
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="CLUSTER", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.cluster_dashboard_sql(s, w),
+            entity_expr="CLUSTER_ID",
+            metrics=self.CLUSTER_METRICS,
+        )
+
+    # ===================================================================
+    # 2. DEFECT_{W}M_SPIKE
+    # ===================================================================
+
+    @with_context
+    def run_defect_spike(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = "EVENT_CLUSTERED",
+        snapshot_date: Optional[str] = None,
+        windows      : list = None,
+    ) -> None:
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="DEFECT", use="SPIKE",
+            agg_fn=lambda agg, s, w: agg.defect_spike_sql(s, w),
+            entity_expr="DEFECT_TYPE",
+            metric_name_expr="'REPORT_COUNT'",
+            metric_value_expr="REPORT_COUNT::FLOAT",
+        )
+
+    # ------------------------------------------------------------------
+    # 3. PRODUCT_{W}M_DASHBOARD
+    # ------------------------------------------------------------------
+
+    @with_context
+    def run_product_dashboard(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = "EVENT_CLUSTERED",
+        snapshot_date: Optional[str] = None,
+        windows      : list = None,
+    ) -> None:
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="PRODUCT", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.product_dashboard_sql(s, w),
+            entity_expr="PRODUCT_CODE",
+            metrics=self.PRODUCT_METRICS,
+        )
+
+    # ------------------------------------------------------------------
+    # 4. OVERVIEW_{W}M_DASHBOARD
+    # ------------------------------------------------------------------
+
+    @with_context
+    def run_overview_dashboard(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = "EVENT_CLUSTERED",
+        snapshot_date: Optional[str] = None,
+        windows      : list = None,
+    ) -> None:
+        self._run_ctas_window(
+            cursor, source_table,
+            validate_date(snapshot_date or date.today().strftime("%Y-%m-%d")),
+            windows or self.WINDOWS,
+            group="OVERVIEW", use="DASHBOARD",
+            agg_fn=lambda agg, s, w: agg.overview_dashboard_sql(s, w),
+            entity_expr="'TOTAL'",
+            metrics=self.OVERVIEW_METRICS,
+        )
+
+    # ------------------------------------------------------------------
+    # 5. SPIKE_{W}M_RESULT
+    # ------------------------------------------------------------------
+
+    @with_context
+    def run_spike_detection(
+        self,
+        cursor        : SnowflakeCursor,
+        source_table  : str = _cfg['source_table'],
+        snapshot_date : Optional[str] = None,
+        windows       : list = None,
+        keyword_column: str = _spike['keyword_column'],
+        date_column   : str = _spike['date_column'],
+        count_column  : str = _spike['count_column'],
+        filters       : Optional[str] = _spike['filters'],
+        eps           : float = _spike['eps'],
+        z_threshold   : float = _spike['z_threshold'],
+        min_c_recent  : int = _spike['min_c_recent'],
+        alpha         : float = _spike['alpha'],
+        correction    : str = _spike['correction'],
+    ) -> None:
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
+        windows       = windows or self.WINDOWS
+        src           = f"{self.database}.{self.schema}.{validate_identifier(source_table)}"
+
+        detector = SpikeDetection(database=self.database, schema=self.schema)
+
+        with self._error_logging("SPIKE fetch", table=source_table):
+            keyword_monthly, monthly_total = detector.fetch_monthly_counts(
+                cursor,
+                source_table   = src,
+                keyword_column = keyword_column,
+                date_column    = date_column,
+                count_column   = count_column,
+                filters        = filters,
+            )
+
+        as_of_month  = monthly_total["MONTH"].sort_values(ascending=False).iloc[0]
+        all_keywords = keyword_monthly["KEYWORD"].unique()
+
+        for w in windows:
+            recent_months, base_months = detector.get_window_months(as_of_month, w)
+            df = detector.aggregate_window(
+                keyword_monthly, monthly_total, all_keywords, recent_months, base_months
+            )
+            df["AS_OF_MONTH"] = as_of_month
+            df["WINDOW"]      = w
+            df = detector.calculate_ratio_metrics(df)
+            df = detector.calculate_zscore_metrics(df, eps)
+            df = detector.calculate_poisson_metrics(df, alpha, correction)
+            df = detector.determine_spikes(df, z_threshold, min_c_recent, alpha)
+            df = detector.add_ensemble_pattern(df)
+            df["SNAPSHOT_DATE"] = snapshot_date
+
+            table_name = self._table_name("SPIKE", "RESULT", w)
+            logger.info("SPIKE 탐지 완료", window=w, rows=len(df), snapshot_date=snapshot_date)
+            self._write_incremental(cursor, df, table_name, snapshot_date)
+
+    # ------------------------------------------------------------------
+    # 6. STAT_CHI2_RESULT / STAT_ODDS_RATIOS / STAT_FINAL
+    # ------------------------------------------------------------------
+
+    @with_context
+    def run_statistical_analysis(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = _cfg['source_table'],
+        snapshot_date: Optional[str] = None,
+        row_column   : str = _stat['row_column'],
+        col_column   : str = _stat['col_column'],
+        filters      : Optional[str] = _stat['filters'],
+        min_cell     : int = _stat['min_cell'],
+        alpha        : float = _stat['alpha'],
+    ) -> None:
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
+        src           = f"{self.database}.{self.schema}.{validate_identifier(source_table)}"
+
+        analyzer = StatisticalAnalysisPython(database=self.database, schema=self.schema)
+
+        with self._error_logging("STAT 분석", table=source_table):
+            result = analyzer.run(
+                cursor,
+                source_table   = src,
+                row_column     = row_column,
+                col_column     = col_column,
+                filters        = filters,
+                min_cell_count = min_cell,
+                alpha          = alpha,
+            )
+
+        chi2_df  = result["chi2"]["detail"].copy()
+        odds_df  = result["odds_ratios"].copy()
+        final_df = result["final"].copy()
+
+        for df in (chi2_df, odds_df, final_df):
+            df["SNAPSHOT_DATE"] = snapshot_date
+
+        chi2_table  = "STAT_CHI2_RESULT"
+        odds_table  = "STAT_ODDS_RATIOS"
+        final_table = "STAT_FINAL"
+
+        self._write_incremental(cursor, chi2_df,  chi2_table,  snapshot_date)
+        self._write_incremental(cursor, odds_df,  odds_table,  snapshot_date)
+        self._write_incremental(cursor, final_df, final_table, snapshot_date)
+
+        logger.info("통계 분석 완료",
+                    tables=[chi2_table, odds_table, final_table],
+                    snapshot_date=snapshot_date)
+
+    # ------------------------------------------------------------------
+    # run : 전체 Gold 집계 실행
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        cursor       : SnowflakeCursor,
+        source_table : str = "EVENT_CLUSTERED",
+        snapshot_date: Optional[str] = None,
+        windows      : list = None,
+    ) -> None:
+        snapshot_date = validate_date(snapshot_date or date.today().strftime("%Y-%m-%d"))
+        windows       = windows or self.WINDOWS
+        logger.info("Gold 파이프라인 시작",
+                    source_table=source_table, snapshot_date=snapshot_date, windows=windows)
+
+        self.run_cluster_dashboard   (cursor, source_table, snapshot_date, windows)
+        self.run_defect_spike        (cursor, source_table, snapshot_date, windows)
+        self.run_product_dashboard   (cursor, source_table, snapshot_date, windows)
+        self.run_overview_dashboard  (cursor, source_table, snapshot_date, windows)
+        self.run_spike_detection     (cursor, source_table, snapshot_date, windows)
+        self.run_statistical_analysis(cursor, source_table, snapshot_date)
+
+        logger.info("Gold 파이프라인 완료", snapshot_date=snapshot_date)
+
+
+if __name__ == "__main__":
+    import snowflake.connector
+    from maude_early_alert.logging_config import configure_logging
+    from maude_early_alert.utils.secrets import get_secret
+
+    configure_logging(level="INFO")
+
+    SOURCE_TABLE  = "EVENT_CLUSTERED"
+    SNAPSHOT_DATE = None
+
+    secret = get_secret("snowflake/de", region_name="ap-northeast-2")
+    conn   = snowflake.connector.connect(**secret)
+    cursor = conn.cursor()
+
+    try:
+        pipeline = GoldPipeline(database="MAUDE", schema="SILVER", gold_schema="GOLD")
+        pipeline.run(cursor, SOURCE_TABLE, SNAPSHOT_DATE)
+    except Exception:
+        logger.error("Gold 파이프라인 실패", exc_info=True)
+        raise
+    finally:
+        cursor.close()
+        conn.close()

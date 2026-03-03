@@ -1,0 +1,127 @@
+# =====================================================
+# Clustering Pipeline Configuration
+# lib/src/maude_early_alert/preprocessors/clustering.py
+# =====================================================
+
+cluster_python: "/opt/vllm-env/bin/python"
+
+# 1. 소스 테이블 및 컬럼
+source:
+  category: "event"
+  suffix: _LLM_EXTRACTED
+  columns:
+    categorical:
+      - PATIENT_HARM
+      - DEFECT_TYPE
+      - DEFECT_CONFIRMED
+    text:
+      - PROBLEM_COMPONENTS
+
+# 2. 텍스트 전처리 (학습·추론 공통)
+vocab_filter:
+  min_freq: 10   # 이 빈도수 미만 키워드 제거
+
+# 3. 임베딩 (학습·추론 공통)
+embedding:
+  model: "pritamdeka/S-PubMedBert-MS-MARCO"
+  batch_size: 32
+  normalize: true  # L2 정규화 (cosine similarity 기반 UMAP에 필요)
+
+# 4. 학습 설정 (오프라인 일회성 튜닝 전용)
+train:
+  enabled: false   # maude_cluster DAG에서는 사용하지 않음 (추론 전용)
+
+  # 합격 조건 (Pass/Fail 필터링)
+  validity:
+    k_min: 3
+    k_max: 6
+    noise_max: 0.30
+
+  # UMAP 고정 파라미터 (Optuna가 튜닝하지 않는 값)
+  umap:
+    metric: cosine
+    random_state: 42
+
+  # HDBSCAN 고정 파라미터
+  hdbscan:
+    metric: euclidean
+    cluster_selection_method: eom
+    gen_min_span_tree: true
+
+  # 품질 점수 (합격한 것 중 순위용, 가중치 합계 = 1.0)
+  # DBI·CHI는 리포팅 전용 — composite score에 포함하지 않음
+  # noise는 제외 — noise→0 유인이 경계 포인트를 큰 클러스터에 흡수하여 쏠림을 악화시킴
+  # max_cluster_ratio: soft 페널티로 균형 방향 유도 (데이터 특성상 hard 컷 불가)
+  scoring:
+    weights:
+      silhouette: 0.40
+      max_cluster_ratio: 0.20   # 낮을수록 균등 (score = 1 - max_cluster_ratio)
+      noise_ratio: 0.20
+      entropy: 0.10
+      gini: 0.10
+    silhouette_thresholds:
+      low: 0.4
+      mid: 0.5
+    entropy_thresholds:
+      good: 0.7
+      acceptable: 0.5
+
+  # Optuna 설정
+  optuna:
+    n_trials: 20
+    timeout: null         # 초 단위, null이면 제한 없음
+    sampler_seed: 42
+    log_file: results_optuna.json       # run 디렉토리 아래 저장됨
+    storage: optuna_clustering.db       # run 디렉토리 아래 저장됨 (null이면 인메모리)
+    study_name: maude_clustering
+    ranges:
+      min_cluster_size:    # best: 9000 (509K 기준) → 681K 스케일 ≈ 12000
+        min: 5000
+        max: 20000
+        step: 1000
+      min_samples:         # best: 60
+        min: 20
+        max: 150
+        step: 5
+      umap_n_components:   # best: 5
+        min: 3
+        max: 12
+      umap_n_neighbors:    # best: 70
+        min: 30
+        max: 100
+        step: 5
+      umap_min_dist:       # best: 0.379
+        min: 0.1
+        max: 0.6
+      onehot_weight:       # best: 7.79
+        min: 3.0
+        max: 15.0
+
+# 6. 모델 저장 경로
+paths:
+  base_dir: models/clustering
+  active_run: "hdbscan_20260303"  # maude_cluster DAG 추론에 사용할 고정 모델
+
+# 7. 클러스터링 결과 테이블 스키마
+output:
+  suffix: "_CLUSTERED"
+  columns:
+    - name: "CLUSTER"
+      type: INT
+
+# 8. 시각화
+visualization:
+  hover_cols:
+    - PRODUCT_CODE
+    - PATIENT_HARM
+    - PROBLEM_COMPONENTS
+  scatter_output: cluster_plot.html
+  distribution_output: cluster_distribution.html
+  umap_2d:
+    n_neighbors: 50
+    min_dist: 0.3
+    metric: cosine
+    random_state: 42
+
+logging:
+  verbose: true

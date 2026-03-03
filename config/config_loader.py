@@ -1,4 +1,5 @@
 # config/config_loader.py (범용 로더 - 저수준)
+# Legacy 코드
 import yaml
 import os
 from pathlib import Path
