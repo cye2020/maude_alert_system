@@ -8,7 +8,6 @@ import logging
 from typing import Optional
 import polars as pl
 import snowflake.connector
-from snowflake.connector import DictCursor
 
 from src.snowflake.config import get_snowflake_config
 
