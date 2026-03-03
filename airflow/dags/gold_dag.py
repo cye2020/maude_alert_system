@@ -44,7 +44,7 @@ def maude_gold():
     def aggregate(run_id: str, dag: DAG) -> None:
         """클러스터/결함/제품/전체 월간 지표 집계 → Gold dashboard 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-01')
+        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-%d')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,
@@ -66,7 +66,7 @@ def maude_gold():
     def anomaly_signal(run_id: str, dag: DAG) -> None:
         """Spike Detection + Statistical Analysis → Gold 이상 탐지 테이블 적재"""
         bind_contextvars(dag_id=dag.dag_id, run_id=run_id)
-        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-01')
+        snapshot_date = pendulum.now('Asia/Seoul').strftime('%Y-%m-%d')
         try:
             pipeline = GoldPipeline(
                 database=_DATABASE,
