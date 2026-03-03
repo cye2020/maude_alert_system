@@ -445,6 +445,10 @@ class SilverConfig:
         """Failure 재시도 모델 설정 반환 (llm_extraction.yaml failure 섹션)"""
         return self._llm_extraction['failure']
 
+    def get_llm_vllm_python(self) -> str:
+        """vLLM 가상환경 Python 실행파일 경로 반환"""
+        return self._llm_extraction.get('vllm_python', '/opt/vllm-env/bin/python')
+
     # ==================== clustering 설정 ====================
 
     def get_clustering_source_category(self) -> str:

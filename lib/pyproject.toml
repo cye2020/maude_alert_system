@@ -18,34 +18,42 @@ dependencies = [
     "tenacity",
     # Data
     "pandas",
-    # AWS
-    "boto3",
-    "aws-secretsmanager-caching",
-    # Snowflake
+]
+
+[project.optional-dependencies]
+snowflake = [
     "snowflake-connector-python[pandas]",
     "snowflake-snowpark-python",
     # OpenTelemetry (Snowflake connector tracing)
     "opentelemetry-api",
     "opentelemetry-sdk",
-    # clustering
+]
+aws = [
+    "boto3",
+    "aws-secretsmanager-caching",
+]
+clustering = [
     "sentence-transformers",
     "hdbscan",
     # 통계 분석
     "scipy",
     "statsmodels",
     # 시각화용
-    "plotly"
+    "plotly",
 ]
-
-[project.optional-dependencies]
 gpu = [
     "torch",
     "torchvision",
     "transformers[torch]",
-    "vllm",
     "openai",
     "cupy-cuda12x",
     "cuml-cu12",
+]
+worker = [
+    # vllm 전용 가상환경(/opt/vllm-env)용 - sentence-transformers 없음 → tokenizers 충돌 없음
+    "torch",
+    "torchvision",
+    "vllm==0.15.1",
 ]
 udf = [
     "rapidfuzz",
@@ -53,12 +61,15 @@ udf = [
     "clean-text",
 ]
 airflow = [
-    "apache-airflow",
+    "apache-airflow[postgres,async]==3.1.7",
     "apache-airflow-providers-snowflake",
-    "apache-airflow-providers-amazon"
+    "apache-airflow-providers-amazon",
+    "psycopg2-binary",
+    "asyncpg",
 ]
 all = [
-    "maude-early-alert[gpu,udf,airflow]",
+    "maude-early-alert[snowflake,aws,clustering,gpu,udf,airflow]",
+    # worker는 Dockerfile에서 별도 venv(/opt/vllm-env)로 설치
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -67,7 +78,6 @@ packages = ["src/maude_early_alert"]
 [tool.uv]
 torch-backend = "auto"
 
-# uv index 설정 - torch CUDA 빌드 소스 (vllm은 torch-backend=auto로 처리)
 [tool.uv.sources]
 torch = [
   { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },

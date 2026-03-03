@@ -309,11 +309,9 @@ def get_extractor_class():
     try:
         from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
         return MAUDEExtractor
-    except ImportError:
-        raise ImportError(
-            "MAUDEExtractor를 찾을 수 없습니다. "
-            "maude_early_alert.preprocessors.mdr_extractor 경로를 확인하세요."
-        )
+    except ImportError as e:
+        msg = f'ImportError: {e}\nMAUDEExtractor를 찾을 수 없습니다.\nmaude_early_alert.preprocessors.mdr_extractor 경로를 확인하세요.'
+        raise ImportError(msg)
 
 
 class MDRExtractor:

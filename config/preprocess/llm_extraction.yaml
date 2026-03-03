@@ -1,3 +1,6 @@
+# === vLLM 가상환경 경로 ===
+vllm_python: "/opt/vllm-env/bin/python"
+
 # === 모델 설정 ===
 model:
   model_path: "nvidia/Qwen3-8B-FP8"

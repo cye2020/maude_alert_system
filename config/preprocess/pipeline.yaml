@@ -1,0 +1,35 @@
+# Silver 파이프라인 카테고리별 스텝 실행 순서
+#
+# event 는 pre_sync / post_sync 로 분리됨.
+#   - pre_sync  : udi 와 병렬 실행
+#   - post_sync : udi add_scd2_metadata 완료 후 실행
+#                 (fuzzy_match_manufacturer, match_udi 는 udi_CURRENT 를 소스로 사용)
+
+event:
+  pre_sync:
+    - filter_dedup_rows
+    - flatten
+    - filter_scoping
+    - combine_mdr_text
+    - select_columns
+    - impute_missing_values
+    - clean_values
+    - apply_company_alias
+  post_sync:
+    - fuzzy_match_manufacturer   # source: udi_CURRENT (udi scd2 완료 후)
+    - cast_types
+    - extract_udi_di
+    - match_udi                  # source: udi_CURRENT
+    - filter_quality
+    - select_columns_final
+    - add_scd2_metadata
+
+udi:
+  - filter_dedup_rows
+  - flatten
+  - filter_scoping
+  - extract_primary_udi_di
+  - select_columns
+  - clean_values
+  - cast_types
+  - add_scd2_metadata

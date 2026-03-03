@@ -1,6 +1,4 @@
 import json
-import shutil
-from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Dict, List, Tuple
 
@@ -34,22 +32,11 @@ from maude_early_alert.preprocessors.type_cast import build_type_cast_sql
 from maude_early_alert.preprocessors.value_clean import build_clean_sql
 from maude_early_alert.preprocessors.row_filter import build_filter_sql, build_filter_pipeline
 from maude_early_alert.preprocessors.udi_match import build_matching_sql
-from maude_early_alert.preprocessors.text_extract import (
-    build_mdr_text_extract_sql,
-    build_ensure_extracted_table_sql,
-    build_create_extract_temp_sql,
-    build_extract_stage_insert_sql,
-    build_failure_candidates_sql,
-    build_extracted_join_sql,
-    prepare_insert_data,
-    MDRExtractor,
-)
 from maude_early_alert.preprocessors.metadata_add import (
     add_incremental_metadata,
     build_expire_old_records_sql,
     build_extract_bronze_metadata_sql,
 )
-from maude_early_alert.preprocessors.prompt import get_prompt
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
 
@@ -100,8 +87,6 @@ class SilverPipeline(SnowflakeBase):
         super().__init__(database, schema)
 
         category = self.cfg.get_llm_source_category()
-        self.llm_source_table = f'{database}.{schema}.{category}{self.cfg.get_llm_source_suffix()}'.upper()
-        self.llm_extracted_table = f'{database}.{schema}.{category}{self.cfg.get_llm_extracted_suffix()}'.upper()
         self.llm_join_table = f'{database}.{schema}.{category}{self.cfg.get_llm_join_suffix()}'.upper()
 
         clustering_cat = self.cfg.get_clustering_source_category()
@@ -312,160 +297,6 @@ class SilverPipeline(SnowflakeBase):
             **self.cfg.get_matching_kwargs(),
         )
         self._create_next_stage(cursor, target_cat, sql)
-
-    # ==================== LLM extraction (별도 단계) ====================
-
-    @with_context
-    def extract_mdr_text(self, cursor: SnowflakeCursor) -> List[Dict]:
-        """source 테이블에서 MDR_TEXT 추출 + unique 처리, dict 리스트 반환"""
-        logger.info('MDR_TEXT 추출 시작', source=self.llm_source_table)
-        source_cols = self.cfg.get_llm_source_columns()
-        pk_col = self.cfg.get_llm_extracted_pk_column()
-        cursor.execute(build_ensure_extracted_table_sql(self.llm_extracted_table, self.cfg.get_llm_extracted_columns()))
-        sql = build_mdr_text_extract_sql(
-            table_name=self.llm_source_table,
-            columns=source_cols,
-            logical_date=self.logical_date,
-            exclude_extracted_table=self.llm_extracted_table,
-            pk_column=pk_col,
-        )
-
-        cursor.execute(sql)
-        df = cursor.fetch_pandas_all()
-        total = len(df)
-        df = df.drop_duplicates(subset=[pk_col])[source_cols].fillna('')
-        unique_records = df.rename(columns={c: c.lower() for c in source_cols}).to_dict('records')
-        logger.info('MDR_TEXT 추출 완료', total=total, unique=len(unique_records))
-        return unique_records
-
-    @cached_property
-    def _llm_extractor(self) -> MDRExtractor:
-        """1차 LLM 추출용 extractor (최초 접근 시 모델 로드, 이후 재사용)"""
-        return MDRExtractor(
-            **self.cfg.get_llm_model_config(),
-            sampling_config=self.cfg.get_llm_sampling_config(),
-            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
-        )
-
-    @cached_property
-    def _failure_extractor(self) -> MDRExtractor:
-        """failure 모델용 extractor (최초 접근 시 모델 로드, 이후 재사용)"""
-        return MDRExtractor(
-            **self.cfg.get_llm_failure_model_config(),
-            sampling_config=self.cfg.get_llm_sampling_config(),
-            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
-        )
-
-    def run_llm_extraction(self, records: List) -> List[dict]:
-        """vLLM 배치 처리 (cursor 불필요, GPU 작업)"""
-        category = self.cfg.get_llm_source_category()
-        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        return self._llm_extractor.process_batch(
-            records,
-            checkpoint_dir=checkpoint_cfg['dir'],
-            checkpoint_interval=checkpoint_cfg['interval'],
-            checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}",
-        )
-
-    @with_context
-    def fetch_failure_candidates(self, cursor: SnowflakeCursor) -> List[dict]:
-        """Snowflake _EXTRACTED에서 failure 모델 재시도 대상 레코드 조회.
-
-        재시도 조건 (OR):
-            - _EXTRACTED에 없음 (1차 추출 실패)
-            - PATIENT_HARM = 'Unknown'
-            - DEFECT_TYPE = 'Unknown'
-
-        Returns:
-            재시도 대상 레코드 리스트
-        """
-        sql = build_failure_candidates_sql(
-            source_table=self.llm_source_table,
-            extracted_table=self.llm_extracted_table,
-            source_columns=self.cfg.get_llm_source_columns(),
-            pk_column=self.cfg.get_llm_extracted_pk_column(),
-            unknown_columns=self.cfg.get_llm_extracted_unknown_columns(),
-            logical_date=self.logical_date,
-        )
-        cursor.execute(sql)
-        rows = cursor.fetchall()
-
-        if not rows:
-            logger.info('failure 모델 재시도 대상 없음')
-            return []
-
-        col_names = [desc[0].lower() for desc in cursor.description]
-        records = [dict(zip(col_names, row)) for row in rows]
-        pk_col = self.cfg.get_llm_extracted_pk_column().lower()
-        records = pd.DataFrame(records).drop_duplicates(subset=[pk_col]).to_dict('records')
-        logger.info('failure 모델 재시도 대상 조회 완료', retry_count=len(records))
-        return records
-
-    def run_failure_model_retry(self, records: List[dict]) -> List[dict]:
-        """failure 모델로 재시도 (Snowflake 연결 불필요).
-
-        Args:
-            records: fetch_failure_candidates로 조회한 재시도 대상 레코드
-
-        Returns:
-            failure 모델 추출 결과 리스트 (load_extraction_results로 UPSERT)
-        """
-        if not records:
-            logger.info('failure 모델 재시도 대상 없음 (스킵)')
-            return []
-
-        category = self.cfg.get_llm_source_category()
-        checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        return self._failure_extractor.process_batch(
-            records,
-            checkpoint_dir=checkpoint_cfg['dir'],
-            checkpoint_interval=checkpoint_cfg['interval'],
-            checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure",
-        )
-
-    @with_context
-    def load_extraction_results(self, cursor: SnowflakeCursor, results: List[dict]):
-        """추출 결과를 Snowflake에 적재 (temp table -> MERGE)"""
-        columns = self.cfg.get_llm_extracted_columns()
-        pk_col = self.cfg.get_llm_extracted_pk_column()
-        non_pk_cols = self.cfg.get_llm_extracted_non_pk_columns()
-
-        insert_data = prepare_insert_data(results, columns)
-        if not insert_data:
-            logger.warning('적재할 추출 데이터가 없습니다')
-            return
-
-        logger.info('추출 결과 적재 시작', extracted_table=self.llm_extracted_table, count=len(insert_data))
-        cursor.execute(build_ensure_extracted_table_sql(self.llm_extracted_table, columns))
-
-        temp_table = f"{self.llm_extracted_table}_STG_{self.logical_date.strftime('%Y%m%d')}"
-        logger.debug('임시 스테이징 테이블 생성', temp_table=temp_table)
-        cursor.execute(build_create_extract_temp_sql(temp_table, columns))
-        stage_insert_sql = build_extract_stage_insert_sql(temp_table, columns)
-        cursor.executemany(stage_insert_sql, insert_data)
-        all_cols = [pk_col] + non_pk_cols
-        cursor.execute(SnowflakeLoader.build_merge_sql(self.llm_extracted_table, temp_table, pk_col, all_cols))
-        logger.info('추출 결과 적재 완료', count=len(insert_data))
-
-    def cleanup_extraction_checkpoint(self) -> None:
-        """LLM 추출 체크포인트 디렉토리 삭제. load_extraction_results 성공 후 명시적으로 호출."""
-        checkpoint_dir = Path(self.cfg.get_llm_checkpoint_config()['dir'])
-        if checkpoint_dir.exists():
-            shutil.rmtree(checkpoint_dir)
-            logger.info('체크포인트 삭제 완료', checkpoint_dir=str(checkpoint_dir))
-
-    @with_context
-    def join_extraction(self, cursor: SnowflakeCursor):
-        """원본 EVENT + 추출 결과 LEFT JOIN -> {category}_LLM_EXTRACTED 테이블 생성"""
-        logger.info('추출 결과 JOIN 시작', source=self.llm_source_table, target=self.llm_join_table)
-        sql = build_extracted_join_sql(
-            base_table=self.llm_source_table,
-            extracted_table=self.llm_extracted_table,
-            non_pk_columns=self.cfg.get_llm_extracted_non_pk_columns(),
-            pk_column=self.cfg.get_llm_extracted_pk_column(),
-        )
-        cursor.execute(f'CREATE OR REPLACE TABLE {self.llm_join_table} AS\n{sql}')
-        logger.info('JOIN 결과 테이블 생성 완료', table=self.llm_join_table)
 
     @with_context
     def add_scd2_metadata(self, cursor: SnowflakeCursor, category: str):
@@ -708,6 +539,7 @@ class SilverPipeline(SnowflakeBase):
         cursor.execute(f'CREATE OR REPLACE TABLE {self.clustering_target_table} AS\n{select_sql}')
         logger.info('_CLUSTERED 테이블 생성 완료', table=self.clustering_target_table)
 
+    @with_context
     def cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
         logger.info('중간 stage 테이블 정리 시작', stage=dict(self.stage))

@@ -1,12 +1,9 @@
-# 공식 Airflow 이미지를 베이스로 사용 (entrypoint 보존)
 FROM apache/airflow:latest-python3.11
 
 USER root
 
-# uv 설치
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-# 프로젝트 라이브러리 복사
 COPY lib/ /opt/airflow/lib/
 
 RUN apt-get update && apt-get install -y \
@@ -15,8 +12,28 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# 패키지 설치 (root에서 실행해야 system site-packages에 쓸 수 있음)
-# RUN uv pip install --system --no-cache -e /opt/airflow/lib/
-RUN uv pip install --system --no-cache -e /opt/airflow/lib/[all]
+# torch/torchvision: CUDA 버전 명시 설치
+RUN uv pip install --system --no-cache \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# cuml: nvidia 인덱스에서 설치
+RUN uv pip install --system --no-cache \
+    cuml-cu12 --extra-index-url https://pypi.nvidia.com
+
+# 공통 패키지 설치 (vllm 제외)
+# --index-strategy unsafe-best-match: 여러 인덱스에서 가장 최신 호환 버전 선택
+# (기본 first-match는 PyTorch 인덱스의 구버전 requests를 선택해 충돌 발생)
+RUN uv pip install --system --no-cache \
+    --index-strategy unsafe-best-match \
+    -e /opt/airflow/lib/[all] \
+    --extra-index-url https://download.pytorch.org/whl/cu128 \
+    --extra-index-url https://pypi.nvidia.com
+
+# vllm worker 전용 가상환경 (tokenizers 충돌 없이 vllm 설치)
+RUN uv venv /opt/vllm-env --python 3.11
+RUN uv pip install --no-cache \
+    --python /opt/vllm-env/bin/python \
+    -e /opt/airflow/lib/[worker] \
+    --extra-index-url https://download.pytorch.org/whl/cu128
 
 USER airflow
