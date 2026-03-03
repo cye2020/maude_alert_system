@@ -61,7 +61,7 @@ def maude_llm():
                 paths.append(path)
 
             logger.info('MDR 텍스트 추출 완료', total=len(records), chunks=len(paths))
-            return paths[:2]
+            return paths
         except Exception as e:
             logger.error('MDR 텍스트 추출 실패', error=str(e), exc_info=True)
             raise AirflowException(f'MDR 텍스트 추출 실패: {e}') from e
@@ -124,7 +124,7 @@ def maude_llm():
                 paths.append(path)
 
             logger.info('failure 후보 조회 완료', total=len(records), chunks=len(paths))
-            return paths[:2]
+            return paths
         except Exception as e:
             logger.error('failure 후보 조회 실패', error=str(e), exc_info=True)
             raise AirflowException(f'failure 후보 조회 실패: {e}') from e
