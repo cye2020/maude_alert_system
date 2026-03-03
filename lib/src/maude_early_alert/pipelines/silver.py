@@ -1,8 +1,5 @@
-import json
-from pathlib import Path
 from typing import ClassVar, Dict, List, Tuple
 
-import numpy as np
 import pandas as pd
 import pendulum
 import structlog
@@ -13,7 +10,6 @@ from maude_early_alert.loaders.snowflake_base import SnowflakeBase, with_context
 from maude_early_alert.loaders.snowflake_load import SnowflakeLoader, get_staging_table_name
 from maude_early_alert.pipelines.config import get_config
 from maude_early_alert.preprocessors.column_select import build_select_columns_sql
-from maude_early_alert.utils.sql_builder import build_cte_sql, build_join_clause
 from maude_early_alert.preprocessors.custom_transform import (
     build_combine_mdr_text_sql,
     build_primary_udi_di_sql,
@@ -85,14 +81,6 @@ class SilverPipeline(SnowflakeBase):
         database = self.cfg.get_snowflake_transform_database()
         schema = self.cfg.get_snowflake_transform_schema()
         super().__init__(database, schema)
-
-        category = self.cfg.get_llm_source_category()
-        self.llm_join_table = f'{database}.{schema}.{category}{self.cfg.get_llm_join_suffix()}'.upper()
-
-        clustering_cat = self.cfg.get_clustering_source_category()
-        self.clustering_target_table = (
-            f'{database}.{schema}.{clustering_cat}{self.cfg.get_clustering_output_suffix()}'.upper()
-        )
 
         logger.info('SilverPipeline 초기화 완료', database=database, schema=schema, logical_date=str(logical_date))
 
@@ -375,170 +363,6 @@ class SilverPipeline(SnowflakeBase):
 
         logger.info('SCD2 메타데이터 MERGE 및 만료 처리 완료', category=category, target=target)
 
-    # ==================== Clustering ====================
-
-    @with_context
-    def fetch_clustering_data(self, cursor: SnowflakeCursor) -> pd.DataFrame:
-        """Step 1: EVENT_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT"""
-        categorical_cols = self.cfg.get_clustering_categorical_columns()
-        text_col = self.cfg.get_clustering_text_column()
-        hover_cols = self.cfg.get_clustering_hover_cols()
-        pk_cols = self.cfg.get_silver_primary_key(self.cfg.get_clustering_source_category())
-        if isinstance(pk_cols, str):
-            pk_cols = [pk_cols]
-        # 중복 없이 순서 유지 (pk를 앞에 배치)
-        select_cols = list(dict.fromkeys(pk_cols + hover_cols + categorical_cols + [text_col]))
-
-        logger.info('clustering 데이터 로드 시작', source=self.llm_join_table, columns=select_cols)
-        sql = build_cte_sql(ctes=[], from_clause=self.llm_join_table, select_cols=select_cols)
-        cursor.execute(sql)
-        df = cursor.fetch_pandas_all()
-        logger.info('clustering 데이터 로드 완료', rows=len(df))
-        return df
-
-    def run_clustering_tuning(
-        self, df: pd.DataFrame, run_dir: str = None,
-    ) -> Tuple[np.ndarray, pd.DataFrame]:
-        """Step 2-5: vocab filter → embed → (train.enabled시) Optuna 튜닝 + 베스트 모델 저장.
-
-        train.enabled=false이면 Optuna 튜닝을 스킵하고 임베딩만 반환.
-        임베딩은 enabled 여부와 무관하게 항상 수행 (run_clustering_prediction에 필요).
-
-        Args:
-            run_dir: 모델 저장 경로. None이면 base_dir/runs/{timestamp}로 자동 생성.
-                     train.enabled=false이면 무시됨.
-
-        Returns:
-            (embeddings, df_processed) — run_clustering_prediction에 재사용
-        """
-        from maude_early_alert.preprocessors.clustering import (
-            analyze_keywords, prepare_text_col, embed_texts, train_and_save,
-        )
-        text_col = self.cfg.get_clustering_text_column()
-        sntc_col = f'{text_col}_FILTERED'
-
-        vocab = analyze_keywords(df, text_col=text_col, min_freq=self.cfg.get_clustering_vocab_min_freq())
-        df = prepare_text_col(df, text_col=text_col, output_col=sntc_col, vocab=vocab)
-        embeddings = embed_texts(
-            df[sntc_col].tolist(),
-            model=self.cfg.get_clustering_embedding_model(),
-            batch_size=self.cfg.get_clustering_embedding_batch_size(),
-            normalize=self.cfg.get_clustering_embedding_normalize(),
-        )
-
-        selected_trial = self.cfg.get_clustering_selected_trial()
-
-        if not self.cfg.get_clustering_train_enabled() and selected_trial is None:
-            logger.info('clustering 학습 비활성화 (train.enabled=false), Optuna 튜닝 스킵')
-            return embeddings, df
-
-        if run_dir is None:
-            resume_dir = self.cfg.get_clustering_resume_dir()
-            if resume_dir:
-                run_dir = resume_dir
-                logger.info('clustering Optuna 재개 모드', run_dir=run_dir)
-            else:
-                timestamp = pendulum.now().strftime('%Y%m%d_%H%M%S')
-                run_dir = f"{self.cfg.get_clustering_base_dir()}/runs/{timestamp}"
-        Path(run_dir).mkdir(parents=True, exist_ok=True)
-        logger.info('clustering 학습 run 디렉토리', run_dir=run_dir)
-
-        selected_trial = self.cfg.get_clustering_selected_trial()
-        if selected_trial is not None:
-            # selected_trial 모드: resume_run의 JSON에서 해당 trial 파라미터로 1회 재훈련
-            from maude_early_alert.preprocessors.clustering import fit_with_params
-            resume_dir = self.cfg.get_clustering_resume_dir()
-            if not resume_dir:
-                raise ValueError("selected_trial 설정 시 resume_run도 지정해야 합니다.")
-            log_file = Path(resume_dir) / self.cfg._clustering['train']['optuna']['log_file']
-            logs = json.loads(log_file.read_text())
-            trial_entry = next((t for t in logs if t['trial'] == selected_trial), None)
-            if trial_entry is None:
-                raise ValueError(f"trial {selected_trial}을 {log_file}에서 찾을 수 없습니다.")
-            logger.info('선택된 trial로 재훈련', trial=selected_trial,
-                        hyperparams=trial_entry['hyperparams'])
-            fit_with_params(
-                hyperparams=trial_entry['hyperparams'],
-                embeddings=embeddings,
-                save_dir=run_dir,
-                umap_fixed_params=self.cfg.get_clustering_umap_params(),
-                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
-                categorical_cols=self.cfg.get_clustering_categorical_columns(),
-                df=df,
-            )
-        else:
-            # Optuna 모드: 자동 최적화 후 베스트 모델 저장
-            train_and_save(
-                embeddings=embeddings,
-                save_dir=run_dir,
-                df=df,
-                categorical_cols=self.cfg.get_clustering_categorical_columns(),
-                umap_params=self.cfg.get_clustering_umap_params(),
-                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
-                validity_params=self.cfg.get_clustering_validity_params(),
-                scoring_params=self.cfg.get_clustering_scoring_params(),
-                optuna_params=self.cfg.get_clustering_optuna_params(run_dir),
-            )
-        return embeddings, df
-
-    def run_clustering_prediction(
-        self, df: pd.DataFrame, embeddings: np.ndarray, run_dir: str = None,
-    ) -> Tuple[np.ndarray, Dict]:
-        """Step 6: 저장된 베스트 모델로 전체 클러스터링.
-
-        Args:
-            run_dir: 모델 경로. None이면 yaml active_run 사용 (null이면 ValueError).
-        """
-        from maude_early_alert.preprocessors.clustering import load_and_predict
-        if run_dir is None:
-            run_dir = self.cfg.get_clustering_active_dir()
-        labels, metadata = load_and_predict(
-            embeddings=embeddings,
-            model_dir=run_dir,
-            df=df,
-        )
-        return labels, metadata
-
-    @with_context
-    def join_clustering_results(
-        self, cursor: SnowflakeCursor, df: pd.DataFrame, labels: np.ndarray,
-    ):
-        """Step 5: clustering labels를 primary key 기준 JOIN으로 원본 테이블에 붙여 _CLUSTERED 저장"""
-        pk_cols = self.cfg.get_silver_primary_key(self.cfg.get_clustering_source_category())
-        if isinstance(pk_cols, str):
-            pk_cols = [pk_cols]
-
-        temp_table = f'{self.clustering_target_table}_STG'
-        col_defs = ', '.join(f'{c} VARCHAR' for c in pk_cols) + ', CLUSTER INT'
-        cursor.execute(f'CREATE OR REPLACE TEMPORARY TABLE {temp_table} ({col_defs})')
-
-        rows = [
-            tuple(str(row[c]) for c in pk_cols) + (int(label),)
-            for row, label in zip(df[pk_cols].to_dict('records'), labels.tolist())
-        ]
-        placeholders = ', '.join(['%s'] * (len(pk_cols) + 1))
-        col_names = ', '.join(pk_cols) + ', CLUSTER'
-        sql = f'INSERT INTO {temp_table} ({col_names}) VALUES ({placeholders})'
-        chunk_size = 10_000
-        for i in range(0, len(rows), chunk_size):
-            cursor.executemany(sql, rows[i:i + chunk_size])
-
-        join_clause = build_join_clause(
-            left_table=self.llm_join_table,
-            right_table=temp_table,
-            on_columns=pk_cols,
-            join_type='LEFT',
-            left_alias='e',
-            right_alias='c',
-        )
-        select_sql = build_cte_sql(
-            ctes=[],
-            from_clause=f'{self.llm_join_table} e\n{join_clause}',
-            select_cols=['e.*', 'c.CLUSTER'],
-        )
-        cursor.execute(f'CREATE OR REPLACE TABLE {self.clustering_target_table} AS\n{select_sql}')
-        logger.info('_CLUSTERED 테이블 생성 완료', table=self.clustering_target_table)
-
     @with_context
     def cleanup_stages(self, cursor: SnowflakeCursor):
         """중간 stage 테이블 전부 삭제"""
@@ -731,48 +555,6 @@ if __name__ == '__main__':
     #     cursor.close()
     #     conn.close()
 
-    # ── Clustering ────────────────────────────────────────────────
-    # 1단계: 데이터 로드 (_LLM_EXTRACTED에서 clustering 대상 컬럼 SELECT)
-    logger.info('Clustering 단계 시작: 데이터 로드')
-    conn = _connect()
-    cursor = conn.cursor()
-    try:
-        df = pipeline.fetch_clustering_data(cursor)
-    except Exception:
-        logger.error('clustering 데이터 로드 실패', exc_info=True)
-        raise
-    finally:
-        cursor.close()
-        conn.close()
-
-    # 2-5단계: vocab filter → 임베딩 → (train.enabled=true시) Optuna 튜닝 + 저장
-    logger.info(
-        'Clustering 단계 시작: 임베딩 + 학습',
-        train_enabled=pipeline.cfg.get_clustering_train_enabled(),
-    )
-    embeddings, df = pipeline.run_clustering_tuning(df)
-
-    # 6단계: active_run 모델로 전체 클러스터링 예측
-    # logger.info('Clustering 단계 시작: 예측')
-    # labels, metadata = pipeline.run_clustering_prediction(df, embeddings)
-    # n_clusters = int(labels.max()) + 1 if labels.max() >= 0 else 0
-    # logger.info(
-    #     'Clustering 예측 완료',
-    #     n_clusters=n_clusters,
-    #     noise_ratio=f'{float((labels == -1).mean()):.2%}',
-    # )
-
-    # 7단계: 결과 저장 (_CLUSTERED 테이블 생성)
-    # logger.info('Clustering 단계 시작: 결과 저장')
-    # conn = _connect()
-    # cursor = conn.cursor()
-    # try:
-    #     pipeline.join_clustering_results(cursor, df, labels)
-    # except Exception:
-    #     logger.error('clustering 결과 저장 실패', exc_info=True)
-    #     raise
-    # finally:
-    #     cursor.close()
-    #     conn.close()
+    # Clustering 파이프라인은 maude_early_alert.pipelines.cluster_pipeline 으로 분리됨.
 
     logger.info('Silver 파이프라인 완료')

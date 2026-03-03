@@ -33,7 +33,6 @@ aws = [
     "aws-secretsmanager-caching",
 ]
 clustering = [
-    "sentence-transformers",
     "hdbscan",
     # 통계 분석
     "scipy",
@@ -41,20 +40,17 @@ clustering = [
     # 시각화용
     "plotly",
 ]
-gpu = [
+worker = [
+    # LLM/Clustering 공용 가상환경(/opt/vllm-env)
+    "maude-early-alert[snowflake,aws,clustering]",
     "torch",
     "torchvision",
     "transformers[torch]",
     "openai",
     "cupy-cuda12x",
     "cuml-cu12",
-]
-worker = [
-    # vllm 전용 가상환경(/opt/vllm-env)용 - sentence-transformers 없음 → tokenizers 충돌 없음
-    "maude-early-alert[snowflake,aws]",
-    "torch",
-    "torchvision",
     "vllm==0.15.1",
+    "sentence-transformers",
 ]
 udf = [
     "rapidfuzz",
@@ -69,7 +65,7 @@ airflow = [
     "asyncpg",
 ]
 all = [
-    "maude-early-alert[snowflake,aws,clustering,gpu,udf,airflow]",
+    "maude-early-alert[snowflake,aws,udf,airflow,clustering]",
     # worker는 Dockerfile에서 별도 venv(/opt/vllm-env)로 설치
 ]
 

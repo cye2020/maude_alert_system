@@ -451,6 +451,10 @@ class SilverConfig:
 
     # ==================== clustering 설정 ====================
 
+    def get_clustering_vllm_python(self) -> str:
+        """Clustering external_python 실행파일 경로 반환"""
+        return self._clustering.get('cluster_python', '/opt/vllm-env/bin/python')
+
     def get_clustering_source_category(self) -> str:
         return self._clustering['source']['category']
 

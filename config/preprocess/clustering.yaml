@@ -3,6 +3,8 @@
 # lib/src/maude_early_alert/preprocessors/clustering.py
 # =====================================================
 
+cluster_python: "/opt/vllm-env/bin/python"
+
 # 1. 소스 테이블 및 컬럼
 source:
   category: "event"

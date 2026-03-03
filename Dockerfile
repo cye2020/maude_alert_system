@@ -29,7 +29,7 @@ RUN cp /opt/airflow/lib/pyproject.toml /opt/airflow/pyproject.toml
 # 4. 패키지 설치 (toml의 cu128 설정을 자동 사용)
 RUN uv pip install --system --no-cache --index-strategy unsafe-best-match -e ./lib/[all]
 
-# 5. vllm 전용 가상환경 설정
+# 5. worker 공용 가상환경(LLM + clustering) 설정
 RUN uv venv /opt/vllm-env --python 3.11 \
     && uv pip install --no-cache --python /opt/vllm-env/bin/python --index-strategy unsafe-best-match -e ./lib/[worker]
 
