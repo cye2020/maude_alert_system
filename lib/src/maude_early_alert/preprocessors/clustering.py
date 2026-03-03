@@ -53,6 +53,30 @@ def _to_numpy(arr) -> np.ndarray:
     return np.asarray(arr)
 
 
+def _normalize_categorical_input(
+    categorical_cols: Optional[List[str]],
+    df: Optional[pd.DataFrame],
+) -> Tuple[List[str], Optional[pd.DataFrame]]:
+    """범주형 컬럼/입력 DataFrame 컬럼명을 소문자로 정규화."""
+    normalized_cols = [str(col).lower() for col in (categorical_cols or [])]
+
+    if df is None:
+        return normalized_cols, None
+
+    df_norm = df.copy()
+    df_norm.columns = [str(col).lower() for col in df_norm.columns]
+
+    if normalized_cols:
+        missing = [col for col in normalized_cols if col not in df_norm.columns]
+        if missing:
+            raise ValueError(
+                "범주형 컬럼 누락: "
+                f"required={normalized_cols}, missing={missing}, available={df_norm.columns.tolist()}"
+            )
+
+    return normalized_cols, df_norm
+
+
 # =====================
 # Step 2. 텍스트 전처리
 # =====================
@@ -162,6 +186,8 @@ def prepare_features(
     Returns:
         (features, scaler, encoder)
     """
+    categorical_cols, df = _normalize_categorical_input(categorical_cols, df)
+
     if scaler is None:
         scaler = StandardScaler()
     emb_scaled = scaler.fit_transform(embeddings) if fit else scaler.transform(embeddings)
@@ -557,6 +583,8 @@ def train_and_save(
     Returns:
         {"score", "metrics", "labels", "model", "umap_model", "hyperparams"}
     """
+    categorical_cols, df = _normalize_categorical_input(categorical_cols, df)
+
     save_path = Path(save_dir)
     save_path.mkdir(parents=True, exist_ok=True)
 
@@ -612,7 +640,7 @@ def train_and_save(
         "hyperparams": result["hyperparams"],
         "metrics": {k: v for k, v in result["metrics"].items() if k != "cluster_sizes"},
         "cluster_sizes": {str(k): v for k, v in result["metrics"].get("cluster_sizes", {}).items()},
-        "categorical_cols": categorical_cols or [],
+        "categorical_cols": categorical_cols,
         "onehot_weight": result["hyperparams"]["ohw"],
         "cluster_labels": unique_labels,
     }
@@ -634,12 +662,16 @@ def fit_with_params(
     """results_optuna.json에서 선택한 trial 파라미터로 1회 재훈련 후 모델 저장.
 
     scaler/encoder는 save_dir에서 로드 (Optuna 단계에서 이미 fit됨).
+    운영 cluster DAG 경로에서는 사용하지 않으며, 오프라인 실험/재훈련 전용.
 
     Args:
         hyperparams: {"mcs", "ms", "n_comp", "n_neigh", "min_dist", "ohw"}
         save_dir: Optuna 단계에서 생성된 run 디렉토리 (scaler.joblib 필요)
     """
+    categorical_cols, df = _normalize_categorical_input(categorical_cols, df)
+
     save_path = Path(save_dir)
+    logger.warning("fit_with_params 호출: 오프라인 재훈련 전용 경로입니다", save_dir=str(save_path))
 
     scaler = joblib.load(save_path / "scaler.joblib")
     emb_scaled = scaler.transform(embeddings)
@@ -691,7 +723,7 @@ def fit_with_params(
         "hyperparams": hyperparams,
         "metrics": {k: v for k, v in metrics.items() if k != "cluster_sizes"},
         "cluster_sizes": {str(k): v for k, v in metrics.get("cluster_sizes", {}).items()},
-        "categorical_cols": categorical_cols or [],
+        "categorical_cols": categorical_cols,
         "onehot_weight": hyperparams["ohw"],
         "cluster_labels": unique_labels,
     }
@@ -707,6 +739,12 @@ def load_and_predict(
 ) -> Tuple[np.ndarray, Dict]:
     """
     저장된 모델로 새 데이터에 클러스터 레이블 부여.
+    hdbscan_model.joblib 단독으로는 예측할 수 없으며 아래 아티팩트가 필요:
+      - scaler.joblib
+      - encoder.joblib (범주형 사용 시)
+      - umap_model.joblib
+      - centroids.npy
+      - metadata.json
 
     Args:
         embeddings: (N, D) 임베딩 배열
@@ -718,7 +756,7 @@ def load_and_predict(
     """
     model_path = Path(model_dir)
     metadata = json.loads((model_path / "metadata.json").read_text())
-    categorical_cols = metadata.get("categorical_cols") or []
+    categorical_cols, df = _normalize_categorical_input(metadata.get("categorical_cols") or [], df)
     onehot_weight = metadata["onehot_weight"]
 
     scaler: StandardScaler = joblib.load(model_path / "scaler.joblib")

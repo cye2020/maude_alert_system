@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Tuple
 
 import numpy as np
@@ -74,15 +72,12 @@ class ClusterPipeline(SnowflakeBase):
         logger.info('clustering 데이터 로드 완료', rows=len(df), batch_id=batch_id)
         return df
 
-    def run_clustering_tuning(
-        self, df: pd.DataFrame, run_dir: str | None = None
-    ) -> Tuple[np.ndarray, pd.DataFrame]:
-        """vocab filter -> embed -> (옵션) Optuna 튜닝/모델 저장."""
+    def prepare_clustering_embeddings(self, df: pd.DataFrame) -> Tuple[np.ndarray, pd.DataFrame]:
+        """vocab filter -> embed (추론 전용 임베딩 준비)."""
         from maude_early_alert.preprocessors.clustering import (
             analyze_keywords,
             embed_texts,
             prepare_text_col,
-            train_and_save,
         )
 
         text_col = self.cfg.get_clustering_text_column()
@@ -97,55 +92,7 @@ class ClusterPipeline(SnowflakeBase):
             normalize=self.cfg.get_clustering_embedding_normalize(),
         )
 
-        selected_trial = self.cfg.get_clustering_selected_trial()
-        if not self.cfg.get_clustering_train_enabled() and selected_trial is None:
-            logger.info('clustering 학습 비활성화 (train.enabled=false), Optuna 튜닝 스킵')
-            return embeddings, df
-
-        if run_dir is None:
-            resume_dir = self.cfg.get_clustering_resume_dir()
-            if resume_dir:
-                run_dir = resume_dir
-                logger.info('clustering Optuna 재개 모드', run_dir=run_dir)
-            else:
-                timestamp = pendulum.now().strftime('%Y%m%d_%H%M%S')
-                run_dir = f"{self.cfg.get_clustering_base_dir()}/runs/{timestamp}"
-        Path(run_dir).mkdir(parents=True, exist_ok=True)
-        logger.info('clustering 학습 run 디렉토리', run_dir=run_dir)
-
-        if selected_trial is not None:
-            from maude_early_alert.preprocessors.clustering import fit_with_params
-
-            resume_dir = self.cfg.get_clustering_resume_dir()
-            if not resume_dir:
-                raise ValueError('selected_trial 설정 시 resume_run도 지정해야 합니다.')
-            log_file = Path(resume_dir) / self.cfg._clustering['train']['optuna']['log_file']
-            logs = json.loads(log_file.read_text())
-            trial_entry = next((t for t in logs if t['trial'] == selected_trial), None)
-            if trial_entry is None:
-                raise ValueError(f"trial {selected_trial}을 {log_file}에서 찾을 수 없습니다.")
-            logger.info('선택된 trial로 재훈련', trial=selected_trial, hyperparams=trial_entry['hyperparams'])
-            fit_with_params(
-                hyperparams=trial_entry['hyperparams'],
-                embeddings=embeddings,
-                save_dir=run_dir,
-                umap_fixed_params=self.cfg.get_clustering_umap_params(),
-                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
-                categorical_cols=self.cfg.get_clustering_categorical_columns(),
-                df=df,
-            )
-        else:
-            train_and_save(
-                embeddings=embeddings,
-                save_dir=run_dir,
-                df=df,
-                categorical_cols=self.cfg.get_clustering_categorical_columns(),
-                umap_params=self.cfg.get_clustering_umap_params(),
-                hdbscan_params=self.cfg.get_clustering_hdbscan_params(),
-                validity_params=self.cfg.get_clustering_validity_params(),
-                scoring_params=self.cfg.get_clustering_scoring_params(),
-                optuna_params=self.cfg.get_clustering_optuna_params(run_dir),
-            )
+        logger.info('clustering 임베딩 준비 완료', rows=len(df))
         return embeddings, df
 
     def run_clustering_prediction(
@@ -155,7 +102,8 @@ class ClusterPipeline(SnowflakeBase):
         from maude_early_alert.preprocessors.clustering import load_and_predict
 
         if run_dir is None:
-            run_dir = self.cfg.get_clustering_active_dir()
+            run_dir = self.cfg.get_clustering_inference_model_dir()
+        logger.info('clustering 추론 모델 로드', model_dir=run_dir)
         labels, metadata = load_and_predict(
             embeddings=embeddings,
             model_dir=run_dir,

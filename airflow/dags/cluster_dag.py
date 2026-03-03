@@ -31,14 +31,14 @@ CLUSTER_PYTHON = _cfg.get_clustering_vllm_python()
 def maude_cluster():
     """MAUDE Clustering 파이프라인
     1. EVENT_LLM_EXTRACTED에서 데이터 로드
-    2. vocab filter → embed → (train.enabled=true) Optuna 튜닝 + 베스트 모델 저장
-    3. 저장된 모델로 전체 클러스터링 예측
+    2. vocab filter → embed
+    3. 저장된 모델로 전체 클러스터링 예측 (추론 전용)
     4. clustering 결과 JOIN → {category}_CLUSTERED 테이블 생성
     """
 
     @task.external_python(python=CLUSTER_PYTHON, expect_airflow=False, max_active_tis_per_dagrun=1)
     def run_clustering_external(logical_date: str) -> dict:
-        """외부 venv에서 fetch -> tune -> predict -> join 전체 실행."""
+        """외부 venv에서 fetch -> embed -> predict -> join 전체 실행."""
         from contextlib import closing
 
         import pendulum
@@ -49,6 +49,7 @@ def maude_cluster():
 
         pipeline = ClusterPipeline(logical_date=pendulum.parse(logical_date))
         secret = get_secret('snowflake/de')
+        model_dir = pipeline.cfg.get_clustering_inference_model_dir()
 
         with closing(
             snowflake.connector.connect(
@@ -59,7 +60,7 @@ def maude_cluster():
             )
         ) as conn, closing(conn.cursor()) as cursor:
             df = pipeline.fetch_clustering_data(cursor)
-            embeddings, df = pipeline.run_clustering_tuning(df)
+            embeddings, df = pipeline.prepare_clustering_embeddings(df)
             labels, metadata = pipeline.run_clustering_prediction(df, embeddings)
             pipeline.join_clustering_results(cursor, df, labels)
 
@@ -68,7 +69,7 @@ def maude_cluster():
         return {
             'n_clusters': n_clusters,
             'noise_ratio': noise_ratio,
-            'model_dir': metadata.get('model_dir'),
+            'model_dir': model_dir,
         }
 
     @task(outlets=[MAUDE_CLUSTERED_ASSET])

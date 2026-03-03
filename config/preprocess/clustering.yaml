@@ -27,9 +27,9 @@ embedding:
   batch_size: 32
   normalize: true  # L2 정규화 (cosine similarity 기반 UMAP에 필요)
 
-# 4. 학습 (일회성 — Optuna 튜닝)
+# 4. 학습 설정 (오프라인 일회성 튜닝 전용)
 train:
-  enabled: false   # false로 설정 시 Optuna 튜닝 스킵, active_run 모델로 예측
+  enabled: false   # maude_cluster DAG에서는 사용하지 않음 (추론 전용)
 
   # 합격 조건 (Pass/Fail 필터링)
   validity:
@@ -100,9 +100,7 @@ train:
 # 6. 모델 저장 경로
 paths:
   base_dir: models/clustering
-  active_run: "20260301_171726"  # 예측에 사용할 run ID (학습 완료 후 수동 설정)
-  resume_run: '20260301_171726'  # Optuna 재개 또는 selected_trial 소스 run ID
-  selected_trial: 41            # 정수 설정 시 resume_run의 JSON에서 해당 trial 파라미터로 1회 재훈련
+  active_run: "hdbscan_20260303"  # maude_cluster DAG 추론에 사용할 고정 모델
 
 # 7. 클러스터링 결과 테이블 스키마
 output:

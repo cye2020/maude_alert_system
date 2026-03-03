@@ -507,15 +507,19 @@ class SilverConfig:
             )
         return f"{self.get_clustering_base_dir()}/runs/{active_run}"
 
+    def get_clustering_inference_model_dir(self) -> str:
+        """운영 cluster DAG가 사용하는 추론 모델 경로 반환."""
+        return self.get_clustering_active_dir()
+
     def get_clustering_resume_dir(self) -> Optional[str]:
-        """resume_run이 설정된 경우 해당 run 디렉토리 반환, null이면 None."""
+        """(오프라인 학습 전용) resume_run이 설정된 경우 해당 run 디렉토리 반환."""
         resume_run = self._clustering['paths'].get('resume_run')
         if not resume_run:
             return None
         return f"{self.get_clustering_base_dir()}/runs/{resume_run}"
 
     def get_clustering_selected_trial(self) -> Optional[int]:
-        """selected_trial이 설정된 경우 trial 번호 반환, null이면 None."""
+        """(오프라인 학습 전용) selected_trial이 설정된 경우 trial 번호 반환."""
         val = self._clustering['paths'].get('selected_trial')
         return int(val) if val is not None else None
 
