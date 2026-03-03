@@ -2,4 +2,3 @@
 # dashboard 폴더를 루트로 지정
 headless = true
 runOnSave = false
-baseUrlPath = "dashboard"

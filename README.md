@@ -261,9 +261,9 @@ score_levels: [3, 2, 1]  # 단계적 매칭 시도
 
 ## 🛠️ 기술 스택
 
-- **데이터 처리**: Polars, PySpark, Pandas
+- **데이터 처리**: Polars, Pandas
 - **시각화**: Plotly, Seaborn, Matplotlib
-- **대시보드**: Streamlit
+- **대시보드**: Streamlit, Amazon S3
 - **ML/NLP**: Transformers, vLLM, Torch
 - **통계 분석**: SciPy, Statsmodels, Pingouin
 - **유틸리티**: PyArrow, tqdm, rapidfuzz
