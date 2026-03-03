@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "maude-early-alert"
-version = "0.1.0"
-description = "Custom Airflow utilities for My Company"
+version = "1.0.0"
+description = "MAUDE 조기 경보 파이프라인 모듈"
 requires-python = ">=3.11"
 dependencies = [
     # Core

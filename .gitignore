@@ -243,7 +243,6 @@ models/
 config/*.local.yaml
 config/*.override.yaml
 .env.local
-.env.*
 
 # Secrets (credentials)
 secrets/
@@ -259,3 +258,6 @@ notebooks/**/.ipynb_checkpoints/
 
 # 체크포인트
 checkpoint_*
+
+# 백업
+backup/
