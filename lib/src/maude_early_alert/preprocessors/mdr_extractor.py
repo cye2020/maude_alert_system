@@ -94,6 +94,7 @@ class MAUDEExtractor:
             enforce_eager=False,
             enable_prefix_caching=enable_prefix_caching,
             disable_log_stats=True,
+            attention_backend="TRITON_ATTN",
         )
 
         self.tokenizer = AutoTokenizer.from_pretrained(

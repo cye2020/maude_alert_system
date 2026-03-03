@@ -3,7 +3,7 @@
 # LLM 추출 파이프라인
 #
 # LLMPipeline: Airflow env에서 실행되는 Snowflake I/O 클래스
-# run_llm_batch / run_failure_batch: vllm-env에서 실행되는 배치 처리 함수
+# run_llm_extraction / run_failure_model_retry: vllm-env에서 실행되는 배치 처리 함수
 #
 # NOTE: top-level에 snowflake 관련 import 금지.
 #   @task.external_python이 vllm-env에서 이 모듈을 import할 때 모듈 전체가
@@ -14,14 +14,16 @@
 from __future__ import annotations
 
 import shutil
+from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 import pandas as pd
 import pendulum
 import structlog
 
 if TYPE_CHECKING:
+    from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
     from snowflake.connector.cursor import SnowflakeCursor
 
 logger: structlog.stdlib.BoundLogger = structlog.get_logger(__name__)
@@ -31,7 +33,7 @@ class LLMPipeline:
     """LLM 추출 파이프라인 (Snowflake I/O 담당).
 
     Airflow env에서만 인스턴스화됩니다.
-    vllm-env에서는 모듈 수준 함수(run_llm_batch, run_failure_batch)만 사용합니다.
+    vllm-env에서는 run_llm_extraction, run_failure_model_retry를 사용합니다.
     """
 
     def __init__(self, logical_date: pendulum.DateTime):
@@ -167,7 +169,31 @@ class LLMPipeline:
         cursor.execute(f'CREATE OR REPLACE TABLE {self.llm_join_table} AS\n{sql}')
         logger.info('JOIN 결과 테이블 생성 완료', table=self.llm_join_table)
 
-    def run_llm_batch(self, records: List[dict], chunk_idx: str = '0') -> List[dict]:
+    @cached_property
+    def _llm_extractor(self) -> 'MAUDEExtractor':
+        """1차 추출용 extractor (최초 접근 시 모델 로드, 이후 재사용)."""
+        from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
+        from maude_early_alert.preprocessors.prompt import get_prompt
+
+        return MAUDEExtractor(
+            **self.cfg.get_llm_model_config(),
+            sampling_config=self.cfg.get_llm_sampling_config(),
+            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
+        )
+
+    @cached_property
+    def _failure_extractor(self) -> 'MAUDEExtractor':
+        """failure 모델용 extractor (최초 접근 시 모델 로드, 이후 재사용)."""
+        from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
+        from maude_early_alert.preprocessors.prompt import get_prompt
+
+        return MAUDEExtractor(
+            **self.cfg.get_llm_failure_model_config(),
+            sampling_config=self.cfg.get_llm_sampling_config(),
+            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
+        )
+
+    def run_llm_extraction(self, records: List[dict], chunk_idx: str = '0') -> List[dict]:
         """vLLM 배치 처리 (1차 추출용).
 
         vllm-env에서 LLMPipeline 인스턴스를 생성해 호출합니다.
@@ -183,24 +209,16 @@ class LLMPipeline:
         if not records:
             return []
 
-        from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
-        from maude_early_alert.preprocessors.prompt import get_prompt
-
         category = self.cfg.get_llm_source_category()
         checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        extractor = MAUDEExtractor(
-            **self.cfg.get_llm_model_config(),
-            sampling_config=self.cfg.get_llm_sampling_config(),
-            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
-        )
-        return extractor.process_batch(
+        return self._llm_extractor.process_batch(
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_chunk{chunk_idx}",
         )
 
-    def run_failure_batch(self, records: List[dict], chunk_idx: str = '0') -> List[dict]:
+    def run_failure_model_retry(self, records: List[dict], chunk_idx: str = '0') -> List[dict]:
         """vLLM 배치 처리 (failure 재시도용).
 
         Args:
@@ -213,19 +231,37 @@ class LLMPipeline:
         if not records:
             return []
 
-        from maude_early_alert.preprocessors.mdr_extractor import MAUDEExtractor
-        from maude_early_alert.preprocessors.prompt import get_prompt
-
         category = self.cfg.get_llm_source_category()
         checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
-        extractor = MAUDEExtractor(
-            **self.cfg.get_llm_failure_model_config(),
-            sampling_config=self.cfg.get_llm_sampling_config(),
-            prompt=get_prompt(self.cfg.get_llm_prompt_mode()),
-        )
-        return extractor.process_batch(
+        return self._failure_extractor.process_batch(
             records,
             checkpoint_dir=checkpoint_cfg['dir'],
             checkpoint_interval=checkpoint_cfg['interval'],
             checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure_chunk{chunk_idx}",
         )
+
+    def run_llm_batch(self, records: List[dict], chunk_idx: str = '0', extractor: Any | None = None) -> List[dict]:
+        """호환용 래퍼: run_llm_extraction 사용."""
+        if extractor is not None:
+            category = self.cfg.get_llm_source_category()
+            checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
+            return extractor.process_batch(
+                records,
+                checkpoint_dir=checkpoint_cfg['dir'],
+                checkpoint_interval=checkpoint_cfg['interval'],
+                checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_chunk{chunk_idx}",
+            )
+        return self.run_llm_extraction(records, chunk_idx=chunk_idx)
+
+    def run_failure_batch(self, records: List[dict], chunk_idx: str = '0', extractor: Any | None = None) -> List[dict]:
+        """호환용 래퍼: run_failure_model_retry 사용."""
+        if extractor is not None:
+            category = self.cfg.get_llm_source_category()
+            checkpoint_cfg = self.cfg.get_llm_checkpoint_config()
+            return extractor.process_batch(
+                records,
+                checkpoint_dir=checkpoint_cfg['dir'],
+                checkpoint_interval=checkpoint_cfg['interval'],
+                checkpoint_name=f"{checkpoint_cfg['prefix']}_{category}_failure_chunk{chunk_idx}",
+            )
+        return self.run_failure_model_retry(records, chunk_idx=chunk_idx)

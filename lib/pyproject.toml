@@ -51,6 +51,7 @@ gpu = [
 ]
 worker = [
     # vllm 전용 가상환경(/opt/vllm-env)용 - sentence-transformers 없음 → tokenizers 충돌 없음
+    "maude-early-alert[snowflake,aws]",
     "torch",
     "torchvision",
     "vllm==0.15.1",
