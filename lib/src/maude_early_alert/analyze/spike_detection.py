@@ -34,7 +34,7 @@ class SpikeDetection(SnowflakeBase):
 
     SPIKE_CONFIG = {
         "ratio":   ("IS_SPIKE",   "SCORE_RATIO"),
-        "z":       ("IS_SPIKE_Z", "Z_LOG"),
+        "z":       ("IS_SPIKE_Z", "Z_SCORE"),
         "poisson": ("IS_SPIKE_P", "SCORE_POIS"),
     }
 
@@ -272,7 +272,7 @@ class SpikeDetection(SnowflakeBase):
         )
 
         df["IS_SPIKE"]   = increasing & enough & (df["SCORE_RATIO"] >= ratio_thresholds)
-        df["IS_SPIKE_Z"] = increasing & enough & (df["Z_LOG"] >= z_threshold)
+        df["IS_SPIKE_Z"] = increasing & enough & (df["Z_SCORE"] >= z_threshold)
         df["IS_SPIKE_P"] = increasing & enough & (df["P_ADJUSTED"] <= alpha)
         return df
 
@@ -428,7 +428,7 @@ if __name__ == "__main__":
             "C_RECENT", "C_BASE", "N_RECENT", "N_BASE",
             "RECENT_MEAN", "BASE_MEAN", "BASE_STD",
             "RATIO", "SCORE_LOG", "SCORE_SQRT", "SCORE_RATIO",
-            "LOG_BASE_MEAN", "LOG_BASE_STD", "Z_SCORE", "Z_LOG",
+            "LOG_BASE_MEAN", "LOG_BASE_STD", "Z_SCORE",
             "LAMBDA_POIS", "P_POIS", "P_ADJUSTED", "SCORE_POIS",
             "SPIKE_COUNT", "PATTERN",
             "IS_SPIKE", "IS_SPIKE_Z", "IS_SPIKE_P",
@@ -455,7 +455,7 @@ if __name__ == "__main__":
         pd.set_option("display.max_columns", None)
         pd.set_option("display.width", None)
         display_cols = ["KEYWORD", "WINDOW", "PATTERN", "C_RECENT", "C_BASE",
-                        "RATIO", "Z_LOG", "P_ADJUSTED", "SPIKE_COUNT"]
+                        "RATIO", "P_ADJUSTED", "SPIKE_COUNT"]
 
         for w in WINDOWS:
             ensemble = detector.detect_spike_ensemble(combined, window=w, min_methods=2)
