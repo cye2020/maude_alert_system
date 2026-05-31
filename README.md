@@ -113,7 +113,7 @@ cleanup_checkpoint       # 임시 파일 정리 (always_done)
 
 | 구분 | 기술 |
 | --- | --- |
-| **오케스트레이션** | Apache Airflow 3.1.7 (CeleryExecutor), Docker Compose |
+| **오케스트레이션** | Apache Airflow 3.1.7, Docker Compose |
 | **데이터 웨어하우스** | Snowflake (BRONZE / SILVER / GOLD 레이어) |
 | **클라우드 스토리지** | AWS S3 (`ap-northeast-2`) |
 | **LLM 추론** | vLLM 0.15.1, Sentence-Transformers, OpenAI API |
