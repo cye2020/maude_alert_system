@@ -241,7 +241,7 @@ bash scripts/create_vllm_env.sh
 
 ---
 
-### 환경 2: Dashboard 시각화 환경
+### 환경 2: Dashboard 시각화 환경 (현재 사용 불가)
 
 Streamlit 대시보드 전용 환경입니다. Snowflake 또는 로컬 Parquet 파일에서 데이터를 읽습니다.
 
